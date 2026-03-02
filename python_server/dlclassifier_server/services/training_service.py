@@ -740,6 +740,43 @@ class TrainingService:
             context_dir=val_context_dir
         )
 
+        # Validate datasets before proceeding
+        train_count = len(train_dataset)
+        val_count = len(val_dataset)
+
+        if train_count == 0:
+            raise ValueError(
+                f"Training dataset is empty (0 patches in "
+                f"{data_path / 'train' / 'images'}). "
+                f"This usually means the annotations are too small to produce "
+                f"any tiles at the current downsample level. "
+                f"Try: (1) using a lower downsample value, "
+                f"(2) making annotations larger, or "
+                f"(3) adding annotations to more images."
+            )
+
+        if val_count == 0:
+            logger.warning(
+                "Validation dataset is empty -- training will proceed "
+                "but early stopping and best-model tracking will be unreliable. "
+                "Consider adding more annotations or reducing the validation split."
+            )
+
+        batch_size_requested = training_params.get("batch_size", 8)
+        if batch_size_requested > train_count:
+            logger.warning(
+                f"Batch size ({batch_size_requested}) is larger than the "
+                f"training set ({train_count} patches). "
+                f"Effective batch size will be {train_count}."
+            )
+
+        if train_count < 5:
+            logger.warning(
+                f"Very small training set ({train_count} patches). "
+                f"Training may be unreliable. Consider adding more annotations "
+                f"or reducing the downsample to generate more patches."
+            )
+
         # Compute dataset-level normalization statistics for consistent inference
         _report_setup("computing_stats")
         try:

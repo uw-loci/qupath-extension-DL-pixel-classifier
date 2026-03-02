@@ -327,6 +327,24 @@ public class AnnotationExtractor {
         logger.info("Exported {} patches ({} train, {} validation)",
                 patchIndex, trainCount, valCount);
 
+        if (patchIndex == 0) {
+            throw new IOException("No valid training patches could be extracted. "
+                    + "This usually means the annotations are too small to produce "
+                    + "any tiles at the current downsample level. "
+                    + "Try: (1) using a lower downsample value, "
+                    + "(2) making annotations larger, or "
+                    + "(3) adding annotations to more images.");
+        }
+        if (trainCount == 0) {
+            throw new IOException("All " + patchIndex + " exported patches were assigned "
+                    + "to validation, leaving 0 for training. "
+                    + "This happens when there are very few patches and the validation "
+                    + "split requires at least one patch per class. "
+                    + "Try: (1) reducing the downsample to generate more patches, "
+                    + "(2) annotating more regions, or "
+                    + "(3) reducing the validation split percentage.");
+        }
+
         // Calculate class weights
         Map<String, Long> pixelCounts = new LinkedHashMap<>();
         for (int i = 0; i < classNames.size(); i++) {
@@ -676,7 +694,21 @@ public class AnnotationExtractor {
         }
 
         if (totalPatchIndex == 0) {
-            throw new IOException("No training patches exported from any image");
+            throw new IOException("No valid training patches could be extracted from any image. "
+                    + "This usually means the annotations are too small to produce "
+                    + "any tiles at the current downsample level. "
+                    + "Try: (1) using a lower downsample value, "
+                    + "(2) making annotations larger, or "
+                    + "(3) adding annotations to more images.");
+        }
+        if (totalTrainCount == 0) {
+            throw new IOException("All " + totalPatchIndex + " exported patches were assigned "
+                    + "to validation, leaving 0 for training. "
+                    + "This happens when there are very few patches and the validation "
+                    + "split requires at least one patch per class. "
+                    + "Try: (1) reducing the downsample to generate more patches, "
+                    + "(2) annotating more regions, or "
+                    + "(3) reducing the validation split percentage.");
         }
 
         // Build combined pixel counts map
