@@ -152,6 +152,20 @@ public class ProgressMonitorController {
 
         lossChart.getData().addAll(List.of(trainLossSeries, valLossSeries));
 
+        // Apply distinct colors so train vs validation are easily distinguishable.
+        // Uses data URI stylesheet since series nodes don't exist until layout.
+        String lossChartCss = String.join("\n",
+                ".default-color0.chart-series-line { -fx-stroke: #2196F3; -fx-stroke-width: 2px; }",
+                ".default-color1.chart-series-line { -fx-stroke: #F44336; -fx-stroke-width: 2px; }",
+                ".default-color0.chart-line-symbol { -fx-background-color: #2196F3, white; }",
+                ".default-color1.chart-line-symbol { -fx-background-color: #F44336, white; }",
+                ".default-color0.chart-legend-item-symbol { -fx-background-color: #2196F3; }",
+                ".default-color1.chart-legend-item-symbol { -fx-background-color: #F44336; }"
+        );
+        lossChart.getStylesheets().add(
+                "data:text/css;charset=utf-8," + java.net.URLEncoder.encode(lossChartCss,
+                        java.nio.charset.StandardCharsets.UTF_8));
+
         // Create per-class IoU chart
         NumberAxis iouXAxis = new NumberAxis();
         iouXAxis.setLabel("Epoch");
@@ -727,4 +741,5 @@ public class ProgressMonitorController {
     public static ProgressMonitorController forInference() {
         return new ProgressMonitorController("Applying Classifier", false);
     }
+
 }
