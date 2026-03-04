@@ -210,4 +210,31 @@ public class ClassifierClient {
             boolean recommendedFreeze,
             String description
     ) {}
+
+    /**
+     * Per-tile evaluation result from post-training analysis.
+     * Tiles with higher loss are more likely to represent annotation errors
+     * or hard cases.
+     */
+    public record TileEvaluationResult(
+            String filename,
+            String split,
+            double loss,
+            double disagreementPct,
+            Map<String, Double> perClassIoU,
+            double meanIoU,
+            int x,
+            int y,
+            String sourceImage,
+            String sourceImageId
+    ) {}
+
+    /**
+     * Progress update during tile evaluation.
+     */
+    public record EvaluationProgress(
+            int currentTile,
+            int totalTiles,
+            String message
+    ) {}
 }

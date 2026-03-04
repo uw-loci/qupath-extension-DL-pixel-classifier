@@ -186,7 +186,9 @@ The extension supports four normalization strategies. The choice affects how pix
 | **Z_SCORE** | Images with consistent intensity distributions | Mean/std normalization, good for fluorescence |
 | **FIXED_RANGE** | When you know the exact intensity range | Specify min/max values explicitly (e.g., 0-4095 for 12-bit) |
 
-**Image-level normalization** (enabled by default) computes statistics once across the entire image, then applies them consistently to every tile. This eliminates visible tile boundary artifacts that occur when each tile independently computes its own statistics. Newly trained models also save training dataset statistics in their metadata for even better consistency across different images.
+**Image-level normalization** (enabled by default) computes statistics once across the entire image, then applies them consistently to every tile. This eliminates input-level tile boundary artifacts. Newly trained models also save training dataset statistics in their metadata for even better consistency across different images.
+
+**BatchRenorm** -- All newly trained models use BatchRenorm instead of standard BatchNorm for the network's internal normalization layers. This eliminates a second source of tiling artifacts: standard BatchNorm accumulates running statistics during training that can diverge from actual tile statistics at inference time, causing inconsistent predictions at tile boundaries. BatchRenorm uses consistent global statistics in both training and inference, producing seamless tiled predictions. See [Buglakova et al., ICCV 2025](https://arxiv.org/abs/2503.19545).
 
 ## Improving Results
 
@@ -219,3 +221,50 @@ The extension supports four normalization strategies. The choice affects how pix
 2. **Try a custom ONNX model** trained externally with a different architecture
 3. **Manual layer freeze tuning** for your specific dataset
 4. **Cross-validation** using multiple train/test splits
+
+## Interpreting Tile Evaluation Results
+
+After training, the **Review Training Areas** feature evaluates every training tile and ranks them by loss. This section explains how to use those results to improve your classifier.
+
+### Understanding the metrics
+
+| Metric | What it means | Healthy range |
+|--------|--------------|---------------|
+| **Loss** | Cross-entropy loss for the tile. Higher = model's prediction differs more from the annotation. | < 0.5 for well-learned tiles |
+| **Disagree%** | Percentage of labeled pixels where the model's prediction differs from the annotation mask. | < 10% for clear regions |
+| **mIoU** | Mean Intersection-over-Union across all classes present in the tile. 1.0 = perfect agreement. | > 0.7 for good predictions |
+
+### Prioritizing which tiles to review
+
+1. **Start with the highest-loss tiles** -- these are the most likely annotation errors
+2. **Focus on training split first** -- high loss on training tiles almost always indicates an annotation problem, since the model had the chance to learn from these tiles
+3. **High-loss validation tiles** may indicate areas where the model hasn't generalized, which is expected for unusual tissue patterns
+4. **Tiles with very high disagreement (>50%)** are likely mislabeled or contain mixed classes
+
+### Common patterns and actions
+
+**Annotation errors (most common):**
+- A tile labeled "Tumor" is actually stroma, or vice versa
+- Fix: Navigate to the tile, correct the annotation class, and retrain
+
+**Boundary ambiguity:**
+- Tiles at class boundaries naturally have higher loss
+- Fix: If boundary annotations are inconsistent, re-annotate with a consistent policy. Some boundary loss is normal and expected.
+
+**Hard cases:**
+- Tiles with unusual morphology that the model hasn't learned well
+- Fix: Add more annotations of similar tissue patterns to help the model learn
+
+**Staining variation:**
+- Tiles from regions with different staining intensity
+- Fix: Enable color jitter augmentation, or add annotations from diverse staining regions
+
+### Iterative improvement workflow
+
+1. Train your initial model
+2. Click **"Review Training Areas..."** before closing the progress dialog
+3. Sort by loss and review the top 10-20 problematic tiles
+4. Navigate to each tile, assess whether it's an annotation error or a hard case
+5. Fix annotation errors directly in QuPath
+6. Retrain using **"Retrain or refine a previously created model..."** with the corrected annotations
+7. Repeat until the high-loss tiles are genuine hard cases rather than annotation errors

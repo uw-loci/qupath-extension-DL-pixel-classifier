@@ -76,6 +76,9 @@ public class ProgressMonitorController {
     private Consumer<Void> onPauseCallback;
     private Consumer<Void> onResumeCallback;
     private Consumer<Void> onCompleteEarlyCallback;
+    private Consumer<Void> onReviewTrainingAreasCallback;
+    private final Button reviewButton;
+    private final Label reviewWarningLabel;
 
     /**
      * Creates a new progress monitor for training.
@@ -126,6 +129,21 @@ public class ProgressMonitorController {
         completeTrainingButton = new Button("Complete Training");
         completeTrainingButton.setVisible(false);
         completeTrainingButton.setManaged(false);
+
+        reviewButton = new Button("Review Training Areas...");
+        reviewButton.setVisible(false);
+        reviewButton.setManaged(false);
+        reviewButton.setOnAction(e -> {
+            if (onReviewTrainingAreasCallback != null) {
+                onReviewTrainingAreasCallback.accept(null);
+            }
+        });
+
+        reviewWarningLabel = new Label("Training tiles are cleaned up when this dialog closes.");
+        reviewWarningLabel.setStyle("-fx-text-fill: #CC8800; -fx-font-size: 11px;");
+        reviewWarningLabel.setWrapText(true);
+        reviewWarningLabel.setVisible(false);
+        reviewWarningLabel.setManaged(false);
 
         // Create loss chart
         NumberAxis xAxis = new NumberAxis();
@@ -220,12 +238,16 @@ public class ProgressMonitorController {
         VBox.setVgrow(logPane, Priority.SOMETIMES);
         root.getChildren().add(logPane);
 
+        // Review warning (shown after training completes successfully)
+        root.getChildren().add(reviewWarningLabel);
+
         // Buttons
         HBox buttonBox = new HBox(10);
         buttonBox.setAlignment(Pos.CENTER_RIGHT);
         if (showLossChart) {
             buttonBox.getChildren().add(pauseButton);
             buttonBox.getChildren().add(completeTrainingButton);
+            buttonBox.getChildren().add(reviewButton);
         }
         buttonBox.getChildren().add(cancelButton);
         root.getChildren().add(buttonBox);
@@ -243,6 +265,15 @@ public class ProgressMonitorController {
 
         // Start time updater
         startTimeUpdater();
+    }
+
+    /**
+     * Returns the underlying stage for event handling (e.g., on-hidden cleanup).
+     *
+     * @return the progress monitor stage
+     */
+    public Stage getStage() {
+        return stage;
     }
 
     /**
@@ -426,6 +457,16 @@ public class ProgressMonitorController {
     }
 
     /**
+     * Sets the callback for the "Review Training Areas..." button.
+     * If set, the button is shown after successful training completion.
+     *
+     * @param callback callback to invoke when the review button is clicked
+     */
+    public void setOnReviewTrainingAreas(Consumer<Void> callback) {
+        this.onReviewTrainingAreasCallback = callback;
+    }
+
+    /**
      * Sets the QuPath class colors for IoU chart series styling.
      *
      * @param classColors map of class name to packed RGB color integer
@@ -490,6 +531,14 @@ public class ProgressMonitorController {
                 status.set("Complete");
                 statusLabel.setStyle("-fx-font-weight: bold; -fx-text-fill: green;");
                 detail.set(message);
+
+                // Show review button if callback is wired
+                if (onReviewTrainingAreasCallback != null) {
+                    reviewButton.setVisible(true);
+                    reviewButton.setManaged(true);
+                    reviewWarningLabel.setVisible(true);
+                    reviewWarningLabel.setManaged(true);
+                }
             } else {
                 status.set("Failed");
                 statusLabel.setStyle("-fx-font-weight: bold; -fx-text-fill: red;");

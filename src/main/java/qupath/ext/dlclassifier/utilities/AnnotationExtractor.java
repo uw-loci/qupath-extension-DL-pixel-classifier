@@ -289,6 +289,14 @@ public class AnnotationExtractor {
         int valCount = 0;
         long[] classPixelCounts = new long[classNames.size()];
         long totalLabeledPixels = 0;
+        List<TileManifestEntry> manifestEntries = new ArrayList<>();
+
+        // Derive source image name from server path
+        String sourceImage = server.getMetadata().getName();
+        if (sourceImage == null || sourceImage.isEmpty()) {
+            sourceImage = Path.of(server.getURIs().iterator().next()).getFileName().toString();
+        }
+        String sourceImageId = String.valueOf(sourceImage.hashCode());
 
         for (int p = 0; p < pendingPatches.size(); p++) {
             PendingPatch pp = pendingPatches.get(p);
@@ -302,8 +310,9 @@ public class AnnotationExtractor {
 
             Path imgDir = isValidation ? valImages : trainImages;
             Path maskDir = isValidation ? valMasks : trainMasks;
+            String filename = String.format("patch_%04d.tiff", patchIndex);
 
-            savePatch(image, imgDir.resolve(String.format("patch_%04d.tiff", patchIndex)));
+            savePatch(image, imgDir.resolve(filename));
             saveMask(pp.maskResult().mask(), maskDir.resolve(String.format("patch_%04d.png", patchIndex)));
 
             if (contextScale > 1) {
@@ -313,6 +322,11 @@ public class AnnotationExtractor {
                         pp.location().x(), pp.location().y(), regionSize);
                 savePatch(contextImage, ctxPath);
             }
+
+            String split = isValidation ? "val" : "train";
+            manifestEntries.add(new TileManifestEntry(
+                    filename, pp.location().x(), pp.location().y(),
+                    split, sourceImage, sourceImageId));
 
             for (int i = 0; i < classNames.size(); i++) {
                 classPixelCounts[i] += pp.maskResult().classPixelCounts()[i];
@@ -356,8 +370,11 @@ public class AnnotationExtractor {
         saveConfig(outputDir, classNames, classPixelCounts, totalLabeledPixels,
                 trainCount, valCount, allAnnotations.size(), classWeightMultipliers, classColorMap);
 
+        // Write tile manifest for post-training evaluation
+        writeTileManifest(outputDir, manifestEntries, patchSize, downsample);
+
         return new ExportResult(patchIndex, trainCount, valCount,
-                pixelCounts, totalLabeledPixels);
+                pixelCounts, totalLabeledPixels, manifestEntries);
     }
 
     /**
@@ -381,6 +398,24 @@ public class AnnotationExtractor {
      */
     ExportResult exportTrainingDataWithOffset(Path outputDir, List<String> classNames,
                                               double validationSplit, int startIndex) throws IOException {
+        return exportTrainingDataWithOffset(outputDir, classNames, validationSplit, startIndex, null, null);
+    }
+
+    /**
+     * Exports training data with a patch numbering offset and source image tracking.
+     *
+     * @param outputDir       output directory (with train/images, train/masks, etc.)
+     * @param classNames      list of class names
+     * @param validationSplit fraction for validation
+     * @param startIndex      starting patch index for sequential numbering
+     * @param sourceImage     source image name for manifest, or null to derive from server
+     * @param sourceImageId   source image ID for manifest, or null to derive from name
+     * @return export statistics for this image including manifest entries
+     * @throws IOException if export fails
+     */
+    ExportResult exportTrainingDataWithOffset(Path outputDir, List<String> classNames,
+                                              double validationSplit, int startIndex,
+                                              String sourceImage, String sourceImageId) throws IOException {
         Path trainImages = outputDir.resolve("train/images");
         Path trainMasks = outputDir.resolve("train/masks");
         Path valImages = outputDir.resolve("validation/images");
@@ -446,12 +481,26 @@ public class AnnotationExtractor {
         boolean[] isValidationArr = computeStratifiedSplit(pendingPatches, validationSplit, classNames.size());
         logSplitStatistics(pendingPatches, isValidationArr, classNames);
 
+        // Resolve source image info for manifest
+        String effectiveSourceImage = sourceImage;
+        if (effectiveSourceImage == null || effectiveSourceImage.isEmpty()) {
+            effectiveSourceImage = server.getMetadata().getName();
+            if (effectiveSourceImage == null || effectiveSourceImage.isEmpty()) {
+                effectiveSourceImage = Path.of(server.getURIs().iterator().next()).getFileName().toString();
+            }
+        }
+        String effectiveSourceImageId = sourceImageId;
+        if (effectiveSourceImageId == null || effectiveSourceImageId.isEmpty()) {
+            effectiveSourceImageId = String.valueOf(effectiveSourceImage.hashCode());
+        }
+
         // Phase 3: Read images and write files based on stratified assignment
         int patchIndex = startIndex;
         int trainCount = 0;
         int valCount = 0;
         long[] classPixelCounts = new long[classNames.size()];
         long totalLabeledPixels = 0;
+        List<TileManifestEntry> manifestEntries = new ArrayList<>();
 
         for (int p = 0; p < pendingPatches.size(); p++) {
             PendingPatch pp = pendingPatches.get(p);
@@ -464,8 +513,9 @@ public class AnnotationExtractor {
 
             Path imgDir = isValidation ? valImages : trainImages;
             Path maskDir = isValidation ? valMasks : trainMasks;
+            String filename = String.format("patch_%04d.tiff", patchIndex);
 
-            savePatch(image, imgDir.resolve(String.format("patch_%04d.tiff", patchIndex)));
+            savePatch(image, imgDir.resolve(filename));
             saveMask(pp.maskResult().mask(), maskDir.resolve(String.format("patch_%04d.png", patchIndex)));
 
             if (contextScale > 1) {
@@ -475,6 +525,11 @@ public class AnnotationExtractor {
                         pp.location().x(), pp.location().y(), regionSize);
                 savePatch(contextImage, ctxPath);
             }
+
+            String split = isValidation ? "val" : "train";
+            manifestEntries.add(new TileManifestEntry(
+                    filename, pp.location().x(), pp.location().y(),
+                    split, effectiveSourceImage, effectiveSourceImageId));
 
             for (int i = 0; i < classNames.size(); i++) {
                 classPixelCounts[i] += pp.maskResult().classPixelCounts()[i];
@@ -495,7 +550,8 @@ public class AnnotationExtractor {
             pixelCounts.put(classNames.get(i), classPixelCounts[i]);
         }
 
-        return new ExportResult(exportedCount, trainCount, valCount, pixelCounts, totalLabeledPixels);
+        return new ExportResult(exportedCount, trainCount, valCount, pixelCounts,
+                totalLabeledPixels, manifestEntries);
     }
 
     /**
@@ -660,6 +716,7 @@ public class AnnotationExtractor {
         long totalLabeledPixels = 0;
         int totalAnnotationCount = 0;
         List<String> sourceImages = new ArrayList<>();
+        List<TileManifestEntry> allManifestEntries = new ArrayList<>();
 
         for (ProjectImageEntry<BufferedImage> entry : entries) {
             logger.info("Processing image: {}", entry.getImageName());
@@ -667,14 +724,19 @@ public class AnnotationExtractor {
                 ImageData<BufferedImage> imageData = entry.readImageData();
                 AnnotationExtractor extractor = new AnnotationExtractor(imageData, patchSize, channelConfig, lineStrokeWidth, downsample, contextScale);
 
+                String imageName = entry.getImageName();
+                String imageId = entry.getID();
+
                 ExportResult result = extractor.exportTrainingDataWithOffset(
-                        outputDir, classNames, validationSplit, totalPatchIndex);
+                        outputDir, classNames, validationSplit, totalPatchIndex,
+                        imageName, imageId);
 
                 // Accumulate statistics
                 totalPatchIndex += result.totalPatches();
                 totalTrainCount += result.trainPatches();
                 totalValCount += result.validationPatches();
                 totalLabeledPixels += result.totalLabeledPixels();
+                allManifestEntries.addAll(result.manifestEntries());
 
                 for (int i = 0; i < classNames.size(); i++) {
                     String className = classNames.get(i);
@@ -684,7 +746,7 @@ public class AnnotationExtractor {
                 totalAnnotationCount += imageData.getHierarchy().getAnnotationObjects().stream()
                         .filter(a -> a.getPathClass() != null)
                         .count();
-                sourceImages.add(entry.getImageName());
+                sourceImages.add(imageName);
 
                 imageData.getServer().close();
             } catch (Exception e) {
@@ -723,11 +785,14 @@ public class AnnotationExtractor {
                 channelConfig, patchSize, totalTrainCount, totalValCount,
                 totalAnnotationCount, sourceImages, classWeightMultipliers, downsample, contextScale);
 
+        // Write tile manifest for post-training evaluation
+        writeTileManifest(outputDir, allManifestEntries, patchSize, downsample);
+
         logger.info("Multi-image export complete: {} patches ({} train, {} val) from {} images",
                 totalPatchIndex, totalTrainCount, totalValCount, entries.size());
 
         return new ExportResult(totalPatchIndex, totalTrainCount, totalValCount,
-                pixelCounts, totalLabeledPixels);
+                pixelCounts, totalLabeledPixels, allManifestEntries);
     }
 
     /**
@@ -1299,6 +1364,20 @@ public class AnnotationExtractor {
     private record PatchLocation(int x, int y) {}
 
     /**
+     * Per-tile spatial metadata for post-training evaluation.
+     * Written to tile_manifest.json so the evaluation pass can map
+     * per-tile results back to image locations.
+     */
+    public record TileManifestEntry(
+            String filename,
+            int x,
+            int y,
+            String split,
+            String sourceImage,
+            String sourceImageId
+    ) {}
+
+    /**
      * Result of creating a combined mask.
      */
     private record MaskResult(BufferedImage mask, long[] classPixelCounts, long labeledPixelCount) {}
@@ -1451,15 +1530,24 @@ public class AnnotationExtractor {
     }
 
     /**
-     * Result of the export operation, including class distribution statistics.
+     * Result of the export operation, including class distribution statistics
+     * and per-tile spatial metadata for post-training evaluation.
      */
     public record ExportResult(
             int totalPatches,
             int trainPatches,
             int validationPatches,
             Map<String, Long> classPixelCounts,
-            long totalLabeledPixels
+            long totalLabeledPixels,
+            List<TileManifestEntry> manifestEntries
     ) {
+        /** Backward-compatible constructor without manifest entries. */
+        public ExportResult(int totalPatches, int trainPatches, int validationPatches,
+                            Map<String, Long> classPixelCounts, long totalLabeledPixels) {
+            this(totalPatches, trainPatches, validationPatches, classPixelCounts,
+                    totalLabeledPixels, List.of());
+        }
+
         /**
          * Calculate inverse-frequency class weights for balanced training.
          *
@@ -1476,5 +1564,48 @@ public class AnnotationExtractor {
             }
             return weights;
         }
+    }
+
+    /**
+     * Writes tile_manifest.json alongside config.json in the export directory.
+     *
+     * @param outputDir       the training data output directory
+     * @param entries         per-tile manifest entries
+     * @param patchSize       the patch size used for export
+     * @param downsample      the downsample factor used for export
+     * @throws IOException if writing fails
+     */
+    public static void writeTileManifest(Path outputDir, List<TileManifestEntry> entries,
+                                          int patchSize, double downsample) throws IOException {
+        if (entries.isEmpty()) {
+            return;
+        }
+
+        StringBuilder json = new StringBuilder();
+        json.append("{\n");
+        json.append("  \"version\": 1,\n");
+        json.append("  \"patch_size\": ").append(patchSize).append(",\n");
+        json.append("  \"downsample\": ").append(downsample).append(",\n");
+        json.append("  \"patches\": [\n");
+
+        for (int i = 0; i < entries.size(); i++) {
+            TileManifestEntry e = entries.get(i);
+            json.append("    {\"filename\": \"").append(escapeJson(e.filename()))
+                    .append("\", \"x\": ").append(e.x())
+                    .append(", \"y\": ").append(e.y())
+                    .append(", \"split\": \"").append(e.split())
+                    .append("\", \"source_image\": \"").append(escapeJson(e.sourceImage()))
+                    .append("\", \"source_image_id\": \"").append(escapeJson(e.sourceImageId()))
+                    .append("\"}");
+            if (i < entries.size() - 1) json.append(",");
+            json.append("\n");
+        }
+
+        json.append("  ]\n");
+        json.append("}\n");
+
+        Path manifestPath = outputDir.resolve("tile_manifest.json");
+        Files.writeString(manifestPath, json.toString());
+        logger.info("Wrote tile manifest with {} entries to {}", entries.size(), manifestPath);
     }
 }

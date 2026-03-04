@@ -19,6 +19,7 @@ import qupath.ext.dlclassifier.service.ModelManager;
 import qupath.ext.dlclassifier.service.OverlayService;
 import qupath.ext.dlclassifier.preferences.DLClassifierPreferences;
 import qupath.ext.dlclassifier.ui.ProgressMonitorController;
+import qupath.ext.dlclassifier.ui.TrainingAreaIssuesDialog;
 import qupath.ext.dlclassifier.ui.TrainingDialog;
 import qupath.ext.dlclassifier.utilities.AnnotationExtractor;
 import qupath.fx.dialogs.Dialogs;
@@ -421,8 +422,61 @@ public class TrainingWorkflow {
         progress.setOnCancel(v -> logger.info("Training cancellation requested"));
         progress.show();
 
-        // Shared state for pause/resume
+        // Shared state for pause/resume and review
         final String[] currentJobId = {null};
+        final Path[] trainingDataPathHolder = {null};
+        final String[] modelPathHolder = {null};
+
+        // Wire review training areas callback
+        progress.setOnReviewTrainingAreas(v -> {
+            Path dataPath = trainingDataPathHolder[0];
+            String modelPath = modelPathHolder[0];
+            if (dataPath == null || modelPath == null) {
+                progress.log("Cannot review: training data or model path not available");
+                return;
+            }
+            // Build input config map for evaluation
+            Map<String, Object> inputConfig = ApposeClassifierBackend.buildInputConfig(channelConfig);
+            CompletableFuture.runAsync(() -> {
+                try {
+                    progress.setStatus("Evaluating training tiles...");
+                    progress.log("Starting post-training evaluation...");
+
+                    ClassifierBackend backend = BackendFactory.getBackend();
+                    List<ClassifierClient.TileEvaluationResult> results = backend.evaluateTiles(
+                            Path.of(modelPath),
+                            dataPath,
+                            trainingConfig.getModelType(),
+                            trainingConfig.getBackbone(),
+                            inputConfig,
+                            classNames,
+                            evalProgress -> {
+                                progress.setDetail(evalProgress.message());
+                                double pct = evalProgress.totalTiles() > 0
+                                        ? (double) evalProgress.currentTile() / evalProgress.totalTiles()
+                                        : -1;
+                                progress.setOverallProgress(pct);
+                            },
+                            () -> false
+                    );
+
+                    progress.setStatus("Complete");
+                    progress.setOverallProgress(1.0);
+                    progress.log("Evaluation complete: " + results.size() + " tiles analyzed");
+
+                    // Open the results dialog on the FX thread
+                    Platform.runLater(() -> {
+                        TrainingAreaIssuesDialog dialog = new TrainingAreaIssuesDialog(
+                                classifierName, results, trainingConfig.getDownsample());
+                        dialog.show();
+                    });
+                } catch (Exception e) {
+                    logger.error("Tile evaluation failed", e);
+                    progress.log("ERROR: Evaluation failed: " + e.getMessage());
+                    progress.setStatus("Complete");
+                }
+            });
+        });
 
         // Wire pause callback
         progress.setOnPause(v -> {
@@ -465,7 +519,8 @@ public class TrainingWorkflow {
                 TrainingResult result = trainCore(classifierName, description, handler,
                         trainingConfig, channelConfig, classNames,
                         null, selectedImages, progress, currentJobId,
-                        classColors, finalClassifierId, finalModelOutputDir);
+                        classColors, finalClassifierId, finalModelOutputDir,
+                        trainingDataPathHolder, modelPathHolder);
 
                 if (result.success()) {
                     progress.complete(true, String.format(
@@ -478,9 +533,22 @@ public class TrainingWorkflow {
                     logger.info("Training paused, waiting for user action");
                 } else {
                     progress.complete(false, result.message());
+                    // Clean up training data on failure (not needed for review)
+                    cleanupTempDir(trainingDataPathHolder[0]);
+                    trainingDataPathHolder[0] = null;
                 }
             } finally {
                 overlayService.resumeAfterTraining();
+            }
+        });
+
+        // Clean up training data when the progress dialog is closed
+        progress.getStage().setOnHidden(e -> {
+            Path dataPath = trainingDataPathHolder[0];
+            if (dataPath != null) {
+                cleanupTempDir(dataPath);
+                trainingDataPathHolder[0] = null;
+                logger.info("Cleaned up training data on dialog close");
             }
         });
     }
@@ -578,6 +646,47 @@ public class TrainingWorkflow {
                                     Map<String, Integer> classColors,
                                     String classifierId,
                                     Path modelOutputDir) {
+        return trainCore(classifierName, description, handler, trainingConfig,
+                channelConfig, classNames, imageData, selectedImages, progress,
+                jobIdHolder, classColors, classifierId, modelOutputDir, null, null);
+    }
+
+    /**
+     * Core training logic shared by GUI and headless paths.
+     *
+     * @param classifierName        name for the classifier
+     * @param description           classifier description
+     * @param handler               the classifier handler
+     * @param trainingConfig        training configuration
+     * @param channelConfig         channel configuration
+     * @param classNames            list of class names
+     * @param imageData             image data for single-image mode
+     * @param selectedImages        project images for multi-image training, or null
+     * @param progress              progress monitor (nullable for headless execution)
+     * @param jobIdHolder           optional array to receive the job ID
+     * @param classColors           map of class name to packed RGB color, or null
+     * @param classifierId          pre-generated classifier ID, or null
+     * @param modelOutputDir        project-local model output directory, or null
+     * @param trainingDataPathHolder if non-null, element 0 is set to the training data temp dir;
+     *                               caller is responsible for cleanup. If null, tempDir is cleaned up.
+     * @param modelPathHolder       if non-null, element 0 is set to the saved model path on success
+     * @return the training result
+     */
+    static TrainingResult trainCore(String classifierName,
+                                    String description,
+                                    ClassifierHandler handler,
+                                    TrainingConfig trainingConfig,
+                                    ChannelConfiguration channelConfig,
+                                    List<String> classNames,
+                                    ImageData<BufferedImage> imageData,
+                                    List<ProjectImageEntry<BufferedImage>> selectedImages,
+                                    ProgressMonitorController progress,
+                                    String[] jobIdHolder,
+                                    Map<String, Integer> classColors,
+                                    String classifierId,
+                                    Path modelOutputDir,
+                                    Path[] trainingDataPathHolder,
+                                    String[] modelPathHolder) {
         Path tempDir = null;
         try {
             if (progress != null) {
@@ -598,6 +707,9 @@ public class TrainingWorkflow {
             }
             logger.info("Exporting training data to: {}", tempDir);
             if (progress != null) progress.log("Export directory: " + tempDir);
+            if (trainingDataPathHolder != null && trainingDataPathHolder.length > 0) {
+                trainingDataPathHolder[0] = tempDir;
+            }
 
             Map<String, Double> weightMultipliers = trainingConfig.getClassWeightMultipliers();
 
@@ -774,6 +886,9 @@ public class TrainingWorkflow {
 
             logger.info("Training completed. Model saved to: {}", serverResult.modelPath());
             if (progress != null) progress.log("Training completed. Model path: " + serverResult.modelPath());
+            if (modelPathHolder != null && modelPathHolder.length > 0) {
+                modelPathHolder[0] = serverResult.modelPath();
+            }
 
             // Build and save metadata
             if (progress != null) progress.setStatus("Saving classifier...");
@@ -835,7 +950,10 @@ public class TrainingWorkflow {
             return new TrainingResult(null, classifierName, 0, 0, 0, 0.0, 0, false,
                     "Training failed: " + e.getMessage());
         } finally {
-            cleanupTempDir(tempDir);
+            // Skip cleanup if caller wants to keep training data for post-training review
+            if (trainingDataPathHolder == null) {
+                cleanupTempDir(tempDir);
+            }
         }
     }
 

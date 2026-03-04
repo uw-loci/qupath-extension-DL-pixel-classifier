@@ -486,6 +486,143 @@ public class ApposeClassifierBackend implements ClassifierBackend {
                 bestEpoch, bestMeanIoU);
     }
 
+    // ==================== Evaluation ====================
+
+    @Override
+    public List<ClassifierClient.TileEvaluationResult> evaluateTiles(
+            Path modelPath,
+            Path trainingDataPath,
+            String architecture,
+            String backbone,
+            Map<String, Object> inputConfig,
+            List<String> classNames,
+            Consumer<ClassifierClient.EvaluationProgress> progressCallback,
+            Supplier<Boolean> cancelledCheck) throws IOException {
+
+        ApposeService appose = ApposeService.getInstance();
+
+        Map<String, Object> archMap = new HashMap<>();
+        archMap.put("type", architecture);
+        archMap.put("backbone", backbone);
+        archMap.put("use_pretrained", false); // Loading trained weights, not ImageNet
+        // Propagate context scale if present in input config
+        Object contextScale = inputConfig.get("context_scale");
+        if (contextScale != null) {
+            archMap.put("context_scale", contextScale);
+        }
+
+        Map<String, Object> inputs = new HashMap<>();
+        inputs.put("model_path", modelPath.toString());
+        inputs.put("data_path", trainingDataPath.toString());
+        inputs.put("architecture", archMap);
+        inputs.put("input_config", inputConfig);
+        inputs.put("classes", classNames);
+
+        ClassLoader extensionCL = ApposeService.class.getClassLoader();
+        ClassLoader originalCL = Thread.currentThread().getContextClassLoader();
+        Thread.currentThread().setContextClassLoader(extensionCL);
+
+        try {
+            Task task = appose.createTask("evaluate_tiles", inputs);
+
+            // Listen for progress events
+            task.listen(event -> {
+                if (event.responseType == ResponseType.UPDATE && event.message != null) {
+                    try {
+                        JsonObject msg = JsonParser.parseString(event.message).getAsJsonObject();
+                        int currentTile = msg.has("current_tile") ? msg.get("current_tile").getAsInt() : 0;
+                        int totalTiles = msg.has("total_tiles") ? msg.get("total_tiles").getAsInt() : 0;
+                        if (progressCallback != null) {
+                            progressCallback.accept(new ClassifierClient.EvaluationProgress(
+                                    currentTile, totalTiles,
+                                    String.format("Evaluating tile %d/%d", currentTile, totalTiles)));
+                        }
+                    } catch (Exception e) {
+                        logger.debug("Failed to parse evaluation progress: {}", e.getMessage());
+                    }
+                }
+            });
+
+            task.start();
+
+            // Poll for cancellation
+            Thread cancelThread = new Thread(() -> {
+                Thread.currentThread().setContextClassLoader(extensionCL);
+                while (!task.status.isFinished()) {
+                    if (cancelledCheck != null && cancelledCheck.get()) {
+                        logger.info("Evaluation cancel requested");
+                        task.cancel();
+                        break;
+                    }
+                    try {
+                        Thread.sleep(500);
+                    } catch (InterruptedException e) {
+                        Thread.currentThread().interrupt();
+                        break;
+                    }
+                }
+            }, "DLClassifier-ApposeEvalCancel");
+            cancelThread.setDaemon(true);
+            cancelThread.start();
+
+            task.waitFor();
+
+            // Parse results
+            String resultsJson = String.valueOf(task.outputs.get("results"));
+            return parseEvaluationResults(resultsJson);
+
+        } catch (Exception e) {
+            if (e.getMessage() != null && e.getMessage().contains("CANCELED")) {
+                logger.info("Evaluation cancelled");
+                return List.of();
+            }
+            throw new IOException("Evaluation failed: " + e.getMessage(), e);
+        } finally {
+            Thread.currentThread().setContextClassLoader(originalCL);
+        }
+    }
+
+    /**
+     * Parses the JSON evaluation results from the Python script.
+     */
+    @SuppressWarnings("unchecked")
+    private List<ClassifierClient.TileEvaluationResult> parseEvaluationResults(String json) {
+        List<ClassifierClient.TileEvaluationResult> results = new ArrayList<>();
+        if (json == null || json.isEmpty() || "null".equals(json)) {
+            return results;
+        }
+
+        var jsonArray = JsonParser.parseString(json).getAsJsonArray();
+        for (var element : jsonArray) {
+            var obj = element.getAsJsonObject();
+
+            Map<String, Double> perClassIoU = new LinkedHashMap<>();
+            if (obj.has("per_class_iou") && !obj.get("per_class_iou").isJsonNull()) {
+                var iouObj = obj.getAsJsonObject("per_class_iou");
+                for (var entry : iouObj.entrySet()) {
+                    if (!entry.getValue().isJsonNull()) {
+                        perClassIoU.put(entry.getKey(), entry.getValue().getAsDouble());
+                    }
+                }
+            }
+
+            results.add(new ClassifierClient.TileEvaluationResult(
+                    obj.has("filename") ? obj.get("filename").getAsString() : "",
+                    obj.has("split") ? obj.get("split").getAsString() : "",
+                    obj.has("loss") ? obj.get("loss").getAsDouble() : 0.0,
+                    obj.has("disagreement_pct") ? obj.get("disagreement_pct").getAsDouble() : 0.0,
+                    perClassIoU,
+                    obj.has("mean_iou") ? obj.get("mean_iou").getAsDouble() : 0.0,
+                    obj.has("x") ? obj.get("x").getAsInt() : 0,
+                    obj.has("y") ? obj.get("y").getAsInt() : 0,
+                    obj.has("source_image") ? obj.get("source_image").getAsString() : "",
+                    obj.has("source_image_id") ? obj.get("source_image_id").getAsString() : ""
+            ));
+        }
+
+        return results;
+    }
+
     // ==================== Inference ====================
 
     @Override
@@ -926,7 +1063,13 @@ public class ApposeClassifierBackend implements ClassifierBackend {
      * Includes normalization strategy, per-channel flag, clip percentile,
      * fixed min/max range, and precomputed image-level stats when available.
      */
-    private static Map<String, Object> buildInputConfig(ChannelConfiguration channelConfig) {
+    /**
+     * Builds the input config map for Python scripts from a channel configuration.
+     *
+     * @param channelConfig channel configuration
+     * @return input config map
+     */
+    public static Map<String, Object> buildInputConfig(ChannelConfiguration channelConfig) {
         Map<String, Object> inputConfig = new HashMap<>();
         inputConfig.put("num_channels", channelConfig.getNumChannels());
         inputConfig.put("selected_channels", channelConfig.getSelectedChannels());

@@ -8,7 +8,8 @@ Training a classifier involves:
 1. Preparing annotated training data in QuPath
 2. Configuring the model and training parameters
 3. Running training with progress monitoring
-4. Verifying the trained model
+4. Reviewing training areas to identify annotation issues (optional)
+5. Verifying the trained model
 
 ## Step 1: Prepare Annotations
 
@@ -194,7 +195,49 @@ Click **Start Training**. A progress window shows:
 - **Diverging losses** (val goes up, train goes down) = overfitting
 - **Both losses plateau** = model has converged
 
-## Step 8: Verify the Result
+## Step 8: Review Training Areas (Optional)
+
+When training completes successfully, a **"Review Training Areas..."** button appears in the progress dialog. This runs the trained model over all training tiles and ranks them by loss to help you identify annotation errors, hard cases, and model failures.
+
+> **Important:** Training tiles are cleaned up when you close the progress dialog. Review your training areas *before* closing.
+
+### How it works
+
+1. Click **"Review Training Areas..."** in the completed training progress dialog
+2. The model evaluates every training tile (train + val splits) and computes per-tile metrics
+3. A results dialog opens showing tiles sorted by loss (highest first)
+
+### The Training Area Issues dialog
+
+| Column | Description |
+|--------|-------------|
+| **Image** | Source image name (for multi-image training) |
+| **Split** | Whether the tile was in the train or val split |
+| **Loss** | Cross-entropy loss -- higher = model disagrees more with annotation |
+| **Disagree%** | Percentage of pixels where prediction differs from annotation |
+| **mIoU** | Mean Intersection-over-Union across classes present in the tile |
+| **Classes** | Which classes are present in the tile |
+
+### Filtering and navigation
+
+- **Filter by split**: Use the dropdown to show only train or val tiles
+- **Loss threshold**: Use the slider to show only tiles above a minimum loss
+- **Double-click a row** to navigate the QuPath viewer to that tile's location
+- For multi-image projects, double-clicking automatically switches to the correct image
+
+### What to look for
+
+| Pattern | Likely cause | Action |
+|---------|-------------|--------|
+| Very high loss on a few tiles | Annotation error (wrong class) | Fix the annotation and retrain |
+| High loss cluster in one region | Inconsistent annotation criteria | Re-annotate the region consistently |
+| High loss on val but not train | Model memorizing, not generalizing | Add more diverse annotations |
+| High disagreement on boundaries | Normal -- boundaries are hardest | Consider annotating boundaries more carefully |
+| Entire class has high loss | Class may be poorly defined | Check if the class has consistent visual features |
+
+See [BEST_PRACTICES.md](BEST_PRACTICES.md#interpreting-tile-evaluation-results) for detailed guidance on interpreting results and improving annotations.
+
+## Step 9: Verify the Result
 
 When training completes, the classifier is saved to your QuPath project under `classifiers/`. View it via **Extensions > DL Pixel Classifier > Manage Models...**
 

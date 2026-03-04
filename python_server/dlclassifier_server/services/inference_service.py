@@ -25,6 +25,7 @@ from PIL import Image
 
 from .gpu_manager import GPUManager, get_gpu_manager
 from ..utils.normalization import normalize as normalize_image
+from ..utils.batchrenorm import replace_bn_with_batchrenorm
 
 logger = logging.getLogger(__name__)
 
@@ -716,6 +717,10 @@ class InferenceService:
                 in_channels=num_channels,
                 classes=num_classes
             )
+
+            # Replace BatchNorm with BatchRenorm if model was trained with it
+            if arch.get("use_batchrenorm", False):
+                replace_bn_with_batchrenorm(model)
 
             model.load_state_dict(
                 torch.load(pt_path, map_location=self.device, weights_only=True)

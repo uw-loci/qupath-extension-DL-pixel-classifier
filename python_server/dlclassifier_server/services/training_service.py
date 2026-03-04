@@ -31,6 +31,9 @@ from PIL import Image
 from .gpu_manager import GPUManager, get_gpu_manager
 from ..utils.normalization import normalize as normalize_image
 from ..utils.normalization import compute_dataset_stats
+from ..utils.batchrenorm import (
+    replace_bn_with_batchrenorm, set_batchrenorm_limits
+)
 
 logger = logging.getLogger(__name__)
 
@@ -656,6 +659,14 @@ class TrainingService:
                 num_channels=effective_channels,
                 num_classes=len(classes)
             )
+
+        # Replace BatchNorm with BatchRenorm to eliminate tiling artifacts
+        # during sliding-window inference (see arXiv:2503.19545).
+        # Start with rmax=1, dmax=0 (equivalent to BatchNorm) and warm up
+        # to rmax=3, dmax=5 over the first 20% of epochs.
+        replace_bn_with_batchrenorm(model)
+        set_batchrenorm_limits(model, rmax=1.0, dmax=0.0)
+
         model = model.to(self.device)
 
         # Load pretrained weights from a previously trained model (fine-tuning).
@@ -1200,6 +1211,12 @@ class TrainingService:
         best_accuracy = 0.0
         best_mean_iou = 0.0
 
+        # BatchRenorm warmup: linearly increase rmax/dmax over first 20% of
+        # epochs from BatchNorm-equivalent (1, 0) to full BatchRenorm (3, 5).
+        brenorm_warmup_epochs = max(1, int(epochs * 0.2))
+        brenorm_rmax_target = 3.0
+        brenorm_dmax_target = 5.0
+
         for epoch in range(start_epoch, epochs):
             # Progressive resizing: switch to full resolution at phase boundary
             if progressive_resize and epoch == phase1_end_epoch and checkpoint_path is None:
@@ -1236,6 +1253,22 @@ class TrainingService:
 
             # Get current learning rate
             current_lr = optimizer.param_groups[0]["lr"]
+
+            # BatchRenorm warmup: relax clipping bounds gradually
+            if epoch < brenorm_warmup_epochs:
+                progress = (epoch + 1) / brenorm_warmup_epochs
+                cur_rmax = 1.0 + (brenorm_rmax_target - 1.0) * progress
+                cur_dmax = brenorm_dmax_target * progress
+                set_batchrenorm_limits(model, rmax=cur_rmax, dmax=cur_dmax)
+                if epoch == 0:
+                    logger.info(
+                        f"BatchRenorm warmup: {brenorm_warmup_epochs} epochs "
+                        f"(rmax 1->{brenorm_rmax_target}, "
+                        f"dmax 0->{brenorm_dmax_target})")
+            elif epoch == brenorm_warmup_epochs:
+                # Ensure final values are set exactly
+                set_batchrenorm_limits(
+                    model, rmax=brenorm_rmax_target, dmax=brenorm_dmax_target)
 
             # Train epoch
             model.train()
@@ -1982,6 +2015,7 @@ class TrainingService:
             "name": f"{model_type.upper()} Classifier",
             "architecture": {
                 "type": model_type,
+                "use_batchrenorm": True,
                 **architecture
             },
             "input_config": input_config,

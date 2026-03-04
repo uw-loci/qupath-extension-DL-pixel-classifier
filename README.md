@@ -26,6 +26,7 @@ A QuPath extension for deep learning-based pixel classification, supporting both
 - **Groovy scripting API** for batch processing
 - **Headless builder API** for running workflows without GUI
 - **"Copy as Script" buttons** in dialogs for reproducible workflows
+- **Post-training tile evaluation** identifies annotation errors and hard cases by running the model over all training tiles and ranking by loss
 - **Hierarchical geometry union** for efficient ROI merging
 
 ## Installation
@@ -140,6 +141,7 @@ qupath-extension-DL-pixel-classifier/
 │   │   ├── LayerFreezePanel.java
 │   │   ├── ProgressMonitorController.java
 │   │   ├── PythonConsoleWindow.java
+│   │   ├── TrainingAreaIssuesDialog.java  # Post-training tile evaluation results
 │   │   └── TooltipHelper.java
 │   ├── scripting/
 │   │   ├── DLClassifierScripts.java   # Groovy API

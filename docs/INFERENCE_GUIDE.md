@@ -76,7 +76,7 @@ The **blend mode** controls how overlapping predictions merge:
 
 ### Image-level normalization
 
-The extension automatically computes normalization statistics across the entire image before starting inference. This ensures all tiles receive identical normalization, eliminating the "blocky" tile boundary artifacts that occur when each tile independently computes its own statistics.
+The extension automatically computes normalization statistics across the entire image before starting inference. This ensures all tiles receive identical input normalization, eliminating the "blocky" tile boundary artifacts that occur when each tile independently computes its own statistics.
 
 **Priority order:**
 1. **Training dataset statistics** (best) -- stored in model metadata for newly trained models
@@ -84,6 +84,10 @@ The extension automatically computes normalization statistics across the entire 
 3. **Per-tile normalization** -- fallback if sampling fails
 
 This is fully automatic and requires no configuration.
+
+### BatchRenorm (model-internal normalization)
+
+Newly trained models use **BatchRenorm** instead of standard BatchNorm for the network's internal normalization layers. Standard BatchNorm causes a train/eval disparity: running statistics accumulated during training diverge from actual tile statistics during inference, creating artifacts that no amount of overlap or blending can fix. BatchRenorm uses consistent global statistics in both modes, producing seamless tiled predictions. Older models trained with standard BatchNorm will continue to work but may exhibit more visible tile boundaries.
 
 ## Step 6: Set Application Scope
 

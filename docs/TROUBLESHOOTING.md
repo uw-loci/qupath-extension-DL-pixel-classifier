@@ -138,9 +138,11 @@ Quick checklist:
 
 ### Tile seams visible in output
 
-Image-level normalization (enabled by default) should eliminate most tile boundary artifacts. If seams are still visible:
+Newly trained models use **BatchRenorm** normalization layers, which eliminate tiling artifacts caused by the neural network's internal normalization. Combined with image-level input normalization (enabled by default), this addresses both sources of tile boundary artifacts.
 
-- **Re-train the model** -- newly trained models save training dataset normalization statistics in metadata, giving the best cross-tile consistency
+If seams are still visible:
+
+- **Re-train the model** -- new models use BatchRenorm and save dataset normalization statistics, giving the best cross-tile consistency. Older models trained with standard BatchNorm are more susceptible to tiling artifacts.
 - Increase tile overlap percentage (10-15% recommended)
 - Use LINEAR or GAUSSIAN blend mode instead of NONE
 - Verify overlap is not 0%
@@ -159,6 +161,43 @@ Image-level normalization (enabled by default) should eliminate most tile bounda
 - Reduce tile overlap (but quality may suffer)
 - Use NONE blend mode for fastest processing (quality trade-off)
 - Process selected annotations first to estimate total time
+
+## Tile Evaluation Issues
+
+### "Review Training Areas..." button doesn't appear
+
+The button only appears when training completes successfully. It will not appear if:
+- Training was cancelled
+- Training failed with an error
+- The training data path is no longer available
+
+### Evaluation is slow
+
+Tile evaluation runs the model over every training tile. Time depends on:
+- Number of tiles (more annotations = more tiles)
+- GPU vs CPU (GPU is much faster)
+- Model complexity (larger backbones take longer)
+
+The evaluation progress bar shows which tile is being processed. You can cancel the evaluation at any time.
+
+### "Training tiles are cleaned up when this dialog closes"
+
+This is expected behavior. Training tiles are stored in a temporary directory and are deleted when you close the progress dialog. To review training areas, click the button **before** closing the dialog.
+
+If you need to re-evaluate, retrain the model -- the evaluation can only run while the training tiles still exist.
+
+### Double-click navigation doesn't work
+
+- Verify the image is still in the project
+- For multi-image training, the dialog attempts to switch to the correct image automatically. If the image was renamed or removed from the project, navigation will fail.
+- Check the QuPath log (**View > Show log**) for error messages
+
+### High loss on most tiles
+
+If nearly all tiles show high loss, the model likely did not train well:
+- Check training loss curves -- did the model converge?
+- Verify annotations are correct and consistent
+- See [BEST_PRACTICES.md](BEST_PRACTICES.md#interpreting-tile-evaluation-results) for improvement strategies
 
 ## Extension Issues
 

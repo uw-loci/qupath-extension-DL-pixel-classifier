@@ -222,6 +222,33 @@ public interface ClassifierBackend {
             ChannelConfiguration channelConfig,
             InferenceConfig inferenceConfig) throws IOException;
 
+    // ==================== Evaluation ====================
+
+    /**
+     * Evaluates all training tiles against the trained model to identify
+     * annotation errors and hard cases.
+     *
+     * @param modelPath        path to the trained model directory
+     * @param trainingDataPath path to training data directory (containing tile_manifest.json)
+     * @param architecture     model architecture name (e.g. "unet")
+     * @param backbone         encoder backbone name (e.g. "resnet34")
+     * @param inputConfig      channel configuration as map
+     * @param classNames       list of class names
+     * @param progressCallback callback for progress updates
+     * @param cancelledCheck   supplier that returns true when cancelled
+     * @return list of per-tile evaluation results sorted by loss descending
+     * @throws IOException if evaluation fails
+     */
+    List<ClassifierClient.TileEvaluationResult> evaluateTiles(
+            Path modelPath,
+            Path trainingDataPath,
+            String architecture,
+            String backbone,
+            Map<String, Object> inputConfig,
+            List<String> classNames,
+            Consumer<ClassifierClient.EvaluationProgress> progressCallback,
+            Supplier<Boolean> cancelledCheck) throws IOException;
+
     // ==================== Pretrained Model Info ====================
 
     /**
