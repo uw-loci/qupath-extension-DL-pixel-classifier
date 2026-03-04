@@ -415,7 +415,7 @@ public class InferenceDialog {
             int row = 0;
 
             // Tile size
-            tileSizeSpinner = new Spinner<>(64, 1024, DLClassifierPreferences.getTileSize(), 64);
+            tileSizeSpinner = new Spinner<>(64, 8192, DLClassifierPreferences.getTileSize(), 64);
             tileSizeSpinner.setEditable(true);
             tileSizeSpinner.setPrefWidth(100);
             TooltipHelper.install(tileSizeSpinner,

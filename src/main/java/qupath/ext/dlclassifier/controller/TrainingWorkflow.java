@@ -715,6 +715,48 @@ public class TrainingWorkflow {
 
             Map<String, Double> weightMultipliers = trainingConfig.getClassWeightMultipliers();
 
+            // Compute effective tile size (whole-image mode uses actual image dimensions)
+            int effectiveTileSize;
+            if (trainingConfig.isWholeImage()) {
+                int maxW = 0, maxH = 0;
+                if (selectedImages != null && !selectedImages.isEmpty()) {
+                    for (ProjectImageEntry<BufferedImage> entry : selectedImages) {
+                        try {
+                            ImageData<BufferedImage> entryData = entry.readImageData();
+                            maxW = Math.max(maxW, entryData.getServer().getWidth());
+                            maxH = Math.max(maxH, entryData.getServer().getHeight());
+                            entryData.getServer().close();
+                        } catch (Exception e) {
+                            logger.warn("Could not read dimensions for {}: {}",
+                                    entry.getImageName(), e.getMessage());
+                        }
+                    }
+                } else if (imageData != null) {
+                    maxW = imageData.getServer().getWidth();
+                    maxH = imageData.getServer().getHeight();
+                }
+                effectiveTileSize = trainingConfig.computeEffectiveTileSize(maxW, maxH);
+                logger.info("Whole-image mode: max dimensions {}x{}, effective tile size {}",
+                        maxW, maxH, effectiveTileSize);
+                if (progress != null) {
+                    progress.log("Whole-image mode: effective tile size " + effectiveTileSize
+                            + "px (from " + maxW + "x" + maxH + " image)");
+                }
+            } else {
+                effectiveTileSize = trainingConfig.getTileSize();
+            }
+
+            // Auto-reduce batch size for large tiles to prevent GPU OOM
+            trainingConfig.adjustBatchForTileSize(effectiveTileSize);
+            if (trainingConfig.getBatchSize() == 1 && progress != null
+                    && trainingConfig.getGradientAccumulationSteps() > 1) {
+                progress.log(String.format(
+                        "Large tile size (%dpx): batch reduced to 1, gradient accumulation %d "
+                        + "(effective batch %d)",
+                        effectiveTileSize, trainingConfig.getGradientAccumulationSteps(),
+                        trainingConfig.getGradientAccumulationSteps()));
+            }
+
             int patchCount;
             if (selectedImages != null && !selectedImages.isEmpty()) {
                 // Multi-image project export
@@ -724,7 +766,7 @@ public class TrainingWorkflow {
                 }
                 AnnotationExtractor.ExportResult exportResult = AnnotationExtractor.exportFromProject(
                         selectedImages,
-                        trainingConfig.getTileSize(),
+                        effectiveTileSize,
                         channelConfig,
                         classNames,
                         tempDir,
@@ -739,7 +781,7 @@ public class TrainingWorkflow {
                 // Single-image export
                 AnnotationExtractor extractor = new AnnotationExtractor(
                         imageData,
-                        trainingConfig.getTileSize(),
+                        effectiveTileSize,
                         channelConfig,
                         trainingConfig.getLineStrokeWidth(),
                         trainingConfig.getDownsample(),
@@ -912,7 +954,7 @@ public class TrainingWorkflow {
                     .contextScale(trainingConfig.getContextScale())
                     .downsample(trainingConfig.getDownsample())
                     .expectedChannelNames(channelConfig.getChannelNames())
-                    .inputSize(trainingConfig.getTileSize(), trainingConfig.getTileSize())
+                    .inputSize(effectiveTileSize, effectiveTileSize)
                     .classes(classInfoList)
                     .normalizationStrategy(channelConfig.getNormalizationStrategy())
                     .bitDepthTrained(channelConfig.getBitDepth())
@@ -1036,12 +1078,44 @@ public class TrainingWorkflow {
             } else {
                 tempDir = Files.createTempDirectory("dl-training-resume");
             }
+            // Compute effective tile size for resume (same logic as trainCore)
+            int effectiveTileSize;
+            if (trainingConfig.isWholeImage()) {
+                int maxW = 0, maxH = 0;
+                if (selectedImages != null && !selectedImages.isEmpty()) {
+                    for (ProjectImageEntry<BufferedImage> entry : selectedImages) {
+                        try {
+                            ImageData<BufferedImage> entryData = entry.readImageData();
+                            maxW = Math.max(maxW, entryData.getServer().getWidth());
+                            maxH = Math.max(maxH, entryData.getServer().getHeight());
+                            entryData.getServer().close();
+                        } catch (Exception e) {
+                            logger.warn("Could not read dimensions for {}: {}",
+                                    entry.getImageName(), e.getMessage());
+                        }
+                    }
+                } else {
+                    ImageData<BufferedImage> currentImageData = qupath.getImageData();
+                    if (currentImageData != null) {
+                        maxW = currentImageData.getServer().getWidth();
+                        maxH = currentImageData.getServer().getHeight();
+                    }
+                }
+                effectiveTileSize = trainingConfig.computeEffectiveTileSize(maxW, maxH);
+                progress.log("Whole-image mode: effective tile size " + effectiveTileSize + "px");
+            } else {
+                effectiveTileSize = trainingConfig.getTileSize();
+            }
+
+            // Auto-reduce batch size for large tiles
+            trainingConfig.adjustBatchForTileSize(effectiveTileSize);
+
             Map<String, Double> resumeMultipliers = trainingConfig.getClassWeightMultipliers();
             int patchCount;
             if (selectedImages != null && !selectedImages.isEmpty()) {
                 AnnotationExtractor.ExportResult exportResult = AnnotationExtractor.exportFromProject(
                         selectedImages,
-                        trainingConfig.getTileSize(),
+                        effectiveTileSize,
                         channelConfig,
                         classNames,
                         tempDir,
@@ -1055,7 +1129,7 @@ public class TrainingWorkflow {
             } else {
                 ImageData<BufferedImage> imageData = qupath.getImageData();
                 AnnotationExtractor extractor = new AnnotationExtractor(
-                        imageData, trainingConfig.getTileSize(), channelConfig,
+                        imageData, effectiveTileSize, channelConfig,
                         trainingConfig.getLineStrokeWidth(), trainingConfig.getDownsample(),
                         trainingConfig.getContextScale());
                 AnnotationExtractor.ExportResult exportResult = extractor.exportTrainingData(
@@ -1159,7 +1233,7 @@ public class TrainingWorkflow {
                         .contextScale(trainingConfig.getContextScale())
                         .downsample(trainingConfig.getDownsample())
                         .expectedChannelNames(channelConfig.getChannelNames())
-                        .inputSize(trainingConfig.getTileSize(), trainingConfig.getTileSize())
+                        .inputSize(effectiveTileSize, effectiveTileSize)
                         .classes(classInfoList)
                         .normalizationStrategy(channelConfig.getNormalizationStrategy())
                         .bitDepthTrained(channelConfig.getBitDepth())
@@ -1239,6 +1313,32 @@ public class TrainingWorkflow {
                     : classifierName.toLowerCase().replaceAll("[^a-z0-9_-]", "_")
                       + "_" + System.currentTimeMillis();
 
+            // Compute effective tile size for metadata
+            int effectiveTileSize = trainingConfig.getTileSize();
+            if (trainingConfig.isWholeImage()) {
+                int maxW = 0, maxH = 0;
+                if (selectedImages != null && !selectedImages.isEmpty()) {
+                    for (ProjectImageEntry<BufferedImage> entry : selectedImages) {
+                        try {
+                            ImageData<BufferedImage> entryData = entry.readImageData();
+                            maxW = Math.max(maxW, entryData.getServer().getWidth());
+                            maxH = Math.max(maxH, entryData.getServer().getHeight());
+                            entryData.getServer().close();
+                        } catch (Exception e) {
+                            logger.warn("Could not read dimensions for {}: {}",
+                                    entry.getImageName(), e.getMessage());
+                        }
+                    }
+                } else {
+                    ImageData<BufferedImage> currentImageData = qupath.getImageData();
+                    if (currentImageData != null) {
+                        maxW = currentImageData.getServer().getWidth();
+                        maxH = currentImageData.getServer().getHeight();
+                    }
+                }
+                effectiveTileSize = trainingConfig.computeEffectiveTileSize(maxW, maxH);
+            }
+
             List<ClassifierMetadata.ClassInfo> classInfoList = buildClassInfoList(classNames, classColors);
 
             ClassifierMetadata metadata = ClassifierMetadata.builder()
@@ -1251,7 +1351,7 @@ public class TrainingWorkflow {
                     .contextScale(trainingConfig.getContextScale())
                     .downsample(trainingConfig.getDownsample())
                     .expectedChannelNames(channelConfig.getChannelNames())
-                    .inputSize(trainingConfig.getTileSize(), trainingConfig.getTileSize())
+                    .inputSize(effectiveTileSize, effectiveTileSize)
                     .classes(classInfoList)
                     .normalizationStrategy(channelConfig.getNormalizationStrategy())
                     .bitDepthTrained(channelConfig.getBitDepth())

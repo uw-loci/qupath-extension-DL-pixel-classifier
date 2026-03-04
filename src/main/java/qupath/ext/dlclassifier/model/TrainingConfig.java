@@ -71,10 +71,19 @@ public class TrainingConfig {
     // Continue training: path to a previously trained model's .pt file to load weights from
     private final String pretrainedModelPath;
 
+    // Whole-image mode: use entire image as a single training tile (no tiling)
+    private final boolean wholeImage;
+
     // Transient runtime field: project-local directory for model output.
     // Not part of equals/hashCode/builder -- set at runtime by TrainingWorkflow
     // to redirect model saving directly into the project's classifiers directory.
     private String modelOutputDir;
+
+    // Transient runtime overrides: batch size reduction for large whole-image tiles.
+    // When set (> 0), these override the builder-configured values so that
+    // downstream code (backend, serialization) automatically uses the safe values.
+    private int runtimeBatchSize = -1;
+    private int runtimeGradAccumSteps = -1;
 
     private TrainingConfig(Builder builder) {
         this.modelType = builder.modelType;
@@ -105,6 +114,7 @@ public class TrainingConfig {
         this.gradientAccumulationSteps = builder.gradientAccumulationSteps;
         this.progressiveResize = builder.progressiveResize;
         this.pretrainedModelPath = builder.pretrainedModelPath;
+        this.wholeImage = builder.wholeImage;
     }
 
     // Getters
@@ -122,7 +132,7 @@ public class TrainingConfig {
     }
 
     public int getBatchSize() {
-        return batchSize;
+        return runtimeBatchSize > 0 ? runtimeBatchSize : batchSize;
     }
 
     public double getLearningRate() {
@@ -326,7 +336,7 @@ public class TrainingConfig {
      * @return accumulation steps (1 = no accumulation)
      */
     public int getGradientAccumulationSteps() {
-        return gradientAccumulationSteps;
+        return runtimeGradAccumSteps > 0 ? runtimeGradAccumSteps : gradientAccumulationSteps;
     }
 
     /**
@@ -360,6 +370,38 @@ public class TrainingConfig {
     }
 
     /**
+     * Checks whether whole-image mode is enabled.
+     * <p>
+     * When enabled, the entire image is used as a single training tile
+     * instead of extracting fixed-size patches. The effective tile size
+     * is computed at export time from the actual image dimensions.
+     *
+     * @return true if whole-image mode is enabled
+     */
+    public boolean isWholeImage() {
+        return wholeImage;
+    }
+
+    /**
+     * Computes the effective tile size for whole-image mode.
+     * <p>
+     * Takes the maximum of image width and height, divides by the downsample
+     * factor, and rounds up to the nearest multiple of 32 (required by
+     * encoder downsampling). When whole-image mode is disabled, returns
+     * the configured tile size unchanged.
+     *
+     * @param imageWidth  image width in pixels (at full resolution)
+     * @param imageHeight image height in pixels (at full resolution)
+     * @return effective tile size (multiple of 32)
+     */
+    public int computeEffectiveTileSize(int imageWidth, int imageHeight) {
+        if (!wholeImage) return tileSize;
+        int maxDim = Math.max(imageWidth, imageHeight);
+        int rawSize = (int) Math.ceil(maxDim / downsample);
+        return ((rawSize + 31) / 32) * 32;
+    }
+
+    /**
      * Gets the project-local model output directory.
      * <p>
      * When set, Python training scripts save model files directly to this
@@ -379,6 +421,23 @@ public class TrainingConfig {
      */
     public void setModelOutputDir(String modelOutputDir) {
         this.modelOutputDir = modelOutputDir;
+    }
+
+    /**
+     * Adjusts batch size for large whole-image tiles to prevent GPU OOM.
+     * <p>
+     * When the effective tile size exceeds 1024px, batch size is reduced to 1
+     * and gradient accumulation is increased to maintain the same effective
+     * batch size. This trades training speed for memory safety.
+     * <p>
+     * Has no effect if batch size is already 1 or tile size is &lt;= 1024.
+     *
+     * @param effectiveTileSize the computed tile size in pixels
+     */
+    public void adjustBatchForTileSize(int effectiveTileSize) {
+        if (effectiveTileSize <= 1024 || batchSize <= 1) return;
+        runtimeBatchSize = 1;
+        runtimeGradAccumSteps = batchSize * gradientAccumulationSteps;
     }
 
     /**
@@ -420,6 +479,7 @@ public class TrainingConfig {
                 Objects.equals(intensityAugMode, that.intensityAugMode) &&
                 gradientAccumulationSteps == that.gradientAccumulationSteps &&
                 progressiveResize == that.progressiveResize &&
+                wholeImage == that.wholeImage &&
                 Objects.equals(pretrainedModelPath, that.pretrainedModelPath);
     }
 
@@ -431,16 +491,16 @@ public class TrainingConfig {
                 classWeightMultipliers, contextScale, schedulerType, lossFunction,
                 earlyStoppingMetric, earlyStoppingPatience, mixedPrecision,
                 focusClass, focusClassMinIoU, intensityAugMode,
-                gradientAccumulationSteps, progressiveResize, pretrainedModelPath);
+                gradientAccumulationSteps, progressiveResize, wholeImage, pretrainedModelPath);
     }
 
     @Override
     public String toString() {
-        return String.format("TrainingConfig{model=%s, backbone=%s, epochs=%d, lr=%.6f, wd=%.4f, tile=%d, downsample=%.1f, contextScale=%d, lineStroke=%d, scheduler=%s, loss=%s, esMetric=%s, esPat=%d, amp=%b, focusClass=%s, focusMinIoU=%.2f, intensityAug=%s, gradAccum=%d, progResize=%b, pretrainedModel=%s}",
+        return String.format("TrainingConfig{model=%s, backbone=%s, epochs=%d, lr=%.6f, wd=%.4f, tile=%d, downsample=%.1f, contextScale=%d, lineStroke=%d, scheduler=%s, loss=%s, esMetric=%s, esPat=%d, amp=%b, focusClass=%s, focusMinIoU=%.2f, intensityAug=%s, gradAccum=%d, progResize=%b, wholeImage=%b, pretrainedModel=%s}",
                 modelType, backbone, epochs, learningRate, weightDecay, tileSize, downsample, contextScale, lineStrokeWidth,
                 schedulerType, lossFunction, earlyStoppingMetric, earlyStoppingPatience, mixedPrecision,
                 focusClass, focusClassMinIoU, intensityAugMode,
-                gradientAccumulationSteps, progressiveResize, pretrainedModelPath);
+                gradientAccumulationSteps, progressiveResize, wholeImage, pretrainedModelPath);
     }
 
     public static Builder builder() {
@@ -479,6 +539,7 @@ public class TrainingConfig {
         private int gradientAccumulationSteps = 1;
         private boolean progressiveResize = false;
         private String pretrainedModelPath = null;
+        private boolean wholeImage = false;
 
         public Builder() {
             // Default augmentation configuration (spatial transforms only)
@@ -768,14 +829,27 @@ public class TrainingConfig {
             return this;
         }
 
+        /**
+         * Sets whether to use whole-image mode (no tiling).
+         * <p>
+         * When enabled, the effective tile size is computed at export time
+         * from actual image dimensions instead of using the configured tile size.
+         *
+         * @param wholeImage true to use whole-image mode
+         */
+        public Builder wholeImage(boolean wholeImage) {
+            this.wholeImage = wholeImage;
+            return this;
+        }
+
         public TrainingConfig build() {
             if (modelType == null || modelType.isEmpty()) {
                 throw new IllegalStateException("Model type must be specified");
             }
-            if (tileSize < 64 || tileSize > 2048) {
+            if (!wholeImage && (tileSize < 64 || tileSize > 2048)) {
                 throw new IllegalStateException("Tile size must be between 64 and 2048");
             }
-            if (overlap < 0 || overlap >= tileSize / 2) {
+            if (!wholeImage && (overlap < 0 || overlap >= tileSize / 2)) {
                 throw new IllegalStateException("Overlap must be between 0 and half of tile size");
             }
             if (downsample < 1.0 || downsample > 32.0) {

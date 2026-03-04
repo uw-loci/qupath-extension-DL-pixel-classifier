@@ -338,8 +338,8 @@ public class InferenceConfig {
         }
 
         public InferenceConfig build() {
-            if (tileSize < 64 || tileSize > 2048) {
-                throw new IllegalStateException("Tile size must be between 64 and 2048");
+            if (tileSize < 64 || tileSize > 8192) {
+                throw new IllegalStateException("Tile size must be between 64 and 8192");
             }
             if (overlap < 0 || overlap >= tileSize / 2) {
                 throw new IllegalStateException("Overlap must be between 0 and half of tile size");

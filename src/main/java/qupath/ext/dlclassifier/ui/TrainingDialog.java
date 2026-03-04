@@ -139,6 +139,7 @@ public class TrainingDialog {
         // Tiling parameters
         private Spinner<Integer> tileSizeSpinner;
         private Spinner<Integer> overlapSpinner;
+        private CheckBox wholeImageCheck;
         private ComboBox<String> downsampleCombo;
         private ComboBox<String> contextScaleCombo;
         private Spinner<Integer> lineStrokeWidthSpinner;
@@ -1018,8 +1019,26 @@ public class TrainingDialog {
                     "512: Good balance of context and memory. Recommended default.\n" +
                     "1024: Maximum context but requires large GPU VRAM.");
 
+            // Whole-image checkbox
+            wholeImageCheck = new CheckBox("Whole image (small images only)");
+            wholeImageCheck.setStyle("-fx-text-fill: #CC7A00; -fx-font-weight: bold;");
+            TooltipHelper.install(wholeImageCheck,
+                    "Use the entire image as a single training tile.\n" +
+                    "Disables tiling -- each image becomes one training sample.\n\n" +
+                    "Use only for small images where tiling is unnecessary.\n" +
+                    "The effective tile size is computed from image dimensions\n" +
+                    "at export time and rounded to a multiple of 32.\n\n" +
+                    "For multi-image training, the largest image dimensions\n" +
+                    "across all selected images are used (smaller images are\n" +
+                    "padded with unlabeled=255).");
+            wholeImageCheck.selectedProperty().addListener((obs, old, checked) -> {
+                tileSizeSpinner.setDisable(checked);
+                overlapSpinner.setDisable(checked);
+            });
+
             grid.add(new Label("Tile Size:"), 0, row);
             grid.add(tileSizeSpinner, 1, row);
+            grid.add(wholeImageCheck, 2, row);
             row++;
 
             // Downsample
@@ -2198,6 +2217,7 @@ public class TrainingDialog {
                     .focusClassMinIoU(focusClassMinIoUSpinner.getValue())
                     .pretrainedModelPath(
                             continueTrainingCheck.isSelected() ? pretrainedModelPtPath : null)
+                    .wholeImage(wholeImageCheck.isSelected())
                     .build();
 
             // Get channel config
@@ -2379,6 +2399,7 @@ public class TrainingDialog {
                     .progressiveResize(progressiveResizeCheck.isSelected())
                     .focusClass(mapFocusClassFromDisplay(focusClassCombo.getValue()))
                     .focusClassMinIoU(focusClassMinIoUSpinner.getValue())
+                    .wholeImage(wholeImageCheck.isSelected())
                     .build();
 
             ChannelConfiguration channelConfig = channelPanel.getChannelConfiguration();
