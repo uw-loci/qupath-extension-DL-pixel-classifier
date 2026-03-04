@@ -36,6 +36,12 @@ import java.util.HashMap;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.ConcurrentLinkedDeque;
+import java.util.concurrent.Executors;
+import java.util.concurrent.ScheduledExecutorService;
+import java.util.concurrent.ScheduledFuture;
+import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 
@@ -79,6 +85,29 @@ public class DLPixelClassifier implements PixelClassifier {
     /** Set to true when the overlay is being removed, to suppress error counting on interrupted threads. */
     private volatile boolean shuttingDown = false;
 
+    // ==================== Probability Cache for Tile Blending ====================
+
+    /** Cache of probability maps for tile blending. Key = (requestX, requestY) packed into long. */
+    private final ConcurrentHashMap<Long, float[][][]> probCache = new ConcurrentHashMap<>();
+
+    /** Maximum cached probability maps (each ~7MB for 768x768x3 float32). */
+    private static final int MAX_PROB_CACHE_SIZE = 100;
+
+    /** Tracks insertion order for LRU eviction. */
+    private final ConcurrentLinkedDeque<Long> probCacheOrder = new ConcurrentLinkedDeque<>();
+
+    /** The inputPadding value used by QuPath for tile overlap, cached for blending calculations. */
+    private final int inputPadding;
+
+    /** Debounced scheduler for viewer refresh after new tiles are cached. */
+    private final ScheduledExecutorService refreshScheduler =
+            Executors.newSingleThreadScheduledExecutor(r -> {
+                Thread t = new Thread(r, "dl-overlay-refresh");
+                t.setDaemon(true);
+                return t;
+            });
+    private volatile ScheduledFuture<?> pendingRefresh;
+
     // ==================== Image-Level Normalization ====================
 
     /** Number of tiles sampled across the image for normalization stats. */
@@ -107,6 +136,7 @@ public class DLPixelClassifier implements PixelClassifier {
         this.inferenceConfig = inferenceConfig;
         this.downsample = metadata.getDownsample();
         this.contextScale = metadata.getContextScale();
+        this.inputPadding = computeOverlayPadding(inferenceConfig.getTileSize());
         this.pixelMetadata = buildPixelMetadata(imageData);
         this.colorModel = buildColorModel();
         this.backend = BackendFactory.getBackend();
@@ -260,7 +290,7 @@ public class DLPixelClassifier implements PixelClassifier {
                 throw new IOException("No output path for tile " + tileId);
             }
 
-            // Read probability map and convert to class index image
+            // Read probability map
             int tileWidth = tileImage.getWidth();
             int tileHeight = tileImage.getHeight();
             float[][][] probMap = ClassifierClient.readProbabilityMap(
@@ -273,9 +303,21 @@ public class DLPixelClassifier implements PixelClassifier {
                 logger.debug("Failed to delete tile output: {}", outputPath);
             }
 
+            // Cache the probability map for neighbor blending
+            long key = cacheKey(request.getX(), request.getY());
+            cacheProbMap(key, probMap);
+
+            // Blend with available neighbors, then argmax on blended probabilities
+            float[][][] blended = blendWithNeighbors(probMap, request.getX(), request.getY(),
+                    tileWidth, tileHeight);
+
+            // Schedule deferred refresh so earlier tiles get re-rendered with
+            // this tile now available as a neighbor
+            scheduleRefresh();
+
             // Success -- reset error counter
             consecutiveErrors.set(0);
-            return createClassIndexImage(probMap, tileWidth, tileHeight);
+            return createClassIndexImage(blended, tileWidth, tileHeight);
 
         } catch (IOException e) {
             // During shutdown, interrupted threads and missing temp files are expected.
@@ -332,6 +374,16 @@ public class DLPixelClassifier implements PixelClassifier {
      */
     public void cleanup() {
         shuttingDown = true;
+
+        // Clear probability cache
+        probCache.clear();
+        probCacheOrder.clear();
+
+        // Shutdown the deferred refresh scheduler
+        ScheduledFuture<?> pending = pendingRefresh;
+        if (pending != null) pending.cancel(false);
+        refreshScheduler.shutdownNow();
+
         try {
             if (sharedTempDir != null && Files.exists(sharedTempDir)) {
                 Files.walk(sharedTempDir)
@@ -703,6 +755,182 @@ public class DLPixelClassifier implements PixelClassifier {
         width = Math.max(1, width);
         height = Math.max(1, height);
         return new BufferedImage(width, height, BufferedImage.TYPE_BYTE_INDEXED, colorModel);
+    }
+
+    // ==================== Probability Cache Methods ====================
+
+    /**
+     * Packs (x, y) request coordinates into a single long key for the prob cache.
+     */
+    private static long cacheKey(int requestX, int requestY) {
+        return ((long) requestX << 32) | (requestY & 0xFFFFFFFFL);
+    }
+
+    /**
+     * Caches a probability map and evicts the oldest entry if over capacity.
+     */
+    private void cacheProbMap(long key, float[][][] probMap) {
+        probCache.put(key, probMap);
+        probCacheOrder.addLast(key);
+
+        // LRU eviction
+        while (probCache.size() > MAX_PROB_CACHE_SIZE) {
+            Long oldest = probCacheOrder.pollFirst();
+            if (oldest != null) {
+                probCache.remove(oldest);
+            }
+        }
+    }
+
+    /**
+     * Creates a deep copy of a probability map so blending doesn't modify cached data.
+     */
+    private static float[][][] deepCopyProbMap(float[][][] src) {
+        int h = src.length;
+        float[][][] copy = new float[h][][];
+        for (int y = 0; y < h; y++) {
+            int w = src[y].length;
+            copy[y] = new float[w][];
+            for (int x = 0; x < w; x++) {
+                copy[y][x] = src[y][x].clone();
+            }
+        }
+        return copy;
+    }
+
+    /**
+     * Blends this tile's probability map with cached neighbor probability maps
+     * using linear weight ramps across overlap zones.
+     * <p>
+     * Horizontal blending (left/right) is applied first, then vertical (top/bottom).
+     * This sequential approach handles corners (where two blends overlap) without
+     * needing a 4-way weighted average.
+     *
+     * @param probMap   this tile's raw probability map [height][width][numClasses]
+     * @param requestX  tile request X coordinate (full-resolution image coords)
+     * @param requestY  tile request Y coordinate (full-resolution image coords)
+     * @param width     tile width in pixels (padded = tileSize + 2*padding)
+     * @param height    tile height in pixels (padded)
+     * @return blended probability map (new array, original not modified)
+     */
+    private float[][][] blendWithNeighbors(float[][][] probMap, int requestX, int requestY,
+                                            int width, int height) {
+        int tileSize = inferenceConfig.getTileSize();
+        int padding = inputPadding;
+        int step = (int) (tileSize * downsample);
+        int numClasses = probMap[0][0].length;
+        int overlapWidth = 2 * padding;  // total overlap zone width in pixels
+
+        // Look up cached neighbors
+        float[][][] left   = probCache.get(cacheKey(requestX - step, requestY));
+        float[][][] right  = probCache.get(cacheKey(requestX + step, requestY));
+        float[][][] top    = probCache.get(cacheKey(requestX, requestY - step));
+        float[][][] bottom = probCache.get(cacheKey(requestX, requestY + step));
+
+        if (left == null && right == null && top == null && bottom == null) {
+            return probMap;  // No neighbors available, no blending needed
+        }
+
+        // Create a copy for blending (don't modify cached original)
+        float[][][] blended = deepCopyProbMap(probMap);
+
+        // --- Horizontal blending (uses probMap as self source) ---
+
+        // Blend with right neighbor
+        if (right != null) {
+            int rightH = Math.min(height, right.length);
+            for (int y = 0; y < rightH; y++) {
+                for (int d = 0; d < overlapWidth && (tileSize + d) < width; d++) {
+                    int x = tileSize + d;      // column in this tile
+                    int nx = d;                 // corresponding column in neighbor
+                    if (nx >= right[y].length) break;
+                    float wSelf = 1.0f - (float) d / overlapWidth;
+                    int nc = Math.min(numClasses, right[y][nx].length);
+                    for (int c = 0; c < nc; c++) {
+                        blended[y][x][c] = wSelf * probMap[y][x][c]
+                                + (1.0f - wSelf) * right[y][nx][c];
+                    }
+                }
+            }
+        }
+
+        // Blend with left neighbor (mirror of right)
+        if (left != null) {
+            int leftH = Math.min(height, left.length);
+            for (int y = 0; y < leftH; y++) {
+                for (int d = 0; d < overlapWidth && d < width; d++) {
+                    int x = d;                      // column in this tile
+                    int nx = tileSize + d;           // corresponding column in neighbor
+                    if (nx >= left[y].length) break;
+                    float wSelf = (float) d / overlapWidth;  // 0 at left edge -> 1 at overlap end
+                    int nc = Math.min(numClasses, left[y][nx].length);
+                    for (int c = 0; c < nc; c++) {
+                        blended[y][x][c] = wSelf * probMap[y][x][c]
+                                + (1.0f - wSelf) * left[y][nx][c];
+                    }
+                }
+            }
+        }
+
+        // --- Vertical blending (uses blended as self source for corner handling) ---
+
+        // Blend with bottom neighbor
+        if (bottom != null) {
+            int bottomW = (bottom.length > 0) ? bottom[0].length : 0;
+            int blendW = Math.min(width, bottomW);
+            for (int x = 0; x < blendW; x++) {
+                for (int d = 0; d < overlapWidth && (tileSize + d) < height; d++) {
+                    int y = tileSize + d;      // row in this tile
+                    int ny = d;                 // corresponding row in neighbor
+                    if (ny >= bottom.length) break;
+                    if (x >= bottom[ny].length) continue;
+                    float wSelf = 1.0f - (float) d / overlapWidth;
+                    int nc = Math.min(numClasses, bottom[ny][x].length);
+                    for (int c = 0; c < nc; c++) {
+                        blended[y][x][c] = wSelf * blended[y][x][c]
+                                + (1.0f - wSelf) * bottom[ny][x][c];
+                    }
+                }
+            }
+        }
+
+        // Blend with top neighbor (mirror of bottom)
+        if (top != null) {
+            int topW = (top.length > 0) ? top[0].length : 0;
+            int blendW = Math.min(width, topW);
+            for (int x = 0; x < blendW; x++) {
+                for (int d = 0; d < overlapWidth && d < height; d++) {
+                    int y = d;                      // row in this tile
+                    int ny = tileSize + d;           // corresponding row in neighbor
+                    if (ny >= top.length) break;
+                    if (x >= top[ny].length) continue;
+                    float wSelf = (float) d / overlapWidth;  // 0 at top edge -> 1 at overlap end
+                    int nc = Math.min(numClasses, top[ny][x].length);
+                    for (int c = 0; c < nc; c++) {
+                        blended[y][x][c] = wSelf * blended[y][x][c]
+                                + (1.0f - wSelf) * top[ny][x][c];
+                    }
+                }
+            }
+        }
+
+        return blended;
+    }
+
+    /**
+     * Schedules a debounced viewer refresh so tiles rendered without all neighbors
+     * get re-requested with full blending available.
+     */
+    private void scheduleRefresh() {
+        ScheduledFuture<?> prev = pendingRefresh;
+        if (prev != null) prev.cancel(false);
+        pendingRefresh = refreshScheduler.schedule(() -> {
+            try {
+                OverlayService.getInstance().refreshViewers();
+            } catch (Exception e) {
+                logger.debug("Deferred overlay refresh failed: {}", e.getMessage());
+            }
+        }, 500, TimeUnit.MILLISECONDS);
     }
 
     /**
