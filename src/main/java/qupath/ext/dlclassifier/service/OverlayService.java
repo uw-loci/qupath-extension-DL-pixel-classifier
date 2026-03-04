@@ -215,6 +215,47 @@ public class OverlayService {
     }
 
     /**
+     * Recreates the overlay to force fresh tile requests with full blending.
+     * <p>
+     * After the initial tile batch, the classifier's probability cache is populated
+     * but QuPath's internal tile cache holds unblended results. Recreating the overlay
+     * gives QuPath a fresh server with an empty tile cache, forcing it to re-call
+     * {@code applyClassification()} for each visible tile. The classifier's cache-hit
+     * fast path serves these requests instantly from the prob cache with proper
+     * bidirectional blending.
+     * <p>
+     * Called once by the classifier's deferred refresh scheduler after the initial render.
+     */
+    public void refreshOverlayForBlending() {
+        Platform.runLater(() -> {
+            if (currentOverlay == null || currentClassifier == null) return;
+            QuPathGUI qupath = QuPathGUI.getInstance();
+            if (qupath == null) return;
+
+            // Stop old overlay's worker threads (no longer needed)
+            PixelClassificationOverlay oldOverlay = currentOverlay;
+            oldOverlay.stop();
+
+            // Create fresh overlay -- new internal server with empty tile cache
+            var newOverlay = PixelClassificationOverlay.create(
+                    qupath.getOverlayOptions(),
+                    currentClassifier,
+                    Runtime.getRuntime().availableProcessors());
+            newOverlay.setLivePrediction(true);
+
+            // Swap on all viewers that had the old overlay
+            for (QuPathViewer viewer : qupath.getAllViewers()) {
+                if (viewer.getCustomPixelLayerOverlay() == oldOverlay) {
+                    viewer.setCustomPixelLayerOverlay(newOverlay);
+                }
+            }
+
+            currentOverlay = newOverlay;
+            logger.debug("Recreated overlay for tile blending");
+        });
+    }
+
+    /**
      * Suspends overlay for training.
      * <p>
      * Removes any active overlay and sets the training-active flag, which

@@ -108,6 +108,9 @@ public class DLPixelClassifier implements PixelClassifier {
             });
     private volatile ScheduledFuture<?> pendingRefresh;
 
+    /** Guards against repeated overlay refreshes -- only one refresh per session. */
+    private volatile boolean hasRefreshed = false;
+
     // ==================== Image-Level Normalization ====================
 
     /** Number of tiles sampled across the image for normalization stats. */
@@ -175,6 +178,21 @@ public class DLPixelClassifier implements PixelClassifier {
         if (consecutiveErrors.get() >= MAX_CONSECUTIVE_ERRORS) {
             throw new IOException("Classification disabled after " + MAX_CONSECUTIVE_ERRORS +
                     " consecutive server errors: " + lastErrorMessage);
+        }
+
+        // Cache-hit fast path: if this tile's prob map is already cached,
+        // skip inference entirely and just blend + argmax.
+        // This is critical for the deferred-refresh path where the overlay is
+        // recreated after the initial render to get proper bidirectional blending.
+        long cacheKeyVal = cacheKey(request.getX(), request.getY());
+        float[][][] cachedProbMap = probCache.get(cacheKeyVal);
+        if (cachedProbMap != null) {
+            int cachedH = cachedProbMap.length;
+            int cachedW = cachedProbMap[0].length;
+            float[][][] blended = blendWithNeighbors(cachedProbMap,
+                    request.getX(), request.getY(), cachedW, cachedH);
+            consecutiveErrors.set(0);
+            return createClassIndexImage(blended, cachedW, cachedH);
         }
 
         ImageServer<BufferedImage> server = imageData.getServer();
@@ -375,9 +393,10 @@ public class DLPixelClassifier implements PixelClassifier {
     public void cleanup() {
         shuttingDown = true;
 
-        // Clear probability cache
+        // Clear probability cache and reset refresh state
         probCache.clear();
         probCacheOrder.clear();
+        hasRefreshed = false;
 
         // Shutdown the deferred refresh scheduler
         ScheduledFuture<?> pending = pendingRefresh;
@@ -918,19 +937,31 @@ public class DLPixelClassifier implements PixelClassifier {
     }
 
     /**
-     * Schedules a debounced viewer refresh so tiles rendered without all neighbors
-     * get re-requested with full blending available.
+     * Schedules a debounced, one-shot overlay refresh after the initial tile batch.
+     * <p>
+     * On the first render, tiles are computed without all neighbors cached, so blending
+     * is incomplete. After the batch completes (debounced 1s after the last tile), the
+     * overlay is recreated to force fresh tile requests. The cache-hit fast path in
+     * {@link #applyClassification} serves these re-requests instantly from the prob cache,
+     * now with all neighbors available for proper bidirectional blending.
+     * <p>
+     * Only fires once per overlay session to avoid infinite refresh loops.
      */
     private void scheduleRefresh() {
+        if (hasRefreshed) return;  // One refresh per session
+
         ScheduledFuture<?> prev = pendingRefresh;
         if (prev != null) prev.cancel(false);
         pendingRefresh = refreshScheduler.schedule(() -> {
+            hasRefreshed = true;
             try {
-                OverlayService.getInstance().refreshViewers();
+                logger.debug("Refreshing overlay for tile blending ({} cached prob maps)",
+                        probCache.size());
+                OverlayService.getInstance().refreshOverlayForBlending();
             } catch (Exception e) {
                 logger.debug("Deferred overlay refresh failed: {}", e.getMessage());
             }
-        }, 500, TimeUnit.MILLISECONDS);
+        }, 1000, TimeUnit.MILLISECONDS);
     }
 
     /**
