@@ -16,7 +16,6 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import qupath.lib.gui.QuPathGUI;
 
-import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -57,6 +56,7 @@ public class ProgressMonitorController {
     private final XYChart.Series<Number, Number> trainLossSeries;
     private final XYChart.Series<Number, Number> valLossSeries;
     private final LineChart<Number, Number> iouChart;
+    private final HBox iouLegendBox;
     private final Map<String, XYChart.Series<Number, Number>> iouSeriesMap = new LinkedHashMap<>();
     private Map<String, Integer> classColors = new LinkedHashMap<>();
 
@@ -155,12 +155,11 @@ public class ProgressMonitorController {
         yAxis.setAutoRanging(true);
 
         lossChart = new LineChart<>(xAxis, yAxis);
-        lossChart.setTitle("Training Progress (Blue = Train Loss, Red = Val Loss)");
+        lossChart.setTitle("Training Progress");
         lossChart.setCreateSymbols(true);
         lossChart.setAnimated(false);
         lossChart.setPrefHeight(200);
-        lossChart.setLegendVisible(true);
-        lossChart.setLegendSide(javafx.geometry.Side.BOTTOM);
+        lossChart.setLegendVisible(false);
 
         trainLossSeries = new XYChart.Series<>();
         trainLossSeries.setName("Train Loss");
@@ -188,8 +187,12 @@ public class ProgressMonitorController {
         iouChart.setTitle("Per-Class IoU");
         iouChart.setCreateSymbols(false);
         iouChart.setAnimated(false);
-        iouChart.setLegendVisible(true);
+        iouChart.setLegendVisible(false);
         iouChart.setPrefHeight(200);
+
+        iouLegendBox = new HBox(15);
+        iouLegendBox.setAlignment(Pos.CENTER);
+        iouLegendBox.setPadding(new Insets(2, 0, 5, 0));
 
         // Build layout
         VBox root = new VBox(10);
@@ -221,13 +224,28 @@ public class ProgressMonitorController {
 
         // Loss chart (if enabled)
         if (showLossChart) {
-            TitledPane chartPane = new TitledPane("Training Metrics", lossChart);
+            // Custom legend for loss chart (built-in legend does not render reliably)
+            HBox lossLegend = new HBox(15);
+            lossLegend.setAlignment(Pos.CENTER);
+            lossLegend.setPadding(new Insets(2, 0, 5, 0));
+            lossLegend.getChildren().addAll(
+                    createLegendItem("#2196F3", "Train Loss"),
+                    createLegendItem("#F44336", "Val Loss")
+            );
+
+            VBox lossChartWithLegend = new VBox(0, lossChart, lossLegend);
+            VBox.setVgrow(lossChart, Priority.ALWAYS);
+
+            TitledPane chartPane = new TitledPane("Training Metrics", lossChartWithLegend);
             chartPane.setExpanded(true);
             VBox.setVgrow(chartPane, Priority.ALWAYS);
             root.getChildren().add(chartPane);
 
             // Per-class IoU chart (collapsed by default)
-            TitledPane iouPane = new TitledPane("Per-Class IoU", iouChart);
+            VBox iouChartWithLegend = new VBox(0, iouChart, iouLegendBox);
+            VBox.setVgrow(iouChart, Priority.ALWAYS);
+
+            TitledPane iouPane = new TitledPane("Per-Class IoU", iouChartWithLegend);
             iouPane.setExpanded(false);
             root.getChildren().add(iouPane);
         }
@@ -378,9 +396,6 @@ public class ProgressMonitorController {
                 installDataPointTooltip(valPoint, "Val Loss", epoch, valLoss);
             }
 
-            // Ensure legend symbols show the correct colors
-            applyLossChartLegendColors();
-
             // Update per-class IoU chart
             if (perClassIoU != null) {
                 for (var entry : perClassIoU.entrySet()) {
@@ -408,8 +423,9 @@ public class ProgressMonitorController {
                                             }
                                         });
                                     }
-                                    // Also style legend after chart is rendered
-                                    applyLegendColors();
+                                    // Add to custom legend
+                                    iouLegendBox.getChildren().add(
+                                            createLegendItem(colorCss, className));
                                 }
                                 return newSeries;
                             });
@@ -686,55 +702,23 @@ public class ProgressMonitorController {
     }
 
     /**
-     * Applies blue/red colors to loss chart legend symbols programmatically.
-     * CSS alone does not reliably override the Modena defaults for legend symbols.
+     * Creates a legend item: a small colored rectangle followed by a label.
+     *
+     * @param color CSS color string (hex or rgb(...))
+     * @param text  legend label text
+     * @return HBox containing the colored swatch and label
      */
-    private void applyLossChartLegendColors() {
-        Platform.runLater(() -> {
-            javafx.scene.Node legend = lossChart.lookup(".chart-legend");
-            if (legend == null) return;
-
-            // Series 0 = Train Loss = blue
-            javafx.scene.Node symbol0 = lossChart.lookup(".chart-legend-item-symbol.series0");
-            if (symbol0 != null) {
-                symbol0.setStyle("-fx-background-color: #2196F3;");
-            }
-            // Series 1 = Val Loss = red
-            javafx.scene.Node symbol1 = lossChart.lookup(".chart-legend-item-symbol.series1");
-            if (symbol1 != null) {
-                symbol1.setStyle("-fx-background-color: #F44336;");
-            }
-        });
-    }
-
-    /**
-     * Applies QuPath class colors to IoU chart legend symbols.
-     * Must be called on the FX application thread after series are added to the chart.
-     */
-    private void applyLegendColors() {
-        // Use runLater to ensure legend nodes exist after chart layout
-        Platform.runLater(() -> {
-            javafx.scene.Node legend = iouChart.lookup(".chart-legend");
-            if (legend == null) return;
-
-            for (var entry : iouSeriesMap.entrySet()) {
-                String className = entry.getKey();
-                Integer packedColor = classColors.get(className);
-                if (packedColor == null) continue;
-
-                int r = (packedColor >> 16) & 0xFF;
-                int g = (packedColor >> 8) & 0xFF;
-                int b = packedColor & 0xFF;
-
-                // Find the legend item for this series by index
-                int seriesIndex = new ArrayList<>(iouSeriesMap.keySet()).indexOf(className);
-                String selector = ".chart-legend-item-symbol.series" + seriesIndex;
-                javafx.scene.Node symbol = iouChart.lookup(selector);
-                if (symbol != null) {
-                    symbol.setStyle(String.format("-fx-background-color: rgb(%d,%d,%d);", r, g, b));
-                }
-            }
-        });
+    private static HBox createLegendItem(String color, String text) {
+        Region swatch = new Region();
+        swatch.setPrefSize(12, 12);
+        swatch.setMinSize(12, 12);
+        swatch.setMaxSize(12, 12);
+        swatch.setStyle("-fx-background-color: " + color + "; -fx-background-radius: 2;");
+        Label label = new Label(text);
+        label.setStyle("-fx-font-size: 11px;");
+        HBox item = new HBox(5, swatch, label);
+        item.setAlignment(Pos.CENTER_LEFT);
+        return item;
     }
 
     /**
