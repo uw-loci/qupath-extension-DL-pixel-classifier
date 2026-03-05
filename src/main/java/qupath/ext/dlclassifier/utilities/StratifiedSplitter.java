@@ -61,7 +61,10 @@ public final class StratifiedSplitter {
             return isValidation; // all false
         }
 
-        int targetValCount = Math.max(1, (int) Math.round(total * validationSplit));
+        // Ensure at least 1 patch remains for training
+        int targetValCount = Math.min(
+                Math.max(1, (int) Math.round(total * validationSplit)),
+                total - 1);
 
         // Build inverted index: classIndex -> list of patch indices containing that class
         Map<Integer, List<Integer>> classToPatchIndices = new HashMap<>();
@@ -81,6 +84,13 @@ public final class StratifiedSplitter {
 
         for (int classIdx : classesByFrequency) {
             if (coveredClasses.contains(classIdx)) continue;
+
+            // Stop if assigning another validation patch would leave zero for training
+            if (valAssigned >= total - 1) {
+                logger.warn("Cannot guarantee class {} in validation: "
+                        + "would leave 0 training patches", classIdx);
+                break;
+            }
 
             // Find the unassigned patch that covers the most still-uncovered classes
             int bestPatch = -1;

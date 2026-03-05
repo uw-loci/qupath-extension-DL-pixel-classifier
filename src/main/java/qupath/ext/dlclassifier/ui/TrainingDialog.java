@@ -1020,11 +1020,13 @@ public class TrainingDialog {
                     "1024: Maximum context but requires large GPU VRAM.");
 
             // Whole-image checkbox
-            wholeImageCheck = new CheckBox("Whole image (small images only)");
+            wholeImageCheck = new CheckBox("Whole image\n(small images only)");
+            wholeImageCheck.setWrapText(true);
             wholeImageCheck.setStyle("-fx-text-fill: #CC7A00; -fx-font-weight: bold;");
             TooltipHelper.install(wholeImageCheck,
                     "Use the entire image as a single training tile.\n" +
-                    "Disables tiling -- each image becomes one training sample.\n\n" +
+                    "Disables tiling and context scale -- each image\n" +
+                    "becomes one training sample.\n\n" +
                     "Use only for small images where tiling is unnecessary.\n" +
                     "The effective tile size is computed from image dimensions\n" +
                     "at export time and rounded to a multiple of 32.\n\n" +
@@ -1034,6 +1036,10 @@ public class TrainingDialog {
             wholeImageCheck.selectedProperty().addListener((obs, old, checked) -> {
                 tileSizeSpinner.setDisable(checked);
                 overlapSpinner.setDisable(checked);
+                contextScaleCombo.setDisable(checked);
+                if (checked) {
+                    contextScaleCombo.setValue("None (single scale)");
+                }
             });
 
             grid.add(new Label("Tile Size:"), 0, row);
