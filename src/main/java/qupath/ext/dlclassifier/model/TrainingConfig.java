@@ -79,9 +79,10 @@ public class TrainingConfig {
     // to redirect model saving directly into the project's classifiers directory.
     private String modelOutputDir;
 
-    // Transient runtime overrides: batch size reduction for large whole-image tiles.
+    // Transient runtime overrides for whole-image mode.
     // When set (> 0), these override the builder-configured values so that
     // downstream code (backend, serialization) automatically uses the safe values.
+    private int runtimeTileSize = -1;
     private int runtimeBatchSize = -1;
     private int runtimeGradAccumSteps = -1;
 
@@ -144,7 +145,7 @@ public class TrainingConfig {
     }
 
     public int getTileSize() {
-        return tileSize;
+        return runtimeTileSize > 0 ? runtimeTileSize : tileSize;
     }
 
     public int getOverlap() {
@@ -434,6 +435,19 @@ public class TrainingConfig {
      *
      * @param effectiveTileSize the computed tile size in pixels
      */
+    /**
+     * Sets the runtime tile size override for whole-image mode.
+     * <p>
+     * When set, {@link #getTileSize()} returns this value instead of the
+     * builder-configured tile size. This ensures the Python backend receives
+     * the computed effective tile size.
+     *
+     * @param effectiveTileSize the computed effective tile size
+     */
+    public void setEffectiveTileSize(int effectiveTileSize) {
+        this.runtimeTileSize = effectiveTileSize;
+    }
+
     public void adjustBatchForTileSize(int effectiveTileSize) {
         if (effectiveTileSize <= 1024 || batchSize <= 1) return;
         runtimeBatchSize = 1;

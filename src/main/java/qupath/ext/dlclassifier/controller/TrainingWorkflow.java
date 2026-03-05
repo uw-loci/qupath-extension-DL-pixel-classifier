@@ -746,6 +746,9 @@ public class TrainingWorkflow {
                 effectiveTileSize = trainingConfig.getTileSize();
             }
 
+            // Set the effective tile size on the config so the Python backend receives it
+            trainingConfig.setEffectiveTileSize(effectiveTileSize);
+
             // Auto-reduce batch size for large tiles to prevent GPU OOM
             trainingConfig.adjustBatchForTileSize(effectiveTileSize);
             if (trainingConfig.getBatchSize() == 1 && progress != null
@@ -1107,7 +1110,8 @@ public class TrainingWorkflow {
                 effectiveTileSize = trainingConfig.getTileSize();
             }
 
-            // Auto-reduce batch size for large tiles
+            // Set effective tile size and auto-reduce batch for large tiles
+            trainingConfig.setEffectiveTileSize(effectiveTileSize);
             trainingConfig.adjustBatchForTileSize(effectiveTileSize);
 
             Map<String, Double> resumeMultipliers = trainingConfig.getClassWeightMultipliers();
