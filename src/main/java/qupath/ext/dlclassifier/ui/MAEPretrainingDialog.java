@@ -119,8 +119,22 @@ public class MAEPretrainingDialog {
                 "Larger = faster but more GPU memory.\n" +
                 "Auto-reduced if dataset is smaller than batch size."));
 
-        learningRateSpinner = new Spinner<>(
-                new SpinnerValueFactory.DoubleSpinnerValueFactory(1e-5, 1e-2, 1.5e-4, 1e-5));
+        var lrFactory = new SpinnerValueFactory.DoubleSpinnerValueFactory(1e-5, 1e-2, 1.5e-4, 1e-5);
+        lrFactory.setConverter(new javafx.util.StringConverter<>() {
+            @Override
+            public String toString(Double value) {
+                return value == null ? "" : String.format("%.5f", value);
+            }
+            @Override
+            public Double fromString(String string) {
+                try {
+                    return Double.parseDouble(string.trim());
+                } catch (NumberFormatException e) {
+                    return lrFactory.getValue();
+                }
+            }
+        });
+        learningRateSpinner = new Spinner<>(lrFactory);
         learningRateSpinner.setEditable(true);
         learningRateSpinner.setPrefWidth(120);
         learningRateSpinner.setTooltip(new Tooltip(

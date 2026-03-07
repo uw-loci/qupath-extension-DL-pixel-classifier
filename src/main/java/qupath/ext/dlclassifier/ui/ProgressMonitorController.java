@@ -87,6 +87,18 @@ public class ProgressMonitorController {
      * @param showLossChart whether to show the loss chart (for training)
      */
     public ProgressMonitorController(String title, boolean showLossChart) {
+        this(title, showLossChart, showLossChart);
+    }
+
+    /**
+     * Creates a new progress monitor with fine-grained control over displayed elements.
+     *
+     * @param title            the window title
+     * @param showLossChart    whether to show the loss chart
+     * @param showClassMetrics whether to show class-specific UI (IoU chart, pause/resume,
+     *                         val loss legend). False for pretraining which has no classes.
+     */
+    public ProgressMonitorController(String title, boolean showLossChart, boolean showClassMetrics) {
         stage = new Stage();
         stage.initOwner(QuPathGUI.getInstance().getStage());
         stage.initStyle(StageStyle.DECORATED);
@@ -228,10 +240,15 @@ public class ProgressMonitorController {
             HBox lossLegend = new HBox(15);
             lossLegend.setAlignment(Pos.CENTER);
             lossLegend.setPadding(new Insets(2, 0, 5, 0));
-            lossLegend.getChildren().addAll(
-                    createLegendItem("#2196F3", "Train Loss"),
-                    createLegendItem("#F44336", "Val Loss")
-            );
+            if (showClassMetrics) {
+                lossLegend.getChildren().addAll(
+                        createLegendItem("#2196F3", "Train Loss"),
+                        createLegendItem("#F44336", "Val Loss")
+                );
+            } else {
+                lossLegend.getChildren().add(
+                        createLegendItem("#2196F3", "Reconstruction Loss"));
+            }
 
             VBox lossChartWithLegend = new VBox(0, lossChart, lossLegend);
             VBox.setVgrow(lossChart, Priority.ALWAYS);
@@ -241,13 +258,15 @@ public class ProgressMonitorController {
             VBox.setVgrow(chartPane, Priority.ALWAYS);
             root.getChildren().add(chartPane);
 
-            // Per-class IoU chart (collapsed by default)
-            VBox iouChartWithLegend = new VBox(0, iouChart, iouLegendBox);
-            VBox.setVgrow(iouChart, Priority.ALWAYS);
+            // Per-class IoU chart (only for classifier training)
+            if (showClassMetrics) {
+                VBox iouChartWithLegend = new VBox(0, iouChart, iouLegendBox);
+                VBox.setVgrow(iouChart, Priority.ALWAYS);
 
-            TitledPane iouPane = new TitledPane("Per-Class IoU", iouChartWithLegend);
-            iouPane.setExpanded(false);
-            root.getChildren().add(iouPane);
+                TitledPane iouPane = new TitledPane("Per-Class IoU", iouChartWithLegend);
+                iouPane.setExpanded(false);
+                root.getChildren().add(iouPane);
+            }
         }
 
         // Log section (grows vertically when window is resized)
@@ -262,7 +281,7 @@ public class ProgressMonitorController {
         // Buttons
         HBox buttonBox = new HBox(10);
         buttonBox.setAlignment(Pos.CENTER_RIGHT);
-        if (showLossChart) {
+        if (showLossChart && showClassMetrics) {
             buttonBox.getChildren().add(pauseButton);
             buttonBox.getChildren().add(completeTrainingButton);
             buttonBox.getChildren().add(reviewButton);
@@ -791,6 +810,17 @@ public class ProgressMonitorController {
      */
     public static ProgressMonitorController forInference() {
         return new ProgressMonitorController("Applying Classifier", false);
+    }
+
+    /**
+     * Creates a progress monitor for MAE pretraining.
+     * Shows loss chart (reconstruction loss only) without class-specific
+     * UI elements (IoU chart, pause/resume, val loss).
+     *
+     * @return new progress monitor configured for pretraining
+     */
+    public static ProgressMonitorController forPretraining() {
+        return new ProgressMonitorController("MAE Pretraining", true, false);
     }
 
 }

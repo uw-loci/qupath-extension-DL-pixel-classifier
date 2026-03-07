@@ -571,8 +571,8 @@ public class SetupDLClassifier implements QuPathExtension, GitHubProject {
             return;
         }
 
-        // Create progress monitor with loss chart
-        ProgressMonitorController progress = new ProgressMonitorController("MAE Pretraining", true);
+        // Create progress monitor for pretraining (loss chart only, no class metrics)
+        ProgressMonitorController progress = ProgressMonitorController.forPretraining();
         progress.show();
 
         // Launch pretraining on daemon thread
