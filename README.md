@@ -21,7 +21,9 @@ A QuPath extension for deep learning-based pixel classification, supporting both
 - **Mixed precision training** (AMP) for ~2x speedup on CUDA GPUs
 - **Configurable training strategy** via collapsed "Training Strategy" section in the training dialog (scheduler, loss function, early stopping metric/patience, mixed precision)
 - **Histology-pretrained encoders** from TCGA/Lunit/Kather100K for better tissue feature extraction
-- **Pluggable architecture** supporting UNet and custom ONNX models
+- **MuViT (Multi-scale Vision Transformer)** architecture with multi-resolution feature fusion
+- **MAE self-supervised pretraining** for MuViT encoders using unlabeled image tiles (standalone workflow via Utilities menu)
+- **Pluggable architecture** supporting UNet, MuViT, and custom ONNX models
 - **Appose shared-memory IPC** for embedded Python inference with zero-copy tile transfer
 - **Groovy scripting API** for batch processing
 - **Headless builder API** for running workflows without GUI
@@ -75,6 +77,7 @@ See [QUICKSTART.md](QUICKSTART.md) for a complete walkthrough (zero to classifie
 | [Best Practices](docs/BEST_PRACTICES.md) | Backbone selection, annotation strategy, hyperparameter tuning |
 | [Troubleshooting](docs/TROUBLESHOOTING.md) | Environment issues, GPU issues, training/inference issues, diagnostics |
 | [Preferences](docs/PREFERENCES.md) | All persistent preferences with defaults and keys |
+| [Appose Dev Guide](docs/APPOSE_DEV_GUIDE.md) | Constraints and patterns for embedded Python scripts (developer reference) |
 | [Python Library](python_server/README.md) | Python deep learning library (training, inference, models) |
 
 ## GPU Support
@@ -107,6 +110,7 @@ qupath-extension-DL-pixel-classifier/
 │   │   ├── ClassifierRegistry.java
 │   │   └── handlers/
 │   │       ├── UNetHandler.java
+│   │       ├── MuViTHandler.java
 │   │       └── CustomONNXHandler.java
 │   ├── controller/                    # Workflow orchestration
 │   │   ├── DLClassifierController.java
@@ -142,6 +146,7 @@ qupath-extension-DL-pixel-classifier/
 │   │   ├── ProgressMonitorController.java
 │   │   ├── PythonConsoleWindow.java
 │   │   ├── TrainingAreaIssuesDialog.java  # Post-training tile evaluation results
+│   │   ├── MAEPretrainingDialog.java     # Standalone MAE pretraining config
 │   │   └── TooltipHelper.java
 │   ├── scripting/
 │   │   ├── DLClassifierScripts.java   # Groovy API

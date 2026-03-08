@@ -82,6 +82,7 @@ Multi-image training combines patches from all selected images into one training
 | Architecture | Best for | Reference |
 |-------------|----------|-----------|
 | **UNet** | General-purpose segmentation. Good default. | [Paper](https://arxiv.org/abs/1505.04597) |
+| **MuViT** | Multi-scale feature fusion with Vision Transformer encoder. Supports optional MAE pretraining. | - |
 | **Custom ONNX** | Importing externally trained models. Advanced users. | - |
 
 ### Backbone (Encoder)
@@ -236,6 +237,58 @@ When training completes successfully, a **"Review Training Areas..."** button ap
 | Entire class has high loss | Class may be poorly defined | Check if the class has consistent visual features |
 
 See [BEST_PRACTICES.md](BEST_PRACTICES.md#interpreting-tile-evaluation-results) for detailed guidance on interpreting results and improving annotations.
+
+## MAE Pretraining (MuViT Encoder)
+
+Before training a MuViT-based classifier, you can optionally pretrain the encoder using Masked Autoencoder (MAE) self-supervised learning on unlabeled image tiles. This is a separate workflow accessible from the Utilities menu.
+
+### When to use MAE pretraining
+
+- You plan to train a **MuViT** classifier and have a large collection of unlabeled images from your domain
+- Your target tissue or staining is not well-represented by standard pretrained weights
+- You want the encoder to learn domain-specific features before supervised fine-tuning
+
+### How to pretrain
+
+1. **Prepare image tiles**: Export unlabeled tiles (PNG, TIFF, or JPEG) from your images into a directory. These do not need annotations -- any representative image patches will work.
+2. Go to **Extensions > DL Pixel Classifier > Utilities > MAE Pretrain Encoder...**
+3. Configure the pretraining parameters:
+
+| Parameter | Default | Description |
+|-----------|---------|-------------|
+| **Model Configuration** | muvit-small | Model size (small/base/large) -- should match what you plan to use for training |
+| **Patch Size** | 16 | Vision transformer patch size (8 or 16) |
+| **Level Scales** | 1,4 | Multi-resolution scale factors |
+| **Epochs** | 100 | Pretraining epochs (auto-suggested based on dataset size) |
+| **Mask Ratio** | 0.75 | Fraction of patches masked during pretraining (0.5-0.9) |
+| **Batch Size** | 8 | Tiles per training step |
+| **Learning Rate** | 0.00015 | AdamW learning rate |
+| **Warmup Epochs** | 5 | Linear warmup epochs |
+
+4. Select the directory containing your image tiles (the dialog scans and reports the count)
+5. Choose an output directory (defaults to `{project}/mae_pretrained/`)
+6. Click **Start Pretraining** -- a progress monitor shows reconstruction loss over epochs
+
+### Using the pretrained encoder
+
+After pretraining completes, load the encoder weights when training a MuViT classifier:
+
+1. Open **Train Classifier...**
+2. Select the **MuViT** architecture
+3. Use **"Retrain or refine a previously created model..."** or specify the encoder path in the "Continue from model" field to load your pretrained weights
+
+### Dataset size guidance
+
+The dialog auto-suggests epoch counts based on your dataset:
+
+| Dataset size | Suggested epochs | Notes |
+|-------------|-----------------|-------|
+| < 50 tiles | 500 | Very small -- consider gathering more data |
+| 50-200 tiles | 300 | Small dataset, needs many passes |
+| 200-1000 tiles | 100 | Good balance |
+| > 1000 tiles | 50 | Large dataset, fewer passes needed |
+
+See [PARAMETERS.md](PARAMETERS.md#mae-pretraining-parameters) for detailed parameter reference and [BEST_PRACTICES.md](BEST_PRACTICES.md#mae-pretraining) for tuning guidance.
 
 ## Step 9: Verify the Result
 

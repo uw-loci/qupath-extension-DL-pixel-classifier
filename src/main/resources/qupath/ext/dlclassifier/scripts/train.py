@@ -238,17 +238,27 @@ def setup_callback(phase, data=None):
 def progress_callback(epoch, train_loss, val_loss, accuracy,
                        per_class_iou, per_class_loss, mean_iou):
     """Forward training progress to Appose task events."""
+    import math
+    # Guard against NaN/Inf: Python json.dumps serializes float('nan') as bare
+    # NaN token which is NOT valid JSON. Gson's JsonParser rejects it, silently
+    # dropping ALL progress updates. See docs/APPOSE_DEV_GUIDE.md.
+    def _safe(v):
+        return v if isinstance(v, (int, str)) or (isinstance(v, float) and math.isfinite(v)) else 0.0
+
+    def _safe_dict(d):
+        return {k: _safe(v) for k, v in d.items()} if d else {}
+
     total_epochs = training_params.get("epochs", 50)
     task.update(
         message=json.dumps({
             "epoch": epoch,
             "total_epochs": total_epochs,
-            "train_loss": train_loss,
-            "val_loss": val_loss,
-            "accuracy": accuracy,
-            "mean_iou": mean_iou,
-            "per_class_iou": per_class_iou if per_class_iou else {},
-            "per_class_loss": per_class_loss if per_class_loss else {},
+            "train_loss": _safe(train_loss),
+            "val_loss": _safe(val_loss),
+            "accuracy": _safe(accuracy),
+            "mean_iou": _safe(mean_iou),
+            "per_class_iou": _safe_dict(per_class_iou),
+            "per_class_loss": _safe_dict(per_class_loss),
         }),
         current=epoch,
         maximum=total_epochs

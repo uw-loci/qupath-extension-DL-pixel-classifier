@@ -178,6 +178,7 @@ See [docs/TROUBLESHOOTING.md](docs/TROUBLESHOOTING.md) for the full troubleshoot
 - **Experiment with backbones** -- try a larger backbone (resnet50) or a histology-pretrained backbone for tissue classification, or import a custom ONNX model
 - **Multi-image training** -- combine annotations from several images for a more robust classifier
 - **Tune training strategy** -- expand the "TRAINING STRATEGY" section in the training dialog to adjust the LR scheduler, loss function, early stopping metric/patience, and mixed precision
+- **MAE pretraining** -- if using the MuViT architecture, pretrain the encoder on unlabeled tiles via **Utilities > MAE Pretrain Encoder...** for better domain-specific features. See the [Training Guide](docs/TRAINING_GUIDE.md#mae-pretraining-muvit-encoder) for details.
 - See the [Training Guide](docs/TRAINING_GUIDE.md) and [Inference Guide](docs/INFERENCE_GUIDE.md) for detailed parameter explanations
 
 ---

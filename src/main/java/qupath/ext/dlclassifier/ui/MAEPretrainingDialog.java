@@ -78,46 +78,87 @@ public class MAEPretrainingDialog {
         modelConfigCombo.setMaxWidth(Double.MAX_VALUE);
         modelConfigCombo.setCellFactory(lv -> createConfigCell());
         modelConfigCombo.setButtonCell(createConfigCell());
+        TooltipHelper.install(modelConfigCombo,
+                "MuViT encoder size for pretraining.\n" +
+                "Must match the model you plan to use for supervised training.\n\n" +
+                "Small (6 layers, 256 dim): Fastest, lowest VRAM. Good for\n" +
+                "small datasets or quick experiments.\n" +
+                "Base (12 layers, 512 dim): Recommended default. Good balance\n" +
+                "of capacity and training speed.\n" +
+                "Large (16 layers, 768 dim): Highest capacity but needs more\n" +
+                "data and VRAM. Best for large, diverse datasets.");
 
         patchSizeCombo = new ComboBox<>(FXCollections.observableArrayList(8, 16));
         patchSizeCombo.setValue(16);
         patchSizeCombo.setMaxWidth(100);
-        patchSizeCombo.setTooltip(new Tooltip(
-                "Size of patches for the transformer.\n" +
-                "16 is recommended for most cases. 8 = more tokens = more VRAM."));
+        TooltipHelper.install(patchSizeCombo,
+                "Size of non-overlapping patches the image is divided into\n" +
+                "before feeding to the Vision Transformer.\n\n" +
+                "16 (recommended): Standard patch size. Each 256x256 tile\n" +
+                "produces 16x16 = 256 tokens. Good balance of detail and speed.\n" +
+                "8: Finer-grained patches. Each 256x256 tile produces\n" +
+                "32x32 = 1024 tokens. Captures more detail but uses ~4x more\n" +
+                "VRAM and trains significantly slower.\n\n" +
+                "Must match the patch size used for downstream training.");
 
         levelScalesField = new TextField("1,4");
         levelScalesField.setMaxWidth(150);
-        levelScalesField.setTooltip(new Tooltip(
-                "Comma-separated scale factors for multi-resolution levels.\n" +
-                "Example: '1,4' = detail at 1x and context at 4x."));
+        TooltipHelper.install(levelScalesField,
+                "Comma-separated scale factors for multi-resolution input.\n" +
+                "MuViT processes the image at multiple resolutions simultaneously,\n" +
+                "fusing features across scales.\n\n" +
+                "Example: '1,4' = full resolution (1x) + 4x downsampled context.\n" +
+                "Example: '1,2,4' = three-scale pyramid.\n\n" +
+                "The default '1,4' captures both fine detail and broader context.\n" +
+                "Must match the level scales used for downstream training.");
 
         // Training controls
         epochsSpinner = new Spinner<>(10, 2000, 100, 10);
         epochsSpinner.setEditable(true);
         epochsSpinner.setPrefWidth(100);
-        epochsSpinner.setTooltip(new Tooltip(
-                "Number of MAE pretraining epochs.\n" +
-                "More epochs always helps -- no saturation observed up to 1600.\n" +
-                "Small datasets (<100 images): use 200-500 epochs.\n" +
-                "Medium datasets (100-1000): 100-200 epochs.\n" +
-                "Large datasets (>1000): 50-100 epochs."));
+        TooltipHelper.install(epochsSpinner,
+                "Number of complete passes through the dataset. Range: 10-2000.\n" +
+                "More epochs give the encoder more chances to learn image structure.\n" +
+                "No overfitting risk in MAE -- more is generally better.\n\n" +
+                "Auto-suggested when you select a data directory:\n" +
+                "  < 50 images:     500 epochs (many passes compensate for low diversity)\n" +
+                "  50-200 images:   300 epochs\n" +
+                "  200-1000 images: 100 epochs\n" +
+                "  > 1000 images:    50 epochs (enough diversity per pass)\n\n" +
+                "Longer training always helps with diminishing returns.\n" +
+                "No early stopping -- runs for the full epoch count.");
 
         maskRatioSpinner = new Spinner<>(0.50, 0.90, 0.75, 0.05);
         maskRatioSpinner.setEditable(true);
         maskRatioSpinner.setPrefWidth(100);
-        maskRatioSpinner.setTooltip(new Tooltip(
-                "Fraction of patches to mask during pretraining.\n" +
-                "0.75 (75%) is the standard default from MAE literature.\n" +
-                "For very small datasets (<50 images), try 0.60-0.70."));
+        TooltipHelper.install(maskRatioSpinner,
+                "Fraction of image patches randomly masked during pretraining.\n" +
+                "The encoder learns by reconstructing the masked patches from\n" +
+                "the visible ones. Range: 0.50-0.90.\n\n" +
+                "0.75 (75%): Recommended default from the MAE paper. Only 25%\n" +
+                "of patches are visible, forcing the encoder to learn strong\n" +
+                "semantic and structural features to fill in the rest.\n\n" +
+                "Lower (0.50-0.65): Easier reconstruction task. More visible\n" +
+                "patches means the model can rely on local texture. Use for\n" +
+                "very small datasets (<50 images) or low-diversity images where\n" +
+                "the harder task would not converge well.\n\n" +
+                "Higher (0.80-0.90): Harder task -- very few visible patches.\n" +
+                "Forces the model to learn global, high-level features. Use for\n" +
+                "large, diverse datasets with complex tissue structures.\n" +
+                "May need more epochs to converge.");
 
         batchSizeSpinner = new Spinner<>(1, 64, 8, 1);
         batchSizeSpinner.setEditable(true);
         batchSizeSpinner.setPrefWidth(100);
-        batchSizeSpinner.setTooltip(new Tooltip(
-                "Batch size for pretraining.\n" +
-                "Larger = faster but more GPU memory.\n" +
-                "Auto-reduced if dataset is smaller than batch size."));
+        TooltipHelper.install(batchSizeSpinner,
+                "Number of image tiles processed together per training step.\n" +
+                "Range: 1-64.\n\n" +
+                "Larger batches give more stable gradient estimates and\n" +
+                "faster training (better GPU utilization), but use more VRAM.\n" +
+                "Reduce if you get CUDA out-of-memory errors.\n\n" +
+                "Typical: 4-8 for 8 GB VRAM, 8-16 for 12+ GB VRAM.\n" +
+                "If your dataset has fewer images than the batch size,\n" +
+                "it is automatically reduced to the dataset size.");
 
         var lrFactory = new SpinnerValueFactory.DoubleSpinnerValueFactory(1e-5, 1e-2, 1.5e-4, 1e-5);
         lrFactory.setConverter(new javafx.util.StringConverter<>() {
@@ -137,22 +178,44 @@ public class MAEPretrainingDialog {
         learningRateSpinner = new Spinner<>(lrFactory);
         learningRateSpinner.setEditable(true);
         learningRateSpinner.setPrefWidth(120);
-        learningRateSpinner.setTooltip(new Tooltip(
-                "Learning rate for pretraining.\n" +
-                "1.5e-4 is the standard MAE default.\n" +
-                "Lower for very small datasets."));
+        TooltipHelper.install(learningRateSpinner,
+                "Peak learning rate for the AdamW optimizer.\n" +
+                "Range: 0.00001-0.01. Default: 0.00015 (1.5e-4).\n\n" +
+                "1.5e-4: Standard MAE default from the original paper.\n" +
+                "Works well for most dataset sizes and model configurations.\n\n" +
+                "Lower (1e-5 to 5e-5): Use for very small datasets (<50 images)\n" +
+                "or if loss oscillates during training.\n" +
+                "Higher (3e-4 to 1e-3): May speed up convergence on large datasets\n" +
+                "but risks instability. Not usually needed.\n\n" +
+                "Combined with cosine annealing: LR ramps up during warmup,\n" +
+                "then decays smoothly to near zero over the remaining epochs.");
 
         warmupEpochsSpinner = new Spinner<>(0, 50, 5, 1);
         warmupEpochsSpinner.setEditable(true);
         warmupEpochsSpinner.setPrefWidth(100);
-        warmupEpochsSpinner.setTooltip(new Tooltip(
-                "Number of epochs for learning rate warmup.\n" +
-                "Transformers typically benefit from 2-10 warmup epochs."));
+        TooltipHelper.install(warmupEpochsSpinner,
+                "Number of epochs to linearly ramp the learning rate from 0\n" +
+                "to the target value. Range: 0-50. Default: 5.\n\n" +
+                "Warmup prevents early training instability by starting with\n" +
+                "very small gradient steps. Vision Transformers are particularly\n" +
+                "sensitive to this -- training can diverge without warmup.\n\n" +
+                "2-5 epochs: Good for small datasets or short training runs.\n" +
+                "5-10 epochs: Good for longer runs (200+ epochs).\n" +
+                "Set to 0 to disable warmup (not recommended for transformers).");
 
         // Data controls
         dataPathField = new TextField();
         dataPathField.setPromptText("Directory of unlabeled image tiles...");
         dataPathField.setPrefWidth(250);
+        TooltipHelper.install(dataPathField,
+                "Path to a directory containing unlabeled image tiles for pretraining.\n" +
+                "Supported formats: PNG, TIFF, JPEG, RAW.\n\n" +
+                "These can be any crops from your whole-slide images -- no annotations\n" +
+                "or labels are needed. The encoder learns from the image structure itself.\n" +
+                "Subdirectories are scanned recursively. If a 'train/images/' subdirectory\n" +
+                "exists, it will be used automatically.\n\n" +
+                "Tip: Use representative tiles from your target tissue type and staining.\n" +
+                "Include tiles from different regions and intensity ranges for best results.");
 
         datasetInfoLabel = new Label();
         datasetInfoLabel.setStyle("-fx-font-size: 11px; -fx-text-fill: #666;");
@@ -162,6 +225,13 @@ public class MAEPretrainingDialog {
         outputDirField = new TextField();
         outputDirField.setPromptText("Output directory for encoder weights...");
         outputDirField.setPrefWidth(250);
+        TooltipHelper.install(outputDirField,
+                "Directory where the pretrained encoder weights will be saved.\n" +
+                "Defaults to '{project}/mae_pretrained/' if a QuPath project is open.\n\n" +
+                "The output is a .pt file containing the encoder state dict.\n" +
+                "To use it: open Train Classifier, select MuViT architecture,\n" +
+                "and load the weights via 'Continue from model'.\n" +
+                "The directory is created automatically if it does not exist.");
 
         // Set default output dir from project if available
         var qupath = QuPathGUI.getInstance();

@@ -367,13 +367,18 @@ class MAEPretrainingService:
             dataset,
             batch_size=batch_size,
             shuffle=True,
-            num_workers=min(4, os.cpu_count() or 1),
+            num_workers=0,  # Must be 0: multiprocessing hangs in embedded Python (Appose)
             pin_memory=self._device_str == "cuda",
             drop_last=len(dataset) > batch_size,
         )
 
         # --- Create model ---
         _report("creating_model")
+        logger.info(
+            "Creating MuViT MAE: config=%s, in_ch=%d, patch=%d, "
+            "levels=%s, layers=%d, decoder=%d, mask=%.2f",
+            model_config, num_channels, patch_size,
+            levels, cfg["num_layers"], num_layers_decoder, mask_ratio)
 
         model = MuViTMAEPretrainer(
             in_channels=num_channels,
@@ -386,7 +391,10 @@ class MAEPretrainingService:
         model = model.to(self.device)
 
         param_count = sum(p.numel() for p in model.parameters())
-        logger.info("MAE model: %.1fM parameters", param_count / 1e6)
+        trainable_count = sum(
+            p.numel() for p in model.parameters() if p.requires_grad)
+        logger.info("MAE model: %.1fM parameters (%.1fM trainable), device=%s",
+                     param_count / 1e6, trainable_count / 1e6, self.device)
 
         # --- Optimizer: AdamW with (0.9, 0.95) as per MAE convention ---
         optimizer = torch.optim.AdamW(
@@ -422,11 +430,19 @@ class MAEPretrainingService:
             "lr=%.2e, mask=%.0f%%",
             epochs, batch_size, effective_batch, grad_accum_steps,
             learning_rate, mask_ratio * 100)
+        logger.info(
+            "DataLoader: %d batches/epoch, pin_memory=%s, drop_last=%s",
+            len(dataloader), self._device_str == "cuda",
+            len(dataset) > batch_size)
+        logger.info(
+            "AMP: %s, dtype=%s, grad_scaler=%s",
+            use_amp, amp_dtype, use_grad_scaler)
 
         best_loss = float('inf')
         best_state = None
         history = []
 
+        first_batch_done = False
         for epoch in range(1, epochs + 1):
             if cancel_flag and cancel_flag.is_set():
                 logger.info("Pretraining cancelled at epoch %d", epoch)
@@ -444,6 +460,11 @@ class MAEPretrainingService:
 
                 images = images.to(self.device, non_blocking=True)
 
+                if not first_batch_done:
+                    logger.info(
+                        "First batch loaded: shape=%s, dtype=%s, device=%s",
+                        list(images.shape), images.dtype, images.device)
+
                 if use_amp:
                     with torch.amp.autocast("cuda", dtype=amp_dtype):
                         loss = model(images)
@@ -456,6 +477,11 @@ class MAEPretrainingService:
                     loss = model(images)
                     loss = loss / grad_accum_steps
                     loss.backward()
+
+                if not first_batch_done:
+                    logger.info("First forward+backward pass complete, loss=%.6f",
+                                loss.item() * grad_accum_steps)
+                    first_batch_done = True
 
                 if (batch_idx + 1) % grad_accum_steps == 0 or \
                         (batch_idx + 1) == len(dataloader):

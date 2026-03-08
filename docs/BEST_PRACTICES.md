@@ -222,6 +222,38 @@ The extension supports four normalization strategies. The choice affects how pix
 3. **Manual layer freeze tuning** for your specific dataset
 4. **Cross-validation** using multiple train/test splits
 
+## MAE Pretraining
+
+Masked Autoencoder (MAE) pretraining teaches a MuViT encoder to understand tissue structure from unlabeled images before supervised training. This section covers when and how to use it effectively.
+
+### When MAE pretraining helps
+
+- **Domain-specific tissue**: Your images contain tissue types or staining patterns not well-represented by generic pretrained weights
+- **Large unlabeled datasets**: You have many images but limited annotations -- MAE leverages the unlabeled data
+- **Small labeled datasets**: A pretrained encoder needs fewer labeled examples to fine-tune effectively
+
+### When to skip MAE pretraining
+
+- **Standard H&E histopathology**: The built-in histology-pretrained backbones (Lunit, Kather100K) are already trained on millions of H&E patches
+- **Very few images**: With fewer than ~30 tiles, the encoder cannot learn meaningful representations
+- **Quick experiments**: Standard pretrained weights are sufficient for initial experiments; MAE pretraining adds hours to the workflow
+
+### Mask ratio selection
+
+| Mask ratio | Best for | Notes |
+|-----------|----------|-------|
+| 0.75 (default) | Most cases | Good balance between reconstruction difficulty and feature learning |
+| 0.5-0.6 | Simple tissue patterns | Easier reconstruction task, learns coarser features |
+| 0.8-0.9 | Complex, high-detail tissue | Harder task forces finer-grained feature learning; may need more epochs |
+
+### Tips for effective pretraining
+
+1. **Match model configuration**: Use the same model size (small/base/large) and patch size for pretraining and downstream training
+2. **Use representative tiles**: Include tiles from various regions, staining intensities, and tissue types present in your target dataset
+3. **Monitor reconstruction loss**: The loss should decrease steadily. If it plateaus very early, consider increasing mask ratio or epochs
+4. **Pretraining on CPU is extremely slow**: GPU (CUDA) is strongly recommended. A typical pretraining run takes 1-6 hours on GPU depending on dataset size and epochs
+5. **Save encoder weights**: The output directory contains the encoder weights file that can be loaded during classifier training
+
 ## Interpreting Tile Evaluation Results
 
 After training, the **Review Training Areas** feature evaluates every training tile and ranks them by loss. This section explains how to use those results to improve your classifier.

@@ -585,6 +585,13 @@ public class SetupDLClassifier implements QuPathExtension, GitHubProject {
                         config.config().get("epochs"),
                         config.dataPath());
                 progress.log("MAE pretraining starting...");
+                progress.log("Model: " + config.config().get("model_config")
+                        + ", patch=" + config.config().get("patch_size")
+                        + ", scales=" + config.config().get("level_scales"));
+                progress.log("Training: " + config.config().get("epochs")
+                        + " epochs, batch=" + config.config().get("batch_size")
+                        + ", lr=" + config.config().get("learning_rate")
+                        + ", mask=" + config.config().get("mask_ratio"));
                 progress.log("Data: " + config.dataPath());
                 progress.log("Output: " + config.outputDir());
 
@@ -602,14 +609,17 @@ public class SetupDLClassifier implements QuPathExtension, GitHubProject {
                                     progress.setStatus("Initializing for "
                                             + maeProgress.totalEpochs() + " epoch run...");
                                 } else {
-                                    progress.setStatus(formatSetupPhase(
-                                            maeProgress.setupPhase()));
+                                    String phaseMsg = formatSetupPhase(
+                                            maeProgress.setupPhase());
+                                    progress.setStatus(phaseMsg);
+                                    progress.log(phaseMsg);
                                 }
                                 return;
                             }
 
                             // First real epoch - log start
                             if (lastLoggedEpoch[0] < 0) {
+                                progress.log("Training loop started");
                                 progress.setStatus("Pretraining ("
                                         + maeProgress.totalEpochs() + " epochs)...");
                             }

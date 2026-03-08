@@ -92,6 +92,41 @@ Complete reference for every parameter in the training and inference dialogs. Th
 | **Color jitter** | Off | Perturb brightness/contrast/saturation. Good for H&E, not for fluorescence. |
 | **Elastic deformation** | Off | Smooth spatial deformations. Effective but ~30% slower. See [Albumentations](https://albumentations.ai/docs/). |
 
+## MAE Pretraining Parameters
+
+These parameters are available in the **MAE Pretrain Encoder** dialog (**Extensions > DL Pixel Classifier > Utilities > MAE Pretrain Encoder...**). MAE pretraining is a standalone workflow for self-supervised pretraining of MuViT encoder weights on unlabeled image tiles.
+
+### Model Architecture
+
+| Parameter | Options | Description |
+|-----------|---------|-------------|
+| **Model Configuration** | muvit-small, muvit-base, muvit-large | MuViT model size. Must match the model you plan to use for supervised training. Larger models learn richer features but need more data and training time. |
+| **Patch Size** | 8, 16 | Vision transformer patch size. Smaller patches capture finer detail but increase compute. 16 is recommended for most cases. |
+| **Level Scales** | Text (e.g., "1,4") | Comma-separated multi-resolution scale factors for multi-scale feature fusion. |
+
+### Training Hyperparameters
+
+| Parameter | Default | Range | Description |
+|-----------|---------|-------|-------------|
+| **Epochs** | 100 | 10-2000 | Number of pretraining epochs. Auto-suggested based on dataset size: <50 tiles -> 500, <200 -> 300, <1000 -> 100, 1000+ -> 50. |
+| **Mask Ratio** | 0.75 | 0.5-0.9 | Fraction of image patches masked during pretraining. Higher = harder reconstruction task. 0.75 is the standard MAE default. |
+| **Batch Size** | 8 | 1-64 | Tiles per training step. Reduce if out-of-memory. |
+| **Learning Rate** | 0.00015 | 0.00001-0.01 | AdamW learning rate. The default (1.5e-4) follows the original MAE paper recommendation. Displayed with 5 decimal places. |
+| **Warmup Epochs** | 5 | 0-50 | Number of epochs for linear learning rate warmup from 0 to the target learning rate. |
+
+### Data
+
+| Parameter | Description |
+|-----------|-------------|
+| **Data Directory** | Directory containing unlabeled image tiles (.png, .tif, .tiff, .jpg, .jpeg, .raw). The dialog scans the directory and reports the number of images found with an auto-suggested epoch count. |
+| **Dataset Info** | Auto-populated label showing image count and epoch recommendation after selecting a directory. |
+
+### Output
+
+| Parameter | Description |
+|-----------|-------------|
+| **Output Directory** | Where to save the pretrained encoder weights. Defaults to `{project}/mae_pretrained/`. The directory is created automatically if it does not exist. |
+
 ## Inference Parameters
 
 ### Classifier Selection
