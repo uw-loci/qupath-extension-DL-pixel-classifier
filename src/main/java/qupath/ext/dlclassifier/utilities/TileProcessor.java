@@ -268,6 +268,7 @@ public class TileProcessor {
         switch (blendMode) {
             case GAUSSIAN -> createGaussianWeights(weights);
             case LINEAR -> createLinearWeights(weights);
+            case CENTER_CROP -> createCenterCropWeights(weights);
             case NONE -> createUniformWeights(weights);
         }
 
@@ -288,6 +289,22 @@ public class TileProcessor {
                 double dy = y - centerY;
                 double distSq = dx * dx + dy * dy;
                 weights[y][x] = (float) Math.exp(-distSq / (2 * sigma * sigma));
+            }
+        }
+    }
+
+    /**
+     * Creates center-crop weights: 1.0 inside the center region, 0.0 in the overlap margin.
+     * Only center predictions are kept, eliminating boundary artifacts at the cost of
+     * ~4x more tiles needed for full coverage.
+     */
+    private void createCenterCropWeights(float[][] weights) {
+        int margin = overlap;
+        for (int y = 0; y < tileSize; y++) {
+            for (int x = 0; x < tileSize; x++) {
+                boolean inCenter = x >= margin && x < tileSize - margin
+                                && y >= margin && y < tileSize - margin;
+                weights[y][x] = inCenter ? 1.0f : 0.0f;
             }
         }
     }

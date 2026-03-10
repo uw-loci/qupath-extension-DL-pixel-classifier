@@ -54,6 +54,8 @@ public class InferenceConfig {
         LINEAR,
         /** Gaussian-weighted blending in overlap regions */
         GAUSSIAN,
+        /** Keep only center predictions; zero boundary artifacts, ~4x slower */
+        CENTER_CROP,
         /** No blending, use tile center values */
         NONE
     }

@@ -106,7 +106,17 @@ public class DLPixelClassifier implements PixelClassifier {
         this.downsample = metadata.getDownsample();
         this.contextScale = metadata.getContextScale();
         this.inputPadding = computeOverlayPadding(inferenceConfig.getTileSize());
+
+        // Model-type-aware blending: ViTs need wider, smoother blending
+        // due to global self-attention making predictions tile-dependent
+        boolean isViT = "muvit".equals(metadata.getModelType());
+        InferenceConfig.BlendMode overlayBlendMode = isViT
+                ? InferenceConfig.BlendMode.GAUSSIAN
+                : inferenceConfig.getBlendMode();
+        int overlayMaxBlendDist = isViT ? -1 : 32;  // -1 = full inputPadding
+
         this.blendCache = new TileBlendCache(100, inputPadding,
+                overlayBlendMode, overlayMaxBlendDist,
                 () -> OverlayService.getInstance().refreshOverlayForBlending());
         this.pixelMetadata = buildPixelMetadata(imageData);
         this.colorModel = buildColorModel();
@@ -612,6 +622,9 @@ public class DLPixelClassifier implements PixelClassifier {
      * @return padding in pixels (at least 64, at most tileSize/2)
      */
     private int computeOverlayPadding(int tileSize) {
+        if (inferenceConfig.getBlendMode() == InferenceConfig.BlendMode.CENTER_CROP) {
+            return tileSize / 2;  // 50% padding: only center visible, no blend needed
+        }
         int configOverlap = inferenceConfig.getOverlap();
         int minContextPadding = tileSize / 4;  // 25% minimum padding
         int padding = Math.max(configOverlap, minContextPadding);

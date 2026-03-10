@@ -2,6 +2,7 @@ package qupath.ext.dlclassifier.service;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import qupath.ext.dlclassifier.model.InferenceConfig;
 
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ConcurrentLinkedDeque;
@@ -16,8 +17,9 @@ import java.util.concurrent.TimeUnit;
  * <p>
  * The cache stores raw probability maps from inference results keyed by
  * tile request coordinates. When blending is requested, it looks up
- * neighboring tiles (left, right, top, bottom) and applies a linear
+ * neighboring tiles (left, right, top, bottom) and applies a configurable
  * cross-fade at boundaries to eliminate visible seams in the overlay.
+ * Supports LINEAR (ramp), GAUSSIAN (cosine bell), and CENTER_CROP modes.
  * <p>
  * Also tracks observed tile positions to compute the empirical step
  * between tiles, which is used to locate neighbor tiles in the cache.
@@ -69,16 +71,28 @@ public class TileBlendCache {
     /** Callback invoked when a deferred overlay refresh fires. */
     private final Runnable refreshCallback;
 
+    /** Blend mode for weight computation (LINEAR, GAUSSIAN/cosine, CENTER_CROP). */
+    private final InferenceConfig.BlendMode blendMode;
+
+    /** Maximum blend distance in pixels. -1 = use full inputPadding. */
+    private final int maxBlendDist;
+
     /**
      * Creates a new tile blend cache.
      *
      * @param maxSize         maximum number of probability maps to cache
      * @param inputPadding    QuPath's inputPadding (extra pixels on each side of visible tile)
+     * @param blendMode       blend mode for weight computation
+     * @param maxBlendDist    maximum blend distance (-1 = use full inputPadding)
      * @param refreshCallback called when a deferred overlay refresh fires
      */
-    public TileBlendCache(int maxSize, int inputPadding, Runnable refreshCallback) {
+    public TileBlendCache(int maxSize, int inputPadding,
+                          InferenceConfig.BlendMode blendMode, int maxBlendDist,
+                          Runnable refreshCallback) {
         this.maxSize = maxSize;
         this.inputPadding = inputPadding;
+        this.blendMode = blendMode;
+        this.maxBlendDist = maxBlendDist;
         this.refreshCallback = refreshCallback;
     }
 
@@ -170,6 +184,11 @@ public class TileBlendCache {
      */
     public float[][][] blendWithNeighbors(float[][][] probMap, int requestX, int requestY,
                                            int width, int height) {
+        // CENTER_CROP: every visible pixel is at the center of its tile, no blending needed
+        if (blendMode == InferenceConfig.BlendMode.CENTER_CROP) {
+            return probMap;
+        }
+
         // Need empirical step to locate neighbors
         int stepX = empiricalStepX;
         int stepY = empiricalStepY;
@@ -193,8 +212,8 @@ public class TileBlendCache {
             return probMap;  // No neighbors available
         }
 
-        // Blend distance capped at overlap region size (can't blend beyond it)
-        int blendDist = Math.min(inputPadding, 32);
+        // Blend distance: configurable max or full inputPadding
+        int blendDist = (maxBlendDist > 0) ? Math.min(inputPadding, maxBlendDist) : inputPadding;
 
         // Create a copy for blending (don't modify cached original)
         float[][][] blended = deepCopyProbMap(probMap);
@@ -210,7 +229,7 @@ public class TileBlendCache {
                     int xSelf  = width - inputPadding - 1 - d;  // visible col near right edge
                     int xRight = inputPadding - 1 - d;          // same image loc in right neighbor
                     if (xSelf < 0 || xRight < 0 || xRight >= right[y].length) break;
-                    float wSelf = 0.5f + 0.5f * ((d + 0.5f) / blendDist);
+                    float wSelf = blendWeight(d, blendDist);
                     float wNeighbor = 1.0f - wSelf;
                     int nc = Math.min(numClasses, right[y][xRight].length);
                     for (int c = 0; c < nc; c++) {
@@ -230,7 +249,7 @@ public class TileBlendCache {
                     int xSelf = inputPadding + d;           // visible col near left edge
                     int xLeft = width - inputPadding + d;   // same image loc in left neighbor
                     if (xSelf >= width || xLeft >= left[y].length) break;
-                    float wSelf = 0.5f + 0.5f * ((d + 0.5f) / blendDist);
+                    float wSelf = blendWeight(d, blendDist);
                     float wNeighbor = 1.0f - wSelf;
                     int nc = Math.min(numClasses, left[y][xLeft].length);
                     for (int c = 0; c < nc; c++) {
@@ -250,7 +269,7 @@ public class TileBlendCache {
                 int ySelf   = height - inputPadding - 1 - d;  // visible row near bottom edge
                 int yBottom = inputPadding - 1 - d;            // same image loc in bottom neighbor
                 if (ySelf < 0 || yBottom < 0 || yBottom >= bottom.length) break;
-                float wSelf = 0.5f + 0.5f * ((d + 0.5f) / blendDist);
+                float wSelf = blendWeight(d, blendDist);
                 float wNeighbor = 1.0f - wSelf;
                 int bw = Math.min(width, bottom[yBottom].length);
                 for (int x = 0; x < bw; x++) {
@@ -270,7 +289,7 @@ public class TileBlendCache {
                 int ySelf = inputPadding + d;            // visible row near top edge
                 int yTop  = height - inputPadding + d;   // same image loc in top neighbor
                 if (ySelf >= height || yTop >= top.length) break;
-                float wSelf = 0.5f + 0.5f * ((d + 0.5f) / blendDist);
+                float wSelf = blendWeight(d, blendDist);
                 float wNeighbor = 1.0f - wSelf;
                 int tw = Math.min(width, top[yTop].length);
                 for (int x = 0; x < tw; x++) {
@@ -342,6 +361,27 @@ public class TileBlendCache {
     }
 
     // ==================== Internal Methods ====================
+
+    /**
+     * Computes the self-weight for a pixel at distance {@code d} from a tile boundary.
+     * <p>
+     * For GAUSSIAN mode, uses a cosine bell (smooth S-curve) that transitions
+     * more gradually than linear -- better suited to ViT models where prediction
+     * gradients are smooth due to global self-attention.
+     *
+     * @param d         distance from the boundary (0 = at boundary, blendDist-1 = interior)
+     * @param blendDist total blend zone width in pixels
+     * @return self-weight in [0.5, 1.0]
+     */
+    private float blendWeight(int d, int blendDist) {
+        float t = (d + 0.5f) / blendDist;  // 0 at boundary, 1 at interior
+        if (blendMode == InferenceConfig.BlendMode.GAUSSIAN) {
+            // Cosine bell: smooth S-curve transition
+            return (float) (0.5 * (1.0 + Math.cos(Math.PI * (1.0 - t))));
+        }
+        // LINEAR (default): current behavior
+        return 0.5f + 0.5f * t;
+    }
 
     /**
      * Computes the empirical step between tile requests by finding the minimum

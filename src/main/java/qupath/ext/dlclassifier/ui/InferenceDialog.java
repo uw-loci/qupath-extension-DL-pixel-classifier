@@ -468,9 +468,13 @@ public class InferenceDialog {
             TooltipHelper.install(blendModeCombo,
                     "Strategy for merging predictions in overlapping tile regions:\n\n" +
                     "LINEAR: Weighted average favoring tile centers.\n" +
-                    "  Good balance of quality and speed. Recommended default.\n\n" +
-                    "GAUSSIAN: Gaussian-weighted blending for smoother transitions.\n" +
-                    "  Best quality for overlays. Slightly slower than linear.\n\n" +
+                    "  Good balance of quality and speed. Recommended for CNN models.\n\n" +
+                    "GAUSSIAN: Cosine-bell blending for smoother transitions.\n" +
+                    "  Recommended for ViT/MuViT models (set automatically for overlays).\n" +
+                    "  Better handles the smooth prediction gradients from global attention.\n\n" +
+                    "CENTER_CROP: Keep only center predictions, discard overlap margins.\n" +
+                    "  Zero boundary artifacts but ~4x slower (more tiles needed).\n" +
+                    "  Use when artifact-free results are critical.\n\n" +
                     "NONE: No blending; last tile wins.\n" +
                     "  Fastest option but may show visible tile seams.\n" +
                     "  Only use with 0% overlap or for debugging.");
