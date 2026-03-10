@@ -487,6 +487,53 @@ class SegmentationDataset(Dataset):
         return np.array(img, dtype=np.float32)
 
 
+def _validate_mae_architecture(pretrained_path, architecture, log):
+    """Check MAE metadata architecture against segmentation config.
+
+    Warns on mismatches but does not raise -- mismatched configs may still
+    partially transfer encoder weights.
+    """
+    meta_path = Path(pretrained_path).parent / "metadata.json"
+    if not meta_path.exists():
+        log.info("No metadata.json next to pretrained model -- "
+                 "skipping architecture validation")
+        return
+    try:
+        with open(meta_path) as f:
+            mae_meta = json.load(f)
+    except Exception as e:
+        log.warning("Could not read pretrained metadata.json: %s", e)
+        return
+    mae_arch = mae_meta.get("architecture", {})
+    # Compare model_config
+    mae_cfg = mae_arch.get("model_config", "")
+    seg_cfg = architecture.get("model_config",
+                               architecture.get("backbone", ""))
+    if mae_cfg and seg_cfg and mae_cfg != seg_cfg:
+        log.warning("MAE pretrained with model_config='%s' but "
+                    "segmentation uses '%s'. Layer counts differ -- "
+                    "encoder weights may not transfer.",
+                    mae_cfg, seg_cfg)
+    # Compare patch_size
+    mae_ps = mae_arch.get("patch_size")
+    seg_ps = architecture.get("patch_size")
+    if mae_ps and seg_ps and int(mae_ps) != int(seg_ps):
+        log.warning("MAE pretrained with patch_size=%d but "
+                    "segmentation uses %d.", int(mae_ps), int(seg_ps))
+    # Compare level_scales
+    mae_ls = str(mae_arch.get("level_scales", ""))
+    seg_ls = str(architecture.get("level_scales", ""))
+    if mae_ls and seg_ls and mae_ls != seg_ls:
+        log.warning("MAE pretrained with level_scales='%s' but "
+                    "segmentation uses '%s'.", mae_ls, seg_ls)
+    # Compare input_channels
+    mae_ch = mae_arch.get("input_channels")
+    seg_ch = architecture.get("input_channels",
+                              architecture.get("num_channels"))
+    if mae_ch and seg_ch and int(mae_ch) != int(seg_ch):
+        log.warning("MAE pretrained with %d channels but "
+                    "segmentation uses %d.", int(mae_ch), int(seg_ch))
+
 
 class TrainingService:
     """Service for training deep learning models.
@@ -675,45 +722,84 @@ class TrainingService:
         if pretrained_model_path and not checkpoint_path:
             _report_setup("loading_pretrained_weights")
             try:
-                logger.info(f"Loading pretrained weights from: {pretrained_model_path}")
-                saved = torch.load(pretrained_model_path, map_location=self.device,
-                                   weights_only=True)
-
-                # Handle both bare state_dict and {"model_state_dict": ...} checkpoint format
-                if isinstance(saved, dict) and "model_state_dict" in saved:
-                    state_dict = saved["model_state_dict"]
+                pt_path = Path(pretrained_model_path)
+                if not pt_path.exists():
+                    logger.warning("Pretrained model not found: %s -- "
+                                   "training from scratch.",
+                                   pretrained_model_path)
                 else:
-                    state_dict = saved
+                    logger.info("Loading pretrained weights from: %s",
+                                pretrained_model_path)
+                    saved = torch.load(pretrained_model_path,
+                                       map_location=self.device,
+                                       weights_only=True)
 
-                # Detect shape mismatches (e.g. different class count) and skip those keys
-                model_state = model.state_dict()
-                matched_keys = []
-                mismatched_keys = []
-                for key in state_dict:
-                    if key in model_state:
-                        if state_dict[key].shape == model_state[key].shape:
-                            matched_keys.append(key)
-                        else:
-                            mismatched_keys.append(key)
-                            logger.warning(f"  Shape mismatch for '{key}': "
-                                           f"pretrained={list(state_dict[key].shape)} "
-                                           f"vs model={list(model_state[key].shape)} -- skipping")
+                    # Handle both bare state_dict and
+                    # {"model_state_dict": ...} checkpoint format
+                    if isinstance(saved, dict) and "model_state_dict" in saved:
+                        state_dict = saved["model_state_dict"]
+                    else:
+                        state_dict = saved
 
-                # Build filtered state dict with only shape-compatible keys
-                filtered_state = {k: state_dict[k] for k in matched_keys}
-                missing_in_pretrained = set(model_state.keys()) - set(state_dict.keys())
+                    # Detect MAE checkpoint and strip "mae." prefix so that
+                    # encoder keys (mae.encoder.* -> encoder.*) match the
+                    # MuViTSegmentation model's state_dict.
+                    mae_prefix = "mae."
+                    has_mae_keys = any(
+                        k.startswith(mae_prefix) for k in state_dict)
+                    if has_mae_keys:
+                        logger.info(
+                            "Detected MAE checkpoint -- stripping 'mae.' "
+                            "prefix for encoder weight transfer.")
+                        state_dict = {
+                            (k[len(mae_prefix):]
+                             if k.startswith(mae_prefix) else k): v
+                            for k, v in state_dict.items()
+                        }
+                        _validate_mae_architecture(
+                            pretrained_model_path, architecture, logger)
 
-                result = model.load_state_dict(filtered_state, strict=False)
-                logger.info(f"Loaded {len(matched_keys)} weight tensors from pretrained model")
-                if mismatched_keys:
-                    logger.info(f"  Skipped {len(mismatched_keys)} mismatched keys "
-                                f"(likely segmentation head due to class count change)")
-                if missing_in_pretrained:
-                    logger.debug(f"  {len(missing_in_pretrained)} keys not in pretrained model "
-                                 f"(randomly initialized)")
+                    # Shape-aware key matching
+                    model_state = model.state_dict()
+                    matched_keys = []
+                    mismatched_keys = []
+                    for key in state_dict:
+                        if key in model_state:
+                            if state_dict[key].shape == model_state[key].shape:
+                                matched_keys.append(key)
+                            else:
+                                mismatched_keys.append(key)
+                                logger.warning(
+                                    "  Shape mismatch '%s': "
+                                    "pretrained=%s vs model=%s -- skipping",
+                                    key, list(state_dict[key].shape),
+                                    list(model_state[key].shape))
+
+                    # Build filtered state dict with only shape-compatible keys
+                    filtered_state = {k: state_dict[k] for k in matched_keys}
+                    model.load_state_dict(filtered_state, strict=False)
+
+                    # Diagnostics
+                    enc_loaded = sum(
+                        1 for k in matched_keys if k.startswith("encoder"))
+                    logger.info(
+                        "Loaded %d/%d weight tensors (%d encoder keys)",
+                        len(matched_keys), len(model_state), enc_loaded)
+                    if mismatched_keys:
+                        logger.info("  Skipped %d shape-mismatched keys",
+                                    len(mismatched_keys))
+
+                    # Critical warning if encoder transfer failed
+                    if enc_loaded == 0:
+                        logger.warning(
+                            "*** 0 encoder keys loaded from pretrained "
+                            "model! ***  The pretrained weights were NOT "
+                            "applied to the encoder. Check that architecture "
+                            "configs match. Training will proceed from "
+                            "random initialization.")
             except Exception as e:
-                logger.warning(f"Failed to load pretrained weights: {e} -- "
-                               f"training will start from scratch")
+                logger.warning("Failed to load pretrained weights: %s -- "
+                               "training from scratch", e)
 
         # Create datasets
         _report_setup("loading_data")
@@ -1148,9 +1234,15 @@ class TrainingService:
             else:
                 mp_desc = "Off"
 
-            # Normalization
-            norm_method = input_config.get("normalization", "percentile_99")
-            per_channel = input_config.get("per_channel", True)
+            # Normalization -- input_config["normalization"] may be a
+            # dict (current format) or a bare strategy string.
+            norm_config_val = input_config.get("normalization", {})
+            if isinstance(norm_config_val, dict):
+                norm_method = norm_config_val.get("strategy", "percentile_99")
+                per_channel = norm_config_val.get("per_channel", False)
+            else:
+                norm_method = str(norm_config_val) if norm_config_val else "percentile_99"
+                per_channel = input_config.get("per_channel", False)
             norm_desc = f"{norm_method} (per_channel={per_channel})"
 
             # Augmentation list
@@ -1286,10 +1378,13 @@ class TrainingService:
                     with torch.amp.autocast("cuda", dtype=amp_dtype):
                         outputs = model(images)
                         loss = criterion(outputs, masks)
-                    # Compute loss in float32 for accurate accumulation/logging
-                    # (BF16 can underflow with transformer initial outputs)
-                    loss_f32 = loss.float()
-                    scaled_loss = loss_f32 / accumulation_steps
+                    # Capture loss for logging BEFORE backward.
+                    # When loss is already float32 (CE promotes under
+                    # autocast), loss.float() returns the SAME tensor
+                    # object -- backward() can then invalidate its
+                    # storage, causing .item() to return 0.
+                    train_loss += loss.detach().float().item()
+                    scaled_loss = loss.float() / accumulation_steps
                     if scaler is not None:
                         # FP16 path: use GradScaler
                         scaler.scale(scaled_loss).backward()
@@ -1299,11 +1394,9 @@ class TrainingService:
                 else:
                     outputs = model(images)
                     loss = criterion(outputs, masks)
-                    loss_f32 = loss
+                    train_loss += loss.detach().item()
                     scaled_loss = loss / accumulation_steps
                     scaled_loss.backward()
-
-                train_loss += loss_f32.item()
 
                 # Step optimizer every accumulation_steps batches (or on last batch)
                 if (batch_idx + 1) % accumulation_steps == 0 or (batch_idx + 1) == len(active_train_loader):
@@ -1926,7 +2019,9 @@ class TrainingService:
                     num_channels=num_channels,
                     num_classes=num_classes,
                 )
-                logger.info(f"Created MuViT model ({architecture.get('model_config', 'muvit-base')})")
+                cfg = architecture.get("model_config",
+                                      architecture.get("backbone", "muvit-base"))
+                logger.info("Created MuViT model (config=%s)", cfg)
                 return model
 
             if model_type not in model_map:

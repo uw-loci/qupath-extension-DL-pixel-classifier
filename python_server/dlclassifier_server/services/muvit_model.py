@@ -233,6 +233,12 @@ def create_muvit_model(
     if model_config not in MODEL_CONFIGS:
         model_config = architecture.get("backbone", "muvit-base")
     if model_config not in MODEL_CONFIGS:
+        raw_config = architecture.get("model_config",
+                                      architecture.get("backbone", "?"))
+        logger.warning(
+            "Unrecognized MuViT model_config '%s'. "
+            "Available: %s. Falling back to 'muvit-base'.",
+            raw_config, list(MODEL_CONFIGS.keys()))
         model_config = "muvit-base"
 
     patch_size = int(architecture.get("patch_size", 16))

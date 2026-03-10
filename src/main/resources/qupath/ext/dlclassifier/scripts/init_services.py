@@ -111,8 +111,18 @@ try:
             logger.info("Loading PyTorch model from %s (patched)", pt_path)
 
             metadata_path = model_dir / "metadata.json"
-            with open(metadata_path) as f:
-                metadata = _json.load(f)
+            if not metadata_path.exists():
+                raise FileNotFoundError(
+                    "Classifier metadata not found: %s. "
+                    "The classifier directory may be incomplete."
+                    % metadata_path)
+            try:
+                with open(metadata_path) as f:
+                    metadata = _json.load(f)
+            except _json.JSONDecodeError as e:
+                raise RuntimeError(
+                    "Classifier metadata is corrupt (%s): %s"
+                    % (metadata_path, e))
 
             arch = metadata.get("architecture", {})
             input_config = metadata.get("input_config", {})
@@ -131,8 +141,13 @@ try:
             # from the encoder's first conv layer weight shape.
             # This is the ground truth -- metadata may be wrong (known bug
             # where training saves num_channels=3 for multi-channel models).
-            state_dict = torch.load(pt_path, map_location=self.device,
-                                    weights_only=True)
+            try:
+                state_dict = torch.load(pt_path, map_location=self.device,
+                                        weights_only=True)
+            except Exception as e:
+                raise RuntimeError(
+                    "Failed to load model weights from %s: %s. "
+                    "File may be corrupt." % (pt_path, e))
 
             num_channels = metadata_channels
             conv1_key = "encoder.conv1.weight"
@@ -226,7 +241,58 @@ try:
                 replace_bn_with_batchrenorm(model)
                 logger.info("Auto-detected BatchRenorm from state dict keys")
 
-            model.load_state_dict(state_dict)
+            # Detect MAE checkpoint accidentally used as classifier
+            mae_keys = [k for k in state_dict if k.startswith("mae.")]
+            if mae_keys:
+                raise RuntimeError(
+                    "This model file contains MAE pretraining weights "
+                    "(not a trained classifier). Use 'Continue from model' "
+                    "during training to load MAE weights as initialization, "
+                    "then train a segmentation classifier.")
+
+            # Pre-validate shapes to produce clear error messages
+            model_state = model.state_dict()
+            shape_mismatches = []
+            for key in state_dict:
+                if (key in model_state
+                        and state_dict[key].shape != model_state[key].shape):
+                    shape_mismatches.append(
+                        "%s: checkpoint=%s model=%s" % (
+                            key, list(state_dict[key].shape),
+                            list(model_state[key].shape)))
+
+            if shape_mismatches:
+                detail = "\n  ".join(shape_mismatches[:5])
+                extra = ""
+                if len(shape_mismatches) > 5:
+                    extra = ("\n  ... and %d more"
+                             % (len(shape_mismatches) - 5))
+                raise RuntimeError(
+                    "Model architecture mismatch: %d weights have "
+                    "incompatible shapes.\n  %s%s\n"
+                    "The model.pt may be from a different training run "
+                    "or architecture configuration."
+                    % (len(shape_mismatches), detail, extra))
+
+            missing = set(model_state.keys()) - set(state_dict.keys())
+            if missing and len(missing) / max(1, len(model_state)) > 0.5:
+                raise RuntimeError(
+                    "Model architecture mismatch: %d/%d expected weights "
+                    "missing from checkpoint. The model.pt does not match "
+                    "the architecture in metadata.json."
+                    % (len(missing), len(model_state)))
+
+            try:
+                model.load_state_dict(state_dict)
+            except RuntimeError as e:
+                err = str(e)
+                if "size mismatch" in err or "Missing key" in err:
+                    raise RuntimeError(
+                        "Model weights do not match architecture. "
+                        "The classifier may need to be retrained. "
+                        "Detail: %s" % err) from None
+                raise
+
             model = model.to(self.device)
             model.eval()
 
