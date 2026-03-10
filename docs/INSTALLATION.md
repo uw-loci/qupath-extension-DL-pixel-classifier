@@ -18,9 +18,9 @@ Complete setup instructions for the DL Pixel Classifier extension.
 
 Download the latest release JAR from the [GitHub Releases](https://github.com/MichaelSNelson/qupath-extension-DL-pixel-classifier/releases) page.
 
-### Copy to QuPath extensions directory
+### Install the JAR
 
-Copy the JAR to your QuPath extensions directory:
+**Drag and drop** the JAR file directly onto the open QuPath window (easiest), or copy it manually to your QuPath extensions directory:
 
 | OS | Typical extensions path |
 |----|------------------------|
@@ -32,7 +32,7 @@ Copy the JAR to your QuPath extensions directory:
 
 ### Verify installation
 
-Restart QuPath. You should see **Extensions > DL Pixel Classifier** in the menu bar. On first launch, only **Setup DL Environment...** and **Utilities** will be visible -- this is normal.
+Restart QuPath. You should see **Extensions > DL Pixel Classifier** in the menu bar. On first launch, only **Setup DL Environment...** and the **Utilities** submenu will be visible -- this is normal. The training and inference menu items appear after the environment is set up.
 
 ## Part 2: Python Environment Setup (Appose -- Default)
 
@@ -53,7 +53,7 @@ The extension uses [Appose](https://github.com/apposed/appose) to automatically 
 
 The setup wizard uses [pixi](https://pixi.sh/) (via Appose) to create an isolated Python environment containing:
 
-- Python 3.10
+- Python 3.11
 - PyTorch 2.1+ (with CUDA support on Windows/Linux)
 - segmentation-models-pytorch
 - NumPy, Pillow, scikit-image
@@ -71,7 +71,7 @@ The environment is stored at:
 
 ### Rebuilding the environment
 
-If the environment becomes corrupted or you want a fresh install:
+If the environment becomes corrupted, you want a fresh install, or you have installed a new version of the extension that requires updated Python packages:
 
 1. Go to **Extensions > DL Pixel Classifier > Utilities > Rebuild DL Environment...**
 2. Confirm the rebuild (this deletes the existing environment)
@@ -108,7 +108,7 @@ If no GPU is detected, the backend automatically falls back to CPU. Training wil
 
 1. Open QuPath with the extension installed
 2. You should see **Extensions > DL Pixel Classifier** in the menu bar
-3. If this is first time: only **Setup DL Environment...** and **Utilities** are visible
+3. If this is first time: only **Setup DL Environment...** and the **Utilities** submenu are visible
 4. After running setup: all workflow items (Train, Apply, Toggle Prediction Overlay, etc.) appear
 5. Open the **Python Console** (Utilities menu) to verify GPU status
 

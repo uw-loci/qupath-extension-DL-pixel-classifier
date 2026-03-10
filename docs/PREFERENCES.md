@@ -19,6 +19,7 @@ These appear in **Edit > Preferences > DL Pixel Classifier**.
 | Overlay Reflection Padding | `dlclassifier.overlayReflectionPadding` | `32` | Pixels of reflection padding per tile to reduce edge artifacts. Set to 0 to disable. |
 | Overlay Overlap (um) | `dlclassifier.overlayOverlapUm` | `25.0` | Target tile overlap distance in microns for overlays. Converted to pixels using the image's pixel calibration. Ensures consistent overlap regardless of objective/resolution. Minimum 64 pixels. |
 | Use GPU for Inference | `dlclassifier.useGPU` | `true` | Use GPU acceleration when available |
+| Training Data Export Directory | `dlclassifier.trainingExportDir` | `""` | Directory for exporting training data patches. Empty = use temp directory. |
 
 ## Tile Settings
 
@@ -59,11 +60,12 @@ These are saved when you click "Start Training" and restored next time you open 
 | Horizontal Flip | `dlclassifier.augFlipHorizontal` | `true` | Augmentation: horizontal flip |
 | Vertical Flip | `dlclassifier.augFlipVertical` | `true` | Augmentation: vertical flip |
 | Rotation | `dlclassifier.augRotation` | `true` | Augmentation: 90-degree rotation |
-| Color Jitter | `dlclassifier.augColorJitter` | `false` | Augmentation: color perturbation |
 | Elastic Deformation | `dlclassifier.augElasticDeform` | `false` | Augmentation: elastic distortion |
-| Resolution Downsample | `dlclassifier.defaultDownsample` | `1.0` | Resolution downsample factor (1x, 2x, 4x, 8x) |
-| Context Scale | `dlclassifier.defaultContextScale` | `1` | Multi-scale context level |
+| Intensity Aug Mode | `dlclassifier.augIntensityMode` | `none` | Intensity augmentation mode: none, brightfield, fluorescence |
+| Resolution Downsample | `dlclassifier.defaultDownsample` | `1.0` | Resolution downsample factor (1x, 2x, 4x, 8x, 16x) |
+| Context Scale | `dlclassifier.defaultContextScale` | `1` | Multi-scale context level (1=none, 2, 4, 8, 16) |
 | Line Stroke Width | `dlclassifier.lastLineStrokeWidth` | `0` | Line annotation mask width (0 = use QuPath's annotation stroke thickness) |
+| Rebalance by Default | `dlclassifier.rebalanceByDefault` | `true` | Auto-rebalance class weights when classes are loaded |
 
 ## Training Strategy Preferences (remembered across sessions)
 
@@ -83,7 +85,7 @@ These are saved when you click "Apply" and restored next time you open the dialo
 
 | Preference | Key | Default | Description |
 |-----------|-----|---------|-------------|
-| Output Type | `dlclassifier.lastOutputType` | `MEASUREMENTS` | Last used output type |
+| Output Type | `dlclassifier.lastOutputType` | `RENDERED_OVERLAY` | Last used output type |
 | Blend Mode | `dlclassifier.lastBlendMode` | `LINEAR` | Last used blend mode |
 | Smoothing | `dlclassifier.smoothing` | `1.0` | Boundary smoothing amount |
 | Application Scope | `dlclassifier.applicationScope` | `ALL_ANNOTATIONS` | Last used scope |

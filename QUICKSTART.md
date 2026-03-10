@@ -19,7 +19,7 @@ Get from zero to your first trained pixel classifier in about 10 minutes.
 ## Step 1: Install the Extension
 
 1. Download the latest JAR from the [GitHub Releases](https://github.com/MichaelSNelson/qupath-extension-DL-pixel-classifier/releases) page
-2. Copy the JAR to your QuPath extensions directory:
+2. **Drag and drop** the JAR directly onto the open QuPath window (easiest), or copy it manually to your QuPath extensions directory:
 
 | OS | Typical extensions path |
 |----|------------------------|
@@ -35,7 +35,7 @@ Get from zero to your first trained pixel classifier in about 10 minutes.
 
 ## Step 2: Set Up the Python Environment
 
-On first launch after installing the extension, only **Setup DL Environment...** will be visible in the menu.
+On first launch after installing the extension, only **Setup DL Environment...** and the **Utilities** submenu will be visible in the menu.
 
 1. Go to **Extensions > DL Pixel Classifier > Setup DL Environment...**
 2. Review the download size warning (~2-4 GB)
@@ -46,6 +46,8 @@ On first launch after installing the extension, only **Setup DL Environment...**
 7. Click **Close** when done
 
 The training and inference menu items now appear automatically. On subsequent launches, the environment is detected on disk and everything is ready immediately.
+
+> **After updating the extension:** If you install a new version, you may need to re-run **Setup DL Environment...** (or **Utilities > Rebuild DL Environment...**) to update the Python environment to match.
 
 > **GPU not detected?** If the setup reports CPU-only but you have an NVIDIA GPU, make sure your NVIDIA drivers are installed and try **Utilities > Rebuild DL Environment...** See [Troubleshooting](docs/TROUBLESHOOTING.md) for details.
 
@@ -78,7 +80,7 @@ The dialog has collapsible sections. For a quick first test:
 | **Backbone** | `resnet34` (or a histology backbone -- see below) |
 | **Epochs** | `3` (just to verify it works) |
 | **Tile Size** | `256` or `512` |
-| **Use Pretrained Weights** | checked |
+| **Weight Initialization** | Use pretrained backbone weights |
 
 Leave everything else at defaults.
 
@@ -104,9 +106,10 @@ When training completes, the classifier is saved to your QuPath project under `c
 3. **Extensions > DL Pixel Classifier > Apply Classifier...**
 4. Select your trained classifier
 5. Choose an output type:
+   - **Rendered Overlay** -- batch inference with seamless blending (recommended for quality validation)
    - **Measurements** -- adds class probabilities as annotation measurements
    - **Objects** -- creates detection objects from the classification map
-   - **Overlay** -- renders a color overlay on the viewer
+   - **Overlay** -- renders a live on-demand color overlay as you pan and zoom
 6. Click **Apply**
 
 ---
@@ -116,8 +119,8 @@ When training completes, the classifier is saved to your QuPath project under `c
 To iterate on a model with updated annotations or adjusted settings:
 
 1. Open the training dialog (**Train Classifier...**)
-2. Click **"Load Settings from Model..."** at the top
-3. Select the model you want to build on
+2. In the **WEIGHT INITIALIZATION** section, select **"Continue training from saved model"**
+3. Click **"Select model..."** and choose the model you want to build on
 4. All parameters (architecture, learning rate, augmentation, etc.) are pre-filled
 5. Adjust any settings as needed
 6. Select images and load classes -- classes matching the source model are auto-selected

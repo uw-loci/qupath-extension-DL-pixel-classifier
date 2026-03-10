@@ -51,11 +51,8 @@ import qupath.ext.dlclassifier.scripting.DLClassifierScripts
 
 def classifier = DLClassifierScripts.loadClassifier("my_classifier_id")
 
-for (entry in getProject().getImageList()) {
-    def imageData = entry.readImageData()
-    DLClassifierScripts.classifyRegions(classifier, imageData.getAnnotationObjects())
-    entry.saveImageData(imageData)
-}
+// Use the built-in project batch method
+DLClassifierScripts.classifyProject(classifier)
 println "Done"
 ```
 
@@ -132,8 +129,8 @@ def trainingConfig = TrainingConfig.builder()
 | `.tileSize(int)` | int | Tile size in pixels (must be divisible by 32) |
 | `.overlap(int)` | int | Overlap in pixels |
 | `.overlapPercent(double)` | double | Overlap as percentage (0-50) |
-| `.blendMode(BlendMode)` | enum | LINEAR, GAUSSIAN, or NONE |
-| `.outputType(OutputType)` | enum | MEASUREMENTS, OBJECTS, or OVERLAY |
+| `.blendMode(BlendMode)` | enum | LINEAR, GAUSSIAN, CENTER_CROP, or NONE |
+| `.outputType(OutputType)` | enum | MEASUREMENTS, OBJECTS, OVERLAY, or RENDERED_OVERLAY |
 | `.objectType(OutputObjectType)` | enum | DETECTION or ANNOTATION |
 | `.minObjectSize(double)` | double | Min object area in um^2 |
 | `.holeFilling(double)` | double | Hole filling threshold in um^2 |
@@ -148,6 +145,31 @@ def trainingConfig = TrainingConfig.builder()
 | `.channelNames(List<String>)` | list | Channel names |
 | `.bitDepth(int)` | int | Image bit depth |
 | `.normalizationStrategy(NormalizationStrategy)` | enum | PERCENTILE_99, MIN_MAX, Z_SCORE, FIXED_RANGE |
+
+### Additional Simple API Methods
+
+```groovy
+// List all available classifiers
+def classifierIds = DLClassifierScripts.listClassifiers()
+
+// Batch process entire project
+DLClassifierScripts.classifyProject(classifier)
+
+// Batch with options
+DLClassifierScripts.classifyProject(classifier, InferenceConfig.OutputType.OBJECTS, true, null)
+
+// Check/clear measurements
+DLClassifierScripts.hasClassificationMeasurements(annotations)
+DLClassifierScripts.clearClassificationMeasurements(annotations)
+DLClassifierScripts.clearCurrentImageMeasurements()
+
+// Get classification summary
+def summary = DLClassifierScripts.getClassificationSummary()
+
+// Server status
+DLClassifierScripts.isServerAvailable()
+DLClassifierScripts.getGPUInfo()
+```
 
 ## Common Patterns
 

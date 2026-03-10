@@ -9,7 +9,8 @@ Training a classifier involves:
 2. Configuring the model and training parameters
 3. Running training with progress monitoring
 4. Reviewing training areas to identify annotation issues (optional)
-5. Verifying the trained model
+5. Continuing training if needed (optional)
+6. Verifying the trained model
 
 ## Step 1: Prepare Annotations
 
@@ -37,15 +38,26 @@ Training a classifier involves:
 
 Go to **Extensions > DL Pixel Classifier > Train Classifier...**
 
-The dialog has collapsible sections. Sections marked with a collapse arrow can be expanded for advanced options.
+The dialog has collapsible titled pane sections. Sections appear in this order:
+
+1. **TRAINING DATA SOURCE** -- select images and load classes
+2. **CLASSIFIER INFO** -- name and description
+3. **MODEL ARCHITECTURE** -- architecture and encoder selection
+4. **WEIGHT INITIALIZATION** -- how to initialize model weights
+5. **TRAINING PARAMETERS** -- epochs, batch size, tile size, etc.
+6. **TRAINING STRATEGY** -- scheduler, loss, early stopping (collapsed)
+7. **CHANNEL CONFIGURATION** -- input channel selection and normalization
+8. **ANNOTATION CLASSES** -- class selection and weight balancing
+9. **DATA AUGMENTATION** -- flip, rotation, intensity augmentation (collapsed)
 
 ## Loading Settings from a Previous Model
 
-When retraining or iterating on a model, you can pre-populate all dialog settings from a previously trained classifier:
+To pre-populate dialog settings from a previously trained classifier:
 
-1. Click **"Retrain or refine a previously created model..."** at the top of the training dialog
-2. Select a model from the table (sorted by date, newest first)
-3. Click **OK**
+1. In the **WEIGHT INITIALIZATION** section, select the **"Continue training from saved model"** radio button
+2. Click **"Select model..."** to open the model picker
+3. Select a model from the table (sorted by date, newest first)
+4. Click **OK**
 
 This populates:
 - **Architecture, backbone, tile size, downsample, context scale, epochs** from the model metadata
@@ -56,13 +68,6 @@ This populates:
 All fields can be adjusted before training. Older models (trained before this feature) will only populate the architecture-level settings; hyperparameters will keep their preference defaults.
 
 ## Step 3: Configure Basic Settings
-
-### Classifier Info
-
-| Setting | Description |
-|---------|-------------|
-| **Classifier Name** | Unique identifier (letters, numbers, underscore, hyphen). Used as filename. |
-| **Description** | Optional free-text description for documentation. |
 
 ### Training Data Source
 
@@ -75,6 +80,13 @@ Check the project images to include in training. Only images with classified ann
 
 Multi-image training combines patches from all selected images into one training set, improving generalization. If you previously loaded settings from a model, classes matching the source model are auto-selected after loading.
 
+### Classifier Info
+
+| Setting | Description |
+|---------|-------------|
+| **Classifier Name** | Unique identifier (letters, numbers, underscore, hyphen). Used as filename. |
+| **Description** | Optional free-text description for documentation. |
+
 ## Step 4: Configure Model Architecture
 
 ### Architecture
@@ -82,12 +94,12 @@ Multi-image training combines patches from all selected images into one training
 | Architecture | Best for | Reference |
 |-------------|----------|-----------|
 | **UNet** | General-purpose segmentation. Good default. | [Paper](https://arxiv.org/abs/1505.04597) |
-| **MuViT** | Multi-scale feature fusion with Vision Transformer encoder. Supports optional MAE pretraining. | - |
-| **Custom ONNX** | Importing externally trained models. Advanced users. | - |
+| **MuViT (Transformer)** | Multi-scale feature fusion with Vision Transformer encoder. Supports optional MAE pretraining. | - |
+| **Custom ONNX Model** | Importing externally trained models. Advanced users. | - |
 
-### Backbone (Encoder)
+### Encoder (UNet)
 
-The UNet architecture supports the following backbones:
+When UNet is selected, choose a backbone encoder:
 
 **Standard backbones (ImageNet-pretrained):**
 
@@ -114,7 +126,34 @@ Histology-pretrained backbones (marked "Histology" in the dropdown) use weights 
 
 > **Important:** Histology backbones are designed for H&E brightfield images. For **fluorescence, multiplex IF, or multi-channel (>3 channel) images**, use a standard ImageNet backbone (resnet34 or resnet50) instead. The histology-pretrained first conv layer encodes H&E color responses that do not transfer to fluorescence intensity patterns. See [Backbone Selection](BEST_PRACTICES.md#backbone-selection) for detailed guidance.
 
-## Step 5: Configure Training Parameters
+### MuViT Configuration
+
+When MuViT (Transformer) is selected, the encoder combo is hidden and model-specific controls appear:
+
+| Parameter | Options | Description |
+|-----------|---------|-------------|
+| **Model size** | muvit-small, muvit-base, muvit-large | Transformer capacity. Larger models need more data and VRAM. |
+| **Patch size** | 8, 16 | ViT patch size. 16 recommended. Smaller = finer detail, more compute. |
+| **Level scales** | Text (e.g., "1,4") | Multi-resolution scale factors. |
+| **Position encoding** | per_layer, shared, fixed, none | Rotary position encoding mode. per_layer recommended. |
+
+## Step 5: Configure Weight Initialization
+
+The **WEIGHT INITIALIZATION** section controls how model weights are initialized. Choose one of four strategies:
+
+| Strategy | When to use |
+|----------|-------------|
+| **Train from scratch** | Very large datasets or custom architectures. Rarely needed. |
+| **Use pretrained backbone weights** | **Recommended for most cases.** Uses ImageNet or histology-pretrained encoder weights. Shows a layer freeze panel for fine-grained control. |
+| **Use MAE pretrained encoder** | MuViT only. Load encoder weights from a self-supervised MAE pretrained .pt file. Click "Browse..." to select. Architecture locks to match the encoder. |
+| **Continue training from saved model** | Resume from a previously trained classifier. Click "Select model..." to pick the model. All settings populate from the saved model. |
+
+When **Use pretrained backbone weights** is selected, a layer freeze panel appears:
+- Per-layer checkboxes to freeze/unfreeze individual encoder layers
+- **Freeze All** / **Unfreeze All** / **Use Recommended** buttons
+- Small datasets (<500 tiles): freeze most layers; large datasets (>5000): unfreeze nearly all
+
+## Step 6: Configure Training Parameters
 
 ### Core parameters
 
@@ -123,31 +162,27 @@ Histology-pretrained backbones (marked "Histology" in the dropdown) use weights 
 | **Epochs** | 50 | 50-200 for small datasets, 20-100 for large. Early stopping prevents overfitting. |
 | **Batch Size** | 8 | 4-8 for 8GB VRAM with 512px tiles. Reduce if out-of-memory. |
 | **Learning Rate** | 0.001 | Safe default for AdamW. Reduce to 1e-4 if loss oscillates. When using OneCycleLR, an LR finder auto-runs to suggest the optimal max learning rate. |
-| **Validation Split** | 20% | 15-25% typical. 10% for very small datasets. |
+| **Validation Split** | 20% | 15-25% typical. Uses stratified sampling for balanced splits. |
 | **Tile Size** | 512 | Must be divisible by 32. 256 for cell-level, 512 for tissue-level. |
-| **Resolution** | 1x | 1x for cell-level, 2-4x for tissue-level classification. |
+| **Whole image** | Off | Checkbox. Uses entire image as one tile (small images only). For MuViT, tile size is capped at 512px. |
+| **Resolution** | 1x | 1x, 2x, 4x, 8x, 16x. Higher = more context, less detail. "Preview" button shows the image at selected resolution. |
+| **Context Scale** | 4x (Recommended) | None, 2x, 4x, 8x, 16x. Adds surrounding context at lower resolution alongside the main tile. Hidden for MuViT (handles multi-scale internally). |
 | **Tile Overlap** | 0% | 10-25% generates more patches from limited annotations. |
-| **Line Stroke Width** | 0 | Width for polyline annotation masks (0 = use QuPath's stroke thickness). Increase for sparse lines. |
+| **Line Stroke Width** | QuPath's stroke | Width for polyline annotation masks (minimum 1px). Increase for sparse lines. |
 
-### Training Strategy (advanced, collapsed by default)
+### Training Strategy (collapsed by default)
 
 | Parameter | Default | Guidance |
 |-----------|---------|----------|
-| **LR Scheduler** | One Cycle | Best default. "Reduce on Plateau" is a good alternative when training is noisy. [PyTorch docs](https://pytorch.org/docs/stable/optim.html) |
-| **Loss Function** | CE + Dice | Recommended. Dice optimizes IoU directly. [smp losses](https://smp.readthedocs.io/en/latest/losses.html) |
+| **LR Scheduler** | One Cycle | Best default. "Reduce on Plateau" is a good alternative when training is noisy. |
+| **Loss Function** | Cross Entropy + Dice | Recommended. Dice optimizes IoU directly. |
 | **Early Stop Metric** | Mean IoU | More reliable than validation loss. |
 | **Early Stop Patience** | 15 | Epochs without improvement before stopping. |
-| **Mixed Precision** | Enabled | Auto-detects BF16 (Ampere+ GPUs) or FP16. ~2x speedup. [PyTorch AMP](https://pytorch.org/docs/stable/amp.html) |
-| **Gradient Accumulation** | 1 | Accumulate gradients over N batches. Set 2-4 to simulate larger batches on limited VRAM. |
-| **Progressive Resizing** | Off | Train at half resolution first (40% of epochs), then full resolution. Speeds up early training. |
-
-### Transfer Learning (advanced, collapsed by default)
-
-- **Use pretrained weights**: Almost always recommended. [Guide](https://cs231n.github.io/transfer-learning/)
-- **Layer freezing**: Freeze early encoder layers to prevent overfitting on small datasets
-  - Small datasets (<500 tiles): Freeze most encoder layers
-  - Medium datasets (500-5000 tiles): Freeze early layers only
-  - Large datasets (>5000 tiles): Unfreeze nearly all layers
+| **Focus Class** | (none) | Select a class whose IoU overrides mean IoU for best-model selection. |
+| **Min Focus IoU** | 0.0 | Minimum IoU threshold for focus class before early stopping kicks in. |
+| **Mixed Precision** | Enabled | FP16/BF16 mixed precision. ~2x speedup on NVIDIA GPUs. |
+| **Gradient Accumulation** | 1 | Accumulate over N batches. Set 2-4 to simulate larger batches on limited VRAM. |
+| **Progressive Resizing** | Off | Train at half resolution first (40% of epochs), then full resolution. |
 
 ### Automatic Optimizations
 
@@ -158,6 +193,23 @@ The following optimizations are applied automatically -- no configuration needed
 - **LR Finder**: When using the One Cycle scheduler on a new training run (not resuming from checkpoint), an automatic learning rate range test runs before training to find the optimal max learning rate. The suggested LR is logged and used as the OneCycleLR max_lr.
 - **BF16 auto-detection**: On Ampere+ GPUs (RTX 3000 series and newer), training and inference automatically use BF16 mixed precision instead of FP16. BF16 has a larger dynamic range and does not require gradient scaling, improving stability.
 
+## Step 7: Select Channels and Classes
+
+### Channel Configuration
+
+- For RGB brightfield images, channels are auto-configured
+- For fluorescence/spectral images, select and order channels manually
+- Set per-channel normalization strategy: PERCENTILE_99 (recommended), MIN_MAX, Z_SCORE, or FIXED_RANGE
+- Channel order must match at inference time
+
+### Annotation Classes
+
+- Select at least 2 annotation classes
+- A pie chart shows per-class annotation area distribution
+- Adjust weight multipliers for imbalanced classes (>1.0 boosts rare classes)
+- **Rebalance Classes** button auto-sets weights inversely proportional to class area
+- **Rebalance by default** checkbox auto-rebalances whenever classes are loaded
+
 ### Data Augmentation (collapsed by default)
 
 | Augmentation | Default | Notes |
@@ -165,28 +217,16 @@ The following optimizations are applied automatically -- no configuration needed
 | Horizontal flip | On | Almost always beneficial |
 | Vertical flip | On | Safe for most histopathology |
 | Rotation (90 deg) | On | Combines with flips for 8x augmentation |
-| Color jitter | Off | Enable for H&E, disable for fluorescence |
+| Intensity augmentation | Auto-selected | Three modes: **None**, **Brightfield (color jitter)** for H&E, **Fluorescence (per-channel)** for IF. Auto-selected based on image type. |
 | Elastic deformation | Off | Effective but ~30% slower. [Albumentations](https://albumentations.ai/docs/) |
 
-## Step 6: Select Channels and Classes
-
-### Channels
-
-- For RGB brightfield images, channels are auto-configured
-- For fluorescence/spectral images, select and order channels manually
-- Channel order must match at inference time
-
-### Classes
-
-- Select at least 2 annotation classes
-- Adjust weight multipliers for imbalanced classes (>1.0 boosts rare classes)
-
-## Step 7: Start Training
+## Step 8: Start Training
 
 Click **Start Training**. A progress window shows:
 - Patch extraction progress
 - Epoch-by-epoch training and validation loss
-- Live loss chart
+- Live loss chart with separate colors for train (blue) and validation (red) loss
+- Per-class IoU metrics
 - Early stopping status
 
 ### What to watch for
@@ -196,7 +236,7 @@ Click **Start Training**. A progress window shows:
 - **Diverging losses** (val goes up, train goes down) = overfitting
 - **Both losses plateau** = model has converged
 
-## Step 8: Review Training Areas (Optional)
+## Step 9: Review Training Areas (Optional)
 
 When training completes successfully, a **"Review Training Areas..."** button appears in the progress dialog. This runs the trained model over all training tiles and ranks them by loss to help you identify annotation errors, hard cases, and model failures.
 
@@ -238,6 +278,16 @@ When training completes successfully, a **"Review Training Areas..."** button ap
 
 See [BEST_PRACTICES.md](BEST_PRACTICES.md#interpreting-tile-evaluation-results) for detailed guidance on interpreting results and improving annotations.
 
+## Step 10: Continue Training (Optional)
+
+When training completes successfully, a **"Continue Training..."** button appears alongside "Review Training Areas..." in the progress dialog. This allows you to extend training with adjusted parameters:
+
+1. Click **"Continue Training..."**
+2. A resume dialog lets you adjust epochs, learning rate, and batch size
+3. Training continues from the best checkpoint with the new settings
+
+This is useful when training stopped early but the model could benefit from more epochs or a different learning rate.
+
 ## MAE Pretraining (MuViT Encoder)
 
 Before training a MuViT-based classifier, you can optionally pretrain the encoder using Masked Autoencoder (MAE) self-supervised learning on unlabeled image tiles. This is a separate workflow accessible from the Utilities menu.
@@ -250,7 +300,7 @@ Before training a MuViT-based classifier, you can optionally pretrain the encode
 
 ### How to pretrain
 
-1. **Prepare image tiles**: Export unlabeled tiles (PNG, TIFF, or JPEG) from your images into a directory. These do not need annotations -- any representative image patches will work.
+1. **Prepare image tiles**: Export unlabeled tiles (PNG, TIFF, JPEG, or BMP) from your images into a directory. These do not need annotations -- any representative image patches will work.
 2. Go to **Extensions > DL Pixel Classifier > Utilities > MAE Pretrain Encoder...**
 3. Configure the pretraining parameters:
 
@@ -273,9 +323,11 @@ Before training a MuViT-based classifier, you can optionally pretrain the encode
 
 After pretraining completes, load the encoder weights when training a MuViT classifier:
 
-1. Open **Train Classifier...**
-2. Select the **MuViT** architecture
-3. Use **"Retrain or refine a previously created model..."** or specify the encoder path in the "Continue from model" field to load your pretrained weights
+1. Open **Extensions > DL Pixel Classifier > Train Classifier...**
+2. Select the **MuViT (Transformer)** architecture
+3. In **WEIGHT INITIALIZATION**, select **"Use MAE pretrained encoder"**
+4. Click **"Browse..."** and select the pretrained .pt file
+5. Architecture settings will auto-lock to match the encoder's metadata
 
 ### Dataset size guidance
 
@@ -290,16 +342,16 @@ The dialog auto-suggests epoch counts based on your dataset:
 
 See [PARAMETERS.md](PARAMETERS.md#mae-pretraining-parameters) for detailed parameter reference and [BEST_PRACTICES.md](BEST_PRACTICES.md#mae-pretraining) for tuning guidance.
 
-## Step 9: Verify the Result
+## Step 11: Verify the Result
 
 When training completes, the classifier is saved to your QuPath project under `classifiers/`. View it via **Extensions > DL Pixel Classifier > Manage Models...**
 
 ### Quick verification
 
 1. Apply the classifier to a test annotation (see [INFERENCE_GUIDE.md](INFERENCE_GUIDE.md))
-2. Check results visually using the overlay output type
+2. Check results visually using the RENDERED_OVERLAY output type (recommended) or OVERLAY for live preview
 3. If results are poor, see [BEST_PRACTICES.md](BEST_PRACTICES.md) for improvement strategies
 
 ## Copy as Script
 
-Click the **"Copy as Script"** button in the training dialog to generate a Groovy script matching your current settings. Paste into QuPath's Script Editor for reproducible and batch training workflows. See [SCRIPTING.md](SCRIPTING.md) for details.
+Click the **"Copy as Script"** button (left side of the button bar) in the training dialog to generate a Groovy script matching your current settings. Paste into QuPath's Script Editor for reproducible and batch training workflows. See [SCRIPTING.md](SCRIPTING.md) for details.

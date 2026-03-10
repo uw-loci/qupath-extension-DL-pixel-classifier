@@ -199,13 +199,13 @@ The extension supports four normalization strategies. The choice affects how pix
 3. **Enable augmentation** (especially flips and rotation)
 4. **Use a histology backbone** for H&E images
 5. **Increase epochs** with early stopping (it is safe to overshoot)
-6. **Retrain from a previous model** using "Retrain or refine a previously created model..." to iterate quickly with the same hyperparameters
+6. **Retrain from a previous model** using "Continue training from saved model" in the Weight Initialization section to iterate quickly with the same hyperparameters
 7. **Re-train models** to save normalization statistics -- new models automatically store training dataset stats for improved inference consistency
 
 ### Medium effort
 
 1. **Adjust class weights** for imbalanced datasets
-2. **Try transfer learning presets** (small/medium/large)
+2. **Try layer freezing strategies** (freeze most layers for small datasets, unfreeze for large)
 3. **Experiment with tile size** (256 vs 512)
 4. **Try different downsample levels** for tissue-level features
 
@@ -298,5 +298,5 @@ After training, the **Review Training Areas** feature evaluates every training t
 3. Sort by loss and review the top 10-20 problematic tiles
 4. Navigate to each tile, assess whether it's an annotation error or a hard case
 5. Fix annotation errors directly in QuPath
-6. Retrain using **"Retrain or refine a previously created model..."** with the corrected annotations
+6. Retrain using **"Continue training from saved model"** in the Weight Initialization section with the corrected annotations
 7. Repeat until the high-loss tiles are genuine hard cases rather than annotation errors

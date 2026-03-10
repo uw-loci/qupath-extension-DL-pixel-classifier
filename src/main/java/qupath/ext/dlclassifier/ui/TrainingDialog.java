@@ -1151,11 +1151,9 @@ public class TrainingDialog {
                     "Segmentation architecture:\n\n" +
                     "UNet: Symmetric encoder-decoder with skip connections.\n" +
                     "  Best general-purpose choice. Good default for most tasks.\n\n" +
-                    "DeepLabV3+: Atrous convolutions for multi-scale context.\n" +
-                    "  Better for large structures that span the entire tile.\n\n" +
-                    "FPN: Feature pyramid for objects at varying scales.\n" +
-                    "  Good when structures vary significantly in size.\n\n" +
-                    "PSPNet: Pyramid pooling for global context.",
+                    "MuViT (Transformer): Multi-resolution Vision Transformer\n" +
+                    "  with multi-scale feature fusion. Supports MAE pretraining.\n\n" +
+                    "Custom ONNX: Import externally trained models for inference.",
                     "https://arxiv.org/abs/1505.04597");
             architectureCombo.valueProperty().addListener((obs, old, newVal) -> updateBackboneOptions(newVal));
 
