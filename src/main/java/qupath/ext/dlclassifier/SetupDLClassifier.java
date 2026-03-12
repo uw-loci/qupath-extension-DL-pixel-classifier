@@ -258,16 +258,15 @@ public class SetupDLClassifier implements QuPathExtension, GitHubProject {
                 noImage.or(overlayService.trainingActiveProperty()));
         livePredictionOption.visibleProperty().bind(environmentReady);
 
-        // 4) Remove Overlay - fully remove and clean up resources
-        MenuItem removeOverlayOption = new MenuItem(res.getString("menu.removeOverlay"));
-        TooltipHelper.installOnMenuItem(removeOverlayOption,
-                "Permanently remove the DL classification overlay and free GPU/CPU resources.\n" +
-                        "Use this to reclaim memory after you are done viewing the overlay.");
-        removeOverlayOption.setOnAction(e -> {
-            overlayService.removeOverlay();
-            Dialogs.showInfoNotification(EXTENSION_NAME, "Classification overlay removed.");
-        });
-        removeOverlayOption.visibleProperty().bind(environmentReady);
+        // 4) Overlay Settings - configure blend mode and overlap
+        MenuItem overlaySettingsOption = new MenuItem(res.getString("menu.overlaySettings"));
+        TooltipHelper.installOnMenuItem(overlaySettingsOption,
+                "Configure blend mode and tile overlap for the prediction overlay.\n" +
+                        "Changes apply immediately if an overlay is active.");
+        overlaySettingsOption.setOnAction(e ->
+                new qupath.ext.dlclassifier.ui.OverlaySettingsDialog(overlayService).show());
+        overlaySettingsOption.disableProperty().bind(noImage);
+        overlaySettingsOption.visibleProperty().bind(environmentReady);
 
         // Separator before models
         SeparatorMenuItem sep2 = new SeparatorMenuItem();
@@ -368,7 +367,7 @@ public class SetupDLClassifier implements QuPathExtension, GitHubProject {
                 inferenceOption,
                 sep1,
                 livePredictionOption,
-                removeOverlayOption,
+                overlaySettingsOption,
                 sep2,
                 modelsOption,
                 sep3,
@@ -713,6 +712,14 @@ public class SetupDLClassifier implements QuPathExtension, GitHubProject {
             return;
         }
 
+        // Sort by creation date (newest first)
+        classifiers.sort((a, b) -> {
+            if (a.getCreatedAt() == null && b.getCreatedAt() == null) return 0;
+            if (a.getCreatedAt() == null) return 1;
+            if (b.getCreatedAt() == null) return -1;
+            return b.getCreatedAt().compareTo(a.getCreatedAt());
+        });
+
         // Show a choice dialog
         List<String> names = classifiers.stream()
                 .map(c -> c.getName() + " (" + c.getId() + ")")
@@ -741,19 +748,26 @@ public class SetupDLClassifier implements QuPathExtension, GitHubProject {
                 .normalizationStrategy(metadata.getNormalizationStrategy())
                 .build();
 
-        // Build inference config for overlay mode
-        // Overlap is computed from physical distance by DLPixelClassifier.buildPixelMetadata()
-        // so we use a placeholder here; the actual padding is set via computePhysicalOverlap()
+        // Build inference config from preferences
+        double overlapPercent = DLClassifierPreferences.getTileOverlapPercent();
+        InferenceConfig.BlendMode blendMode;
+        try {
+            blendMode = InferenceConfig.BlendMode.valueOf(DLClassifierPreferences.getLastBlendMode());
+        } catch (IllegalArgumentException e) {
+            blendMode = InferenceConfig.BlendMode.LINEAR;
+        }
         InferenceConfig inferenceConfig = InferenceConfig.builder()
                 .tileSize(metadata.getInputWidth())
-                .overlap(64)
+                .overlapPercent(overlapPercent)
+                .blendMode(blendMode)
                 .outputType(InferenceConfig.OutputType.OVERLAY)
                 .build();
 
-        // Create the pixel classifier and apply overlay
+        // Create the pixel classifier and apply overlay (store params for re-creation)
         DLPixelClassifier pixelClassifier = new DLPixelClassifier(
                 metadata, channelConfig, inferenceConfig, imageData);
-        overlayService.applyClassifierOverlay(imageData, pixelClassifier);
+        overlayService.applyClassifierOverlay(imageData, pixelClassifier,
+                metadata, channelConfig);
         Dialogs.showInfoNotification(EXTENSION_NAME,
                 "Live DL overlay applied: " + metadata.getName());
     }

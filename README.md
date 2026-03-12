@@ -40,9 +40,9 @@ A QuPath extension for deep learning-based pixel classification, supporting both
 
 | OS | Extensions path |
 |----|----------------|
-| Windows | `C:\Users\<you>\AppData\Local\QuPath\v0.6\extensions\` |
-| macOS | `~/Library/Application Support/QuPath/v0.6/extensions/` |
-| Linux | `~/.local/share/QuPath/v0.6/extensions/` |
+| Windows | `C:\Users\<you>\QuPath\v0.6\extensions\` (or `v0.7` for QuPath 0.7.0) |
+| macOS | `~/Library/Application Support/QuPath/v0.6/extensions/` (or `v0.7`) |
+| Linux | `~/.local/share/QuPath/v0.6/extensions/` (or `v0.7`) |
 
 3. **Restart QuPath** -- the extension appears under **Extensions > DL Pixel Classifier**
 
@@ -63,7 +63,7 @@ See [QUICKSTART.md](QUICKSTART.md) for a complete walkthrough (zero to classifie
 
 ## Requirements
 
-- QuPath 0.6.0+
+- QuPath 0.6.0+ (including 0.7.0)
 - NVIDIA GPU with CUDA recommended (CPU and Apple Silicon MPS also supported)
 - Internet connection for first-time environment setup (~2-4 GB download)
 

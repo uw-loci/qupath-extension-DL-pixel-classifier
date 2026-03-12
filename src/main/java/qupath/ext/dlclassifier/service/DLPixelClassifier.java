@@ -5,7 +5,6 @@ import org.slf4j.LoggerFactory;
 import qupath.ext.dlclassifier.model.ChannelConfiguration;
 import qupath.ext.dlclassifier.model.ClassifierMetadata;
 import qupath.ext.dlclassifier.model.InferenceConfig;
-import qupath.ext.dlclassifier.preferences.DLClassifierPreferences;
 import qupath.ext.dlclassifier.utilities.TileEncoder;
 import qupath.ext.dlclassifier.service.ClassifierClient.PixelInferenceResult;
 import qupath.lib.classifiers.pixel.PixelClassifier;
@@ -113,7 +112,7 @@ public class DLPixelClassifier implements PixelClassifier {
         InferenceConfig.BlendMode overlayBlendMode = isViT
                 ? InferenceConfig.BlendMode.GAUSSIAN
                 : inferenceConfig.getBlendMode();
-        int overlayMaxBlendDist = isViT ? -1 : 32;  // -1 = full inputPadding
+        int overlayMaxBlendDist = -1;  // Use full inputPadding for all models
 
         this.blendCache = new TileBlendCache(100, inputPadding,
                 overlayBlendMode, overlayMaxBlendDist,
@@ -584,32 +583,6 @@ public class DLPixelClassifier implements PixelClassifier {
                 .classificationLabels(labels)
                 .outputChannels(channels)
                 .build();
-    }
-
-    /**
-     * Computes tile overlap in pixels from a target physical distance.
-     * <p>
-     * Uses the image's pixel calibration to convert the preferred overlap distance
-     * (in micrometers) to pixels. Falls back to a minimum of 64 pixels when
-     * calibration is unavailable.
-     *
-     * @param cal      pixel calibration (may lack micron info)
-     * @param tileSize tile size in pixels (overlap is capped at tileSize/2)
-     * @return overlap in pixels
-     */
-    static int computePhysicalOverlap(PixelCalibration cal, int tileSize) {
-        double targetOverlapUm = DLClassifierPreferences.getOverlayOverlapUm();
-        int minOverlap = 64;
-
-        if (cal == null || !cal.hasPixelSizeMicrons()) {
-            return minOverlap;
-        }
-
-        double pixelSizeUm = cal.getAveragedPixelSizeMicrons();
-        int overlapPx = (int) Math.ceil(targetOverlapUm / pixelSizeUm);
-
-        // Clamp: at least minOverlap, at most tileSize/2
-        return Math.max(minOverlap, Math.min(overlapPx, tileSize / 2));
     }
 
     /**

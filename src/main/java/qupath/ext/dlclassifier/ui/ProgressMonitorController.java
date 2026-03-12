@@ -197,9 +197,9 @@ public class ProgressMonitorController {
         iouXAxis.setLabel("Epoch");
         iouXAxis.setAutoRanging(true);
 
-        NumberAxis iouYAxis = new NumberAxis();
+        NumberAxis iouYAxis = new NumberAxis(0, 1.1, 0.1);
         iouYAxis.setLabel("IoU");
-        iouYAxis.setAutoRanging(true);
+        iouYAxis.setAutoRanging(false);
 
         iouChart = new LineChart<>(iouXAxis, iouYAxis);
         iouChart.setTitle("Per-Class IoU");

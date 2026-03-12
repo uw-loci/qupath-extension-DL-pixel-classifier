@@ -457,7 +457,8 @@ public class InferenceWorkflow {
                         progress.log("Region too large for rendered overlay -- using fast overlay instead");
                         DLPixelClassifier pixelClassifier = new DLPixelClassifier(
                                 metadata, channelConfig, inferenceConfig, imageData);
-                        OverlayService.getInstance().applyClassifierOverlay(imageData, pixelClassifier);
+                        OverlayService.getInstance().applyClassifierOverlay(
+                                imageData, pixelClassifier, metadata, channelConfig);
                         progress.complete(true, "Applied fast overlay (region too large for rendered overlay)");
                         return;
                     }
@@ -625,7 +626,8 @@ public class InferenceWorkflow {
         if (inferenceConfig.getOutputType() == InferenceConfig.OutputType.OVERLAY) {
             DLPixelClassifier pixelClassifier = new DLPixelClassifier(
                     metadata, channelConfig, inferenceConfig, imageData);
-            OverlayService.getInstance().applyClassifierOverlay(imageData, pixelClassifier);
+            OverlayService.getInstance().applyClassifierOverlay(
+                    imageData, pixelClassifier, metadata, channelConfig);
             if (progress != null) {
                 progress.log("Classification overlay applied - tiles rendered on demand");
             }

@@ -55,19 +55,11 @@ public final class DLClassifierPreferences {
     private static final BooleanProperty useGPU = PathPrefs.createPersistentPreference(
             "dlclassifier.useGPU", true);
 
-    // Overlay settings
-    private static final IntegerProperty overlayReflectionPadding = PathPrefs.createPersistentPreference(
-            "dlclassifier.overlayReflectionPadding", 32);
-
     private static final DoubleProperty minObjectSizeMicrons = PathPrefs.createPersistentPreference(
             "dlclassifier.minObjectSizeMicrons", 10.0);
 
     private static final DoubleProperty holeFillingMicrons = PathPrefs.createPersistentPreference(
             "dlclassifier.holeFillingMicrons", 5.0);
-
-    // Overlay overlap: target physical distance in micrometers
-    private static final DoubleProperty overlayOverlapUm = PathPrefs.createPersistentPreference(
-            "dlclassifier.overlayOverlapUm", 25.0);
 
     // Normalization
     private static final StringProperty defaultNormalization = PathPrefs.createPersistentPreference(
@@ -175,19 +167,6 @@ public final class DLClassifierPreferences {
                 qupath.getPreferencePane()
                         .getPropertySheet()
                         .getItems();
-
-        // Overlay reflection padding preference removed -- QuPath's inputPadding
-        // now provides real surrounding data, making reflection padding unnecessary.
-
-        items.add(new PropertyItemBuilder<>(overlayOverlapUm, Double.class)
-                .name("Overlay Overlap (um)")
-                .category(CATEGORY)
-                .description("Target physical overlap in micrometers between adjacent tiles " +
-                        "during overlay inference. More overlap provides more CNN context at " +
-                        "tile boundaries, reducing edge artifacts. The actual pixel overlap " +
-                        "is computed from the image's pixel calibration. Minimum: 64 pixels. " +
-                        "Default: 25.0 um.")
-                .build());
 
         items.add(new PropertyItemBuilder<>(useGPU, Boolean.class)
                 .name("Use GPU for Inference")
@@ -334,19 +313,7 @@ public final class DLClassifierPreferences {
         return useGPU;
     }
 
-    // ==================== Overlay Settings ====================
-
-    public static int getOverlayReflectionPadding() {
-        return overlayReflectionPadding.get();
-    }
-
-    public static void setOverlayReflectionPadding(int padding) {
-        overlayReflectionPadding.set(padding);
-    }
-
-    public static IntegerProperty overlayReflectionPaddingProperty() {
-        return overlayReflectionPadding;
-    }
+    // ==================== Object Output Settings ====================
 
     public static double getMinObjectSizeMicrons() {
         return minObjectSizeMicrons.get();
@@ -370,20 +337,6 @@ public final class DLClassifierPreferences {
 
     public static DoubleProperty holeFillingMicronsProperty() {
         return holeFillingMicrons;
-    }
-
-    // ==================== Overlay Overlap ====================
-
-    public static double getOverlayOverlapUm() {
-        return overlayOverlapUm.get();
-    }
-
-    public static void setOverlayOverlapUm(double um) {
-        overlayOverlapUm.set(um);
-    }
-
-    public static DoubleProperty overlayOverlapUmProperty() {
-        return overlayOverlapUm;
     }
 
     // ==================== Normalization ====================

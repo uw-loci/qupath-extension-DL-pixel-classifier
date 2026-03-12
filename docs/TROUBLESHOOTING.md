@@ -62,6 +62,27 @@ If the setup wizard reports CPU-only but you have an NVIDIA GPU:
 2. Close and reopen QuPath
 3. Check the QuPath log (**View > Show log**) for errors
 
+### Environment not updating after installing a new JAR
+
+When you install a new version of the extension, the Python environment should update automatically on the next **Setup DL Environment...** run. The extension compares the bundled `pixi.toml` against the on-disk copy and forces a full rebuild if they differ.
+
+If the environment does not update (e.g., still using an old Python version):
+
+1. **Re-run setup**: Go to **Extensions > DL Pixel Classifier > Setup DL Environment...** and click **Begin Setup**. This triggers the automatic update check.
+2. **If that does not work**: Use **Utilities > Rebuild DL Environment...** to force a full delete and reinstall.
+3. **If rebuild fails** (e.g., Windows file-locking): Close QuPath completely, then manually delete the environment directory:
+
+| OS | Environment path |
+|----|-----------------|
+| Windows | `C:\Users\<you>\.local\share\appose\dl-pixel-classifier\` |
+| macOS / Linux | `~/.local/share/appose/dl-pixel-classifier/` |
+
+> **Tip:** This is the same path shown in the "Advanced Diagnostics" section at the bottom of this page.
+
+Then reopen QuPath and run **Setup DL Environment...** again.
+
+> **Why this happens:** The extension manages its own embedded Python environment via pixi. When the bundled `pixi.toml` changes (e.g., Python version bumped from 3.10 to 3.11, new packages added), the extension detects the change and deletes `pixi.lock` and `.pixi/` to force pixi to re-resolve everything. On Windows, if the old Python process is still running, file locks can prevent deletion -- the extension attempts a rename-fallback, but a full QuPath restart is sometimes needed.
+
 ### Environment seems corrupted
 
 Use **Extensions > DL Pixel Classifier > Utilities > Rebuild DL Environment...** to delete the environment and re-run setup.

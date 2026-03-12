@@ -169,8 +169,8 @@ public class TileBlendCache {
      *   <li>Deeper inside visible region (d=blendDist): 100% self</li>
      * </ul>
      * <p>
-     * The blend distance is capped at {@code min(inputPadding, 32)} since we
-     * cannot blend beyond the overlap region.
+     * The blend distance is capped at {@code inputPadding} (or a configured max)
+     * since we cannot blend beyond the overlap region.
      * <p>
      * Horizontal blending (left/right) is applied first, then vertical (top/bottom).
      * This sequential approach handles corners naturally.

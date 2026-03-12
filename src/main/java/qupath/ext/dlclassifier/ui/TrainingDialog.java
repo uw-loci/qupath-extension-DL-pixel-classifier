@@ -13,7 +13,9 @@ import javafx.scene.chart.PieChart;
 import javafx.scene.layout.*;
 import javafx.scene.Scene;
 import javafx.stage.FileChooser;
+import javafx.stage.Modality;
 import javafx.stage.Stage;
+import javafx.stage.Window;
 import javafx.util.Duration;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -46,6 +48,7 @@ import java.awt.image.BufferedImage;
 import java.io.FileReader;
 import java.util.*;
 import java.util.concurrent.CompletableFuture;
+import java.util.function.Consumer;
 import java.util.stream.Collectors;
 
 /**
@@ -115,12 +118,13 @@ public class TrainingDialog {
         Platform.runLater(() -> {
             try {
                 TrainingDialogBuilder builder = new TrainingDialogBuilder();
-                Optional<TrainingDialogResult> result = builder.buildAndShow();
-                if (result.isPresent()) {
-                    future.complete(result.get());
-                } else {
-                    future.cancel(true);
-                }
+                builder.buildAndShow(result -> {
+                    if (result != null) {
+                        future.complete(result);
+                    } else {
+                        future.cancel(true);
+                    }
+                });
             } catch (Exception e) {
                 logger.error("Error showing training dialog", e);
                 future.completeExceptionally(e);
@@ -135,7 +139,9 @@ public class TrainingDialog {
      */
     private static class TrainingDialogBuilder {
 
-        private Dialog<TrainingDialogResult> dialog;
+        private Stage dialog;
+        private Consumer<TrainingDialogResult> onResult;
+        private boolean resultDelivered;
         private final Map<String, String> validationErrors = new LinkedHashMap<>();
 
         // Basic info fields
@@ -232,36 +238,51 @@ public class TrainingDialog {
 
         // Mini viewer preview (nullable, set when preview window is open)
         private MiniViewers.MiniViewerManager previewManager;
+        private Stage previewStage;
 
         // Error display
         private VBox errorSummaryPanel;
         private VBox errorListBox;
         private Button okButton;
 
-        public Optional<TrainingDialogResult> buildAndShow() {
-            dialog = new Dialog<>();
+        public void buildAndShow(Consumer<TrainingDialogResult> resultCallback) {
+            this.onResult = resultCallback;
+
+            dialog = new Stage();
             dialog.initOwner(QuPathGUI.getInstance().getStage());
+            dialog.initModality(Modality.NONE);
             dialog.setTitle("Train DL Pixel Classifier");
             dialog.setResizable(true);
+            dialog.setAlwaysOnTop(true);
 
-            // Create header
-            createHeader();
+            // Create buttons
+            Button copyScriptButton = new Button("Copy as Script");
+            copyScriptButton.setOnAction(e -> copyTrainingScript(copyScriptButton));
 
-            // Create button types
-            ButtonType trainType = new ButtonType("Start Training", ButtonBar.ButtonData.OK_DONE);
-            ButtonType cancelType = new ButtonType("Cancel", ButtonBar.ButtonData.CANCEL_CLOSE);
-            ButtonType copyScriptType = new ButtonType("Copy as Script", ButtonBar.ButtonData.LEFT);
-            dialog.getDialogPane().getButtonTypes().addAll(copyScriptType, trainType, cancelType);
-
-            okButton = (Button) dialog.getDialogPane().lookupButton(trainType);
+            okButton = new Button("Start Training");
             okButton.setDisable(true);
-
-            // Wire up the "Copy as Script" button
-            Button copyScriptButton = (Button) dialog.getDialogPane().lookupButton(copyScriptType);
-            copyScriptButton.addEventFilter(ActionEvent.ACTION, event -> {
-                event.consume(); // Prevent dialog from closing
-                copyTrainingScript(copyScriptButton);
+            okButton.setDefaultButton(true);
+            okButton.setOnAction(e -> {
+                resultDelivered = true;
+                onResult.accept(buildResult());
+                dialog.close();
             });
+
+            Button cancelButton = new Button("Cancel");
+            cancelButton.setCancelButton(true);
+            cancelButton.setOnAction(e -> dialog.close());
+
+            // When window closes via Cancel or X, signal cancellation
+            dialog.setOnHidden(e -> {
+                if (!resultDelivered) {
+                    onResult.accept(null);
+                }
+            });
+
+            Region spacer = new Region();
+            HBox.setHgrow(spacer, Priority.ALWAYS);
+            HBox buttonBar = new HBox(8, copyScriptButton, spacer, okButton, cancelButton);
+            buttonBar.setPadding(new Insets(10, 0, 0, 0));
 
             // Create content
             VBox content = new VBox(10);
@@ -296,8 +317,9 @@ public class TrainingDialog {
                     channelSection, classSection, augmentationSection
             ));
 
-            // Build layout: image source, then gated sections, then error panel
+            // Build layout: header, image source, gated sections, error panel, button bar
             content.getChildren().addAll(
+                    createHeaderBox(),
                     imageSourceSection,
                     basicInfoSection,
                     modelSection,
@@ -307,7 +329,8 @@ public class TrainingDialog {
                     channelSection,
                     classSection,
                     augmentationSection,
-                    createErrorSummaryPanel()
+                    createErrorSummaryPanel(),
+                    buttonBar
             );
 
             // Disable gated sections until classes are loaded
@@ -319,7 +342,7 @@ public class TrainingDialog {
             scrollPane.setPrefHeight(600);
             scrollPane.setPrefWidth(550);
 
-            dialog.getDialogPane().setContent(scrollPane);
+            dialog.setScene(new Scene(scrollPane));
 
             // Generate default classifier name
             String timestamp = java.time.LocalDate.now().toString().replace("-", "");
@@ -334,20 +357,12 @@ public class TrainingDialog {
             // Initial validation
             updateValidation();
 
-            // Set result converter
-            dialog.setResultConverter(button -> {
-                if (button != trainType) {
-                    return null;
-                }
-                return buildResult();
-            });
-
-            return dialog.showAndWait();
+            dialog.show();
         }
 
-        private void createHeader() {
+        private VBox createHeaderBox() {
             VBox headerBox = new VBox(5);
-            headerBox.setPadding(new Insets(10));
+            headerBox.setPadding(new Insets(0, 0, 5, 0));
 
             Label titleLabel = new Label("Configure Classifier Training");
             titleLabel.setStyle("-fx-font-size: 14px; -fx-font-weight: bold;");
@@ -356,7 +371,7 @@ public class TrainingDialog {
             subtitleLabel.setStyle("-fx-text-fill: #666;");
 
             headerBox.getChildren().addAll(titleLabel, subtitleLabel, new Separator());
-            dialog.getDialogPane().setHeader(headerBox);
+            return headerBox;
         }
 
         private TitledPane createWeightInitializationSection() {
@@ -466,8 +481,7 @@ public class TrainingDialog {
                         }
                     }
                 }
-                java.io.File file = chooser.showOpenDialog(
-                        dialog.getDialogPane().getScene().getWindow());
+                java.io.File file = chooser.showOpenDialog(dialog);
                 if (file != null) {
                     maeEncoderPathField.setText(file.getAbsolutePath());
                     loadMaeEncoderMetadata(file);
@@ -520,8 +534,7 @@ public class TrainingDialog {
                             "No trained classifiers found in the project or user directory.");
                     return;
                 }
-                Optional<ClassifierMetadata> selected = ModelPickerDialog.show(
-                        dialog, classifiers);
+                Optional<ClassifierMetadata> selected = ModelPickerDialog.show(dialog, classifiers);
                 selected.ifPresent(this::loadSettingsFromModel);
             });
             TooltipHelper.install(selectModelButton,
@@ -1490,6 +1503,7 @@ public class TrainingDialog {
                     "Must match at inference time for consistent results.");
 
             Button previewBtn = new Button("Preview");
+            previewBtn.setMinWidth(Region.USE_PREF_SIZE);
             previewBtn.setOnAction(e -> {
                 QuPathViewer viewer = QuPathGUI.getInstance().getViewer();
                 if (viewer == null || viewer.getImageData() == null) {
@@ -1501,12 +1515,15 @@ public class TrainingDialog {
                 previewManager = MiniViewers.createManager(viewer);
                 previewManager.setDownsample(ds);
 
-                Stage previewStage = new Stage();
+                previewStage = new Stage();
                 previewStage.initOwner(QuPathGUI.getInstance().getStage());
                 previewStage.setTitle(String.format("Resolution Preview (%.0fx downsample)", ds));
                 Scene scene = new Scene(previewManager.getPane(), 400, 400);
                 previewStage.setScene(scene);
-                previewStage.setOnHiding(ev -> previewManager = null);
+                previewStage.setOnHiding(ev -> {
+                    previewManager = null;
+                    this.previewStage = null;
+                });
                 previewStage.show();
             });
             TooltipHelper.install(previewBtn,
@@ -1565,7 +1582,11 @@ public class TrainingDialog {
             downsampleCombo.valueProperty().addListener((obs, old, newVal) -> {
                 updateSpatialInfoLabels();
                 if (previewManager != null) {
-                    previewManager.setDownsample(parseDownsample(newVal));
+                    double ds = parseDownsample(newVal);
+                    previewManager.setDownsample(ds);
+                    if (previewStage != null) {
+                        previewStage.setTitle(String.format("Resolution Preview (%.0fx downsample)", ds));
+                    }
                 }
             });
             contextScaleCombo.valueProperty().addListener((obs, old, newVal) -> updateSpatialInfoLabels());
@@ -2956,10 +2977,10 @@ public class TrainingDialog {
      */
     private static class ModelPickerDialog {
 
-        static Optional<ClassifierMetadata> show(Dialog<?> owner,
+        static Optional<ClassifierMetadata> show(Window owner,
                                                    List<ClassifierMetadata> classifiers) {
             Dialog<ClassifierMetadata> dialog = new Dialog<>();
-            dialog.initOwner(owner.getDialogPane().getScene().getWindow());
+            dialog.initOwner(owner);
             dialog.setTitle("Select Model");
             dialog.setHeaderText("Choose a previously trained model to load settings from");
             dialog.setResizable(true);

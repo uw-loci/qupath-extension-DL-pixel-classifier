@@ -6,7 +6,7 @@ Complete setup instructions for the DL Pixel Classifier extension.
 
 | Component | Requirement |
 |-----------|-------------|
-| QuPath | 0.6.0 or later |
+| QuPath | 0.6.0 or later (including 0.7.0) |
 | GPU | NVIDIA GPU with CUDA recommended; Apple Silicon (MPS) also works; CPU fallback available |
 | Internet | Required for first-time environment setup (~2-4 GB download) |
 
@@ -24,9 +24,9 @@ Download the latest release JAR from the [GitHub Releases](https://github.com/Mi
 
 | OS | Typical extensions path |
 |----|------------------------|
-| Windows | `C:\Users\<you>\AppData\Local\QuPath\v0.6\extensions\` |
-| macOS | `~/Library/Application Support/QuPath/v0.6/extensions/` |
-| Linux | `~/.local/share/QuPath/v0.6/extensions/` |
+| Windows | `C:\Users\<you>\QuPath\v0.6\extensions\` (or `v0.7` for QuPath 0.7.0) |
+| macOS | `~/Library/Application Support/QuPath/v0.6/extensions/` (or `v0.7`) |
+| Linux | `~/.local/share/QuPath/v0.6/extensions/` (or `v0.7`) |
 
 > **Tip:** In QuPath, **Edit > Preferences > Extensions** shows the extensions directory path. You can drag and drop the JAR there.
 

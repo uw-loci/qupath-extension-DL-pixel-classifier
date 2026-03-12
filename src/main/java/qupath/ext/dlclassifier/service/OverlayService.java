@@ -5,6 +5,10 @@ import javafx.beans.property.BooleanProperty;
 import javafx.beans.property.SimpleBooleanProperty;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import qupath.ext.dlclassifier.model.ChannelConfiguration;
+import qupath.ext.dlclassifier.model.ClassifierMetadata;
+import qupath.ext.dlclassifier.model.InferenceConfig;
+import qupath.ext.dlclassifier.preferences.DLClassifierPreferences;
 import qupath.lib.classifiers.pixel.PixelClassifier;
 import qupath.lib.gui.QuPathGUI;
 import qupath.lib.gui.viewer.QuPathViewer;
@@ -38,6 +42,11 @@ public class OverlayService {
 
     private PixelClassificationOverlay currentOverlay;
     private DLPixelClassifier currentClassifier;
+
+    /** Stored construction parameters for overlay re-creation with new settings. */
+    private ClassifierMetadata currentMetadata;
+    private ChannelConfiguration currentChannelConfig;
+    private ImageData<BufferedImage> currentImageData;
 
     /** Observable property tracking whether live prediction is active. */
     private final BooleanProperty livePrediction = new SimpleBooleanProperty(false);
@@ -111,6 +120,58 @@ public class OverlayService {
     }
 
     /**
+     * Applies a pixel classifier overlay and stores construction parameters
+     * so the overlay can be rebuilt with new settings via {@link #recreateOverlay}.
+     *
+     * @param imageData     the image data to overlay
+     * @param classifier    the pixel classifier
+     * @param metadata      classifier metadata (stored for re-creation)
+     * @param channelConfig channel configuration (stored for re-creation)
+     */
+    public void applyClassifierOverlay(ImageData<BufferedImage> imageData,
+                                        PixelClassifier classifier,
+                                        ClassifierMetadata metadata,
+                                        ChannelConfiguration channelConfig) {
+        this.currentMetadata = metadata;
+        this.currentChannelConfig = channelConfig;
+        this.currentImageData = imageData;
+        applyClassifierOverlay(imageData, classifier);
+    }
+
+    /**
+     * Recreates the overlay with new blend mode and overlap settings.
+     * <p>
+     * Requires that the overlay was originally created via the overload that
+     * stores metadata and channel config. Builds a new {@link InferenceConfig}
+     * from the given parameters, constructs a new {@link DLPixelClassifier},
+     * and replaces the current overlay.
+     *
+     * @param blendMode      the blend mode to use
+     * @param overlapPercent tile overlap as a percentage (0-50)
+     * @return true if the overlay was successfully recreated
+     */
+    public boolean recreateOverlay(InferenceConfig.BlendMode blendMode, double overlapPercent) {
+        if (currentMetadata == null || currentChannelConfig == null || currentImageData == null) {
+            logger.warn("Cannot recreate overlay -- no stored construction parameters");
+            return false;
+        }
+
+        int tileSize = currentMetadata.getInputWidth();
+        InferenceConfig newConfig = InferenceConfig.builder()
+                .tileSize(tileSize)
+                .overlapPercent(overlapPercent)
+                .blendMode(blendMode)
+                .outputType(InferenceConfig.OutputType.OVERLAY)
+                .build();
+
+        DLPixelClassifier pixelClassifier = new DLPixelClassifier(
+                currentMetadata, currentChannelConfig, newConfig, currentImageData);
+        applyClassifierOverlay(currentImageData, pixelClassifier,
+                currentMetadata, currentChannelConfig);
+        return true;
+    }
+
+    /**
      * Toggles live prediction on or off.
      * <p>
      * When off, the overlay remains in the viewer and cached tiles stay
@@ -162,6 +223,9 @@ public class OverlayService {
 
             currentOverlay = null;
             livePrediction.set(false);
+            currentMetadata = null;
+            currentChannelConfig = null;
+            currentImageData = null;
 
             // Defer cleanup so interrupted threads can finish before temp files are deleted
             DLPixelClassifier classifierToCleanup = currentClassifier;
