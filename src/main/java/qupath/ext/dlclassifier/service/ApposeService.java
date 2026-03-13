@@ -8,6 +8,7 @@ import org.apposed.appose.Service.ResponseType;
 import org.apposed.appose.TaskException;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import qupath.lib.common.GeneralTools;
 
 import java.io.BufferedReader;
 import java.io.IOException;
@@ -237,6 +238,19 @@ public class ApposeService {
                 String gpuType = String.valueOf(verifyTask.outputs.get("gpu_type"));
                 logger.info("Environment verified: PyTorch {}, CUDA={}, MPS={}, gpu_type={}",
                         torchVersion, cudaStr, mpsStr, gpuType);
+
+                // Log version header for provenance tracking
+                String extVersion = GeneralTools.getPackageVersion(ApposeService.class);
+                logger.info("=== DL Pixel Classifier Environment ===");
+                logger.info("  Extension version: {}",
+                        extVersion != null ? extVersion : "dev");
+                logger.info("  QuPath version: {}", GeneralTools.getVersion());
+                logger.info("  PyTorch version: {}", torchVersion);
+                logger.info("  GPU type: {}", gpuType);
+                logger.info("  CUDA available: {}", cudaStr);
+                logger.info("  MPS available: {}", mpsStr);
+                logger.info("  Environment path: {}", getEnvironmentPath());
+                logger.info("========================================");
 
                 if ("cpu".equals(gpuType)) {
                     logger.warn("No GPU available -- training and inference will run on CPU (very slow). "
