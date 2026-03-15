@@ -1657,6 +1657,12 @@ public class TrainingWorkflow {
             settings.put("focus_class_min_iou", config.getFocusClassMinIoU());
         }
         settings.put("whole_image", config.isWholeImage());
+        // Persist handler-specific params (e.g., MuViT model_config, patch_size,
+        // level_scales, rope_mode) so they can be restored when loading from model.
+        Map<String, Object> handlerParams = config.getHandlerParameters();
+        if (handlerParams != null && !handlerParams.isEmpty()) {
+            settings.put("handler_parameters", handlerParams);
+        }
         return settings;
     }
 

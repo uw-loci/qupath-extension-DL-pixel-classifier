@@ -600,22 +600,30 @@ public class TrainingDialog {
                 updateLayerFreezePanel();
             }
 
-            // Unlock architecture controls when switching away from MAE_ENCODER
-            if (selected != ClassifierHandler.WeightInitStrategy.MAE_ENCODER
-                    && currentHandlerUI != null) {
-                currentHandlerUI.setLocked(false);
-                if (maeEncoderInfoLabel != null) {
-                    maeEncoderInfoLabel.setText("");
-                    maeEncoderInfoLabel.setVisible(false);
-                    maeEncoderInfoLabel.setManaged(false);
+            // Lock/unlock handler UI (e.g., MuViT model size, patch size, level scales).
+            // Must stay locked for MAE_ENCODER (encoder weights require matching arch)
+            // and CONTINUE_TRAINING (saved model weights require matching arch).
+            boolean continuing = selected == ClassifierHandler.WeightInitStrategy.CONTINUE_TRAINING;
+            if (currentHandlerUI != null) {
+                if (selected == ClassifierHandler.WeightInitStrategy.MAE_ENCODER || continuing) {
+                    currentHandlerUI.setLocked(true);
+                } else {
+                    currentHandlerUI.setLocked(false);
                 }
             }
+            if (selected != ClassifierHandler.WeightInitStrategy.MAE_ENCODER
+                    && maeEncoderInfoLabel != null) {
+                maeEncoderInfoLabel.setText("");
+                maeEncoderInfoLabel.setVisible(false);
+                maeEncoderInfoLabel.setManaged(false);
+            }
 
-            // Lock resolution and context scale when continuing from a saved model.
-            // Changing downsample alters what physical scale tiles represent, making
-            // pretrained weights ineffective. Changing context scale alters the input
-            // channel count, breaking weight compatibility entirely.
-            boolean continuing = selected == ClassifierHandler.WeightInitStrategy.CONTINUE_TRAINING;
+            // Lock architecture, resolution, and context scale when continuing from
+            // a saved model. The saved weights are tied to the exact architecture,
+            // downsample (physical scale), and context scale (input channel count).
+            architectureCombo.setDisable(continuing);
+            backboneCombo.setDisable(continuing);
+            tileSizeSpinner.setDisable(continuing || wholeImageCheck.isSelected());
             if (!wholeImageCheck.isSelected()) {
                 downsampleCombo.setDisable(continuing);
                 contextScaleCombo.setDisable(continuing);
@@ -784,6 +792,12 @@ public class TrainingDialog {
                         logger.warn("Backbone '{}' from model not available for architecture '{}'",
                                 backbone, architectureCombo.getValue());
                     }
+                    // Sync handler UI (e.g., MuViT modelConfigCombo) to match the
+                    // loaded backbone. Without this, the hidden backboneCombo has
+                    // "muvit-large" but the visible handler UI defaults to "muvit-base".
+                    if (currentHandlerUI != null) {
+                        currentHandlerUI.applyParameters(Map.of("model_config", backbone));
+                    }
                 });
             }
 
@@ -931,6 +945,21 @@ public class TrainingDialog {
                 // Whole-image mode
                 if (ts.containsKey("whole_image")) {
                     wholeImageCheck.setSelected(Boolean.TRUE.equals(ts.get("whole_image")));
+                }
+
+                // Handler-specific parameters (e.g., MuViT model_config, patch_size,
+                // level_scales, rope_mode). Apply to the handler UI after architecture
+                // is set so the correct handler UI exists.
+                if (ts.containsKey("handler_parameters")) {
+                    Object hp = ts.get("handler_parameters");
+                    if (hp instanceof Map && currentHandlerUI != null) {
+                        Map<String, Object> handlerParams = (Map<String, Object>) hp;
+                        Platform.runLater(() -> {
+                            if (currentHandlerUI != null) {
+                                currentHandlerUI.applyParameters(handlerParams);
+                            }
+                        });
+                    }
                 }
             }
 
@@ -1463,11 +1492,11 @@ public class TrainingDialog {
                     "across all selected images are used (smaller images are\n" +
                     "padded with unlabeled=255).");
             wholeImageCheck.selectedProperty().addListener((obs, old, checked) -> {
-                tileSizeSpinner.setDisable(checked);
-                overlapSpinner.setDisable(checked);
-                // Keep downsample and context scale locked if continuing from saved model
+                // Keep controls locked if continuing from saved model
                 boolean continuing = getSelectedWeightInitStrategy() ==
                         ClassifierHandler.WeightInitStrategy.CONTINUE_TRAINING;
+                tileSizeSpinner.setDisable(checked || continuing);
+                overlapSpinner.setDisable(checked);
                 downsampleCombo.setDisable(checked || continuing);
                 contextScaleCombo.setDisable(checked || continuing);
                 if (checked) {
