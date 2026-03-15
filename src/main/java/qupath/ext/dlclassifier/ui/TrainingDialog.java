@@ -621,13 +621,13 @@ public class TrainingDialog {
             // Lock architecture, resolution, and context scale when continuing from
             // a saved model. The saved weights are tied to the exact architecture,
             // downsample (physical scale), and context scale (input channel count).
-            architectureCombo.setDisable(continuing);
-            backboneCombo.setDisable(continuing);
-            tileSizeSpinner.setDisable(continuing || wholeImageCheck.isSelected());
-            if (!wholeImageCheck.isSelected()) {
-                downsampleCombo.setDisable(continuing);
-                contextScaleCombo.setDisable(continuing);
-            }
+            // Guard: these controls may not exist yet during initial construction.
+            if (architectureCombo != null) architectureCombo.setDisable(continuing);
+            if (backboneCombo != null) backboneCombo.setDisable(continuing);
+            boolean wholeImage = wholeImageCheck != null && wholeImageCheck.isSelected();
+            if (tileSizeSpinner != null) tileSizeSpinner.setDisable(continuing || wholeImage);
+            if (downsampleCombo != null && !wholeImage) downsampleCombo.setDisable(continuing);
+            if (contextScaleCombo != null && !wholeImage) contextScaleCombo.setDisable(continuing);
         }
 
         /**
