@@ -485,6 +485,7 @@ public class TrainingDialog {
                 if (file != null) {
                     maeEncoderPathField.setText(file.getAbsolutePath());
                     loadMaeEncoderMetadata(file);
+                    updateValidation();
                 }
             });
             maeBrowseButton.setTooltip(new Tooltip("Browse for a .pt encoder file"));
@@ -498,6 +499,7 @@ public class TrainingDialog {
                 maeEncoderInfoLabel.setText("");
                 maeEncoderInfoLabel.setVisible(false);
                 maeEncoderInfoLabel.setManaged(false);
+                updateValidation();
             });
 
             HBox maeFileRow = new HBox(5, maeEncoderPathField, maeBrowseButton, maeClearButton);
