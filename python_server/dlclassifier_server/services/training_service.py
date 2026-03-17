@@ -686,6 +686,12 @@ def _validate_mae_architecture(pretrained_path, architecture, log):
     if mae_ch and seg_ch and int(mae_ch) != int(seg_ch):
         log.warning("MAE pretrained with %d channels but "
                     "segmentation uses %d.", int(mae_ch), int(seg_ch))
+    # Compare rope_mode
+    mae_rope = mae_arch.get("rope_mode")
+    seg_rope = architecture.get("rope_mode")
+    if mae_rope and seg_rope and mae_rope != seg_rope:
+        log.warning("MAE pretrained with rope_mode='%s' but "
+                    "segmentation uses '%s'.", mae_rope, seg_rope)
 
 
 class TrainingService:

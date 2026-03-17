@@ -356,6 +356,7 @@ class MAEPretrainingService:
         model_config = config.get("model_config", "muvit-base")
         patch_size = int(config.get("patch_size", 16))
         level_scales = config.get("level_scales", "1,4")
+        rope_mode = config.get("rope_mode", "per_layer")
         levels = tuple(float(s.strip()) for s in level_scales.split(","))
         mask_ratio = float(config.get("mask_ratio", 0.75))
         epochs = int(config.get("epochs", 100))
@@ -621,9 +622,11 @@ class MAEPretrainingService:
                 "model_config": model_config,
                 "patch_size": patch_size,
                 "level_scales": level_scales,
+                "rope_mode": rope_mode,
                 "num_layers": cfg["num_layers"],
                 "num_layers_decoder": num_layers_decoder,
                 "input_channels": num_channels,
+                "tile_size": tile_size,
             },
             "pretraining": {
                 "epochs": len(history),

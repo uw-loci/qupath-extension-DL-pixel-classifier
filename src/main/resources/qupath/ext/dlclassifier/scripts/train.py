@@ -334,6 +334,19 @@ if pretrained_model_path and not checkpoint_path:
             else:
                 state_dict = saved
 
+            # Detect MAE checkpoint and strip "mae." prefix so that
+            # encoder keys (mae.encoder.* -> encoder.*) match the
+            # MuViTSegmentation model's state_dict.
+            mae_prefix = "mae."
+            has_mae_keys = any(k.startswith(mae_prefix) for k in state_dict)
+            if has_mae_keys:
+                logger.info("Detected MAE checkpoint -- stripping 'mae.' "
+                            "prefix for encoder weight transfer.")
+                state_dict = {
+                    (k[len(mae_prefix):] if k.startswith(mae_prefix) else k): v
+                    for k, v in state_dict.items()
+                }
+
             # Detect shape mismatches (e.g. different class count) and skip those keys
             model_state = model.state_dict()
             matched = {}
@@ -356,6 +369,15 @@ if pretrained_model_path and not checkpoint_path:
                 logger.info("  Skipped %d mismatched keys "
                             "(likely segmentation head due to class count change)",
                             len(mismatched))
+            # Warn if very few weights matched (architecture mismatch)
+            if len(matched) == 0 and len(model_state) > 0:
+                logger.warning("NO pretrained weights matched! "
+                               "Architecture mismatch between encoder and model. "
+                               "Training will start from random initialization.")
+            elif len(matched) < len(model_state) * 0.5:
+                logger.warning("Only %d%% of model weights loaded from pretrained -- "
+                               "check architecture settings match the encoder.",
+                               int(100 * len(matched) / len(model_state)))
         except Exception as e:
             logger.warning("Failed to load pretrained weights: %s -- "
                            "training will start from scratch", e)

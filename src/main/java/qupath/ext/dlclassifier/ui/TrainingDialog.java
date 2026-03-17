@@ -214,6 +214,8 @@ public class TrainingDialog {
         private VBox continueTrainingContent;
         private TextField maeEncoderPathField;
         private Label maeEncoderInfoLabel;
+        private int maeEncoderInputChannels = -1;  // -1 = no MAE loaded
+        private int maeEncoderTileSize = -1;        // -1 = unknown
         private LayerFreezePanel layerFreezePanel;
         private ClassifierBackend backend;
 
@@ -496,6 +498,8 @@ public class TrainingDialog {
             Button maeClearButton = new Button("Clear");
             maeClearButton.setOnAction(e -> {
                 maeEncoderPathField.setText("");
+                maeEncoderInputChannels = -1;
+                maeEncoderTileSize = -1;
                 if (currentHandlerUI != null) {
                     currentHandlerUI.setLocked(false);
                 }
@@ -711,6 +715,9 @@ public class TrainingDialog {
          * architecture controls to match the encoder configuration.
          */
         private void loadMaeEncoderMetadata(java.io.File ptFile) {
+            maeEncoderInputChannels = -1;
+            maeEncoderTileSize = -1;
+
             java.io.File metadataFile = new java.io.File(ptFile.getParentFile(), "metadata.json");
             if (!metadataFile.exists()) {
                 logger.warn("No metadata.json found alongside {}. "
@@ -740,6 +747,16 @@ public class TrainingDialog {
                 if (arch.has("rope_mode"))
                     archParams.put("rope_mode", arch.get("rope_mode").getAsString());
 
+                // Store input_channels for validation at build time
+                if (arch.has("input_channels"))
+                    maeEncoderInputChannels = arch.get("input_channels").getAsInt();
+
+                // Store tile_size for the info label (not locked -- tile size
+                // can differ, but showing the pretraining value helps the user
+                // choose a compatible setting)
+                if (arch.has("tile_size"))
+                    maeEncoderTileSize = arch.get("tile_size").getAsInt();
+
                 if (currentHandlerUI != null) {
                     currentHandlerUI.applyParameters(archParams);
                     currentHandlerUI.setLocked(true);
@@ -754,13 +771,17 @@ public class TrainingDialog {
                 }
 
                 // Build a summary string for the info label
-                StringBuilder info = new StringBuilder("Architecture locked to match encoder:");
+                StringBuilder info = new StringBuilder("Locked to encoder:");
                 if (archParams.containsKey("model_config"))
                     info.append(" ").append(archParams.get("model_config"));
                 if (archParams.containsKey("patch_size"))
                     info.append(", patch ").append(archParams.get("patch_size"));
                 if (archParams.containsKey("level_scales"))
                     info.append(", scales ").append(archParams.get("level_scales"));
+                if (maeEncoderInputChannels > 0)
+                    info.append(", ").append(maeEncoderInputChannels).append("ch");
+                if (maeEncoderTileSize > 0)
+                    info.append(" (pretrained at ").append(maeEncoderTileSize).append("px)");
 
                 maeEncoderInfoLabel.setText(info.toString());
                 maeEncoderInfoLabel.setVisible(true);
@@ -2930,6 +2951,21 @@ public class TrainingDialog {
 
             // Get channel config
             ChannelConfiguration channelConfig = channelPanel.getChannelConfiguration();
+
+            // Validate channel count against MAE encoder requirement
+            if (maeEncoderInputChannels > 0
+                    && getSelectedWeightInitStrategy() == ClassifierHandler.WeightInitStrategy.MAE_ENCODER) {
+                int selectedChannels = channelConfig.getNumChannels();
+                if (selectedChannels != maeEncoderInputChannels) {
+                    Dialogs.showErrorMessage("Channel Mismatch",
+                            String.format("The MAE encoder was pretrained with %d channels "
+                                    + "but %d channels are currently selected.\n\n"
+                                    + "Change the channel selection to match, or choose "
+                                    + "a different weight initialization strategy.",
+                                    maeEncoderInputChannels, selectedChannels));
+                    return null;
+                }
+            }
 
             // Get selected classes
             List<String> selectedClasses = classListView.getItems().stream()
