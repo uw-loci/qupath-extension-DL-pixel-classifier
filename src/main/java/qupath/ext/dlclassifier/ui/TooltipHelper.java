@@ -65,6 +65,20 @@ public final class TooltipHelper {
     }
 
     /**
+     * Sets the same styled tooltip on multiple JavaFX controls (e.g. a label
+     * and its associated field so hovering either shows the tooltip).
+     *
+     * @param text     the tooltip text
+     * @param controls the controls to receive the tooltip
+     */
+    public static void install(String text, Control... controls) {
+        Tooltip tooltip = create(text);
+        for (Control c : controls) {
+            c.setTooltip(tooltip);
+        }
+    }
+
+    /**
      * Sets a styled tooltip with a "Learn more" URL on a JavaFX control.
      *
      * @param control the control to receive the tooltip
@@ -73,6 +87,20 @@ public final class TooltipHelper {
      */
     public static void installWithLink(Control control, String text, String url) {
         control.setTooltip(createWithLink(text, url));
+    }
+
+    /**
+     * Sets the same styled tooltip with a "Learn more" URL on multiple controls.
+     *
+     * @param text     the tooltip text
+     * @param url      the URL to append
+     * @param controls the controls to receive the tooltip
+     */
+    public static void installWithLink(String text, String url, Control... controls) {
+        Tooltip tooltip = createWithLink(text, url);
+        for (Control c : controls) {
+            c.setTooltip(tooltip);
+        }
     }
 
     /**

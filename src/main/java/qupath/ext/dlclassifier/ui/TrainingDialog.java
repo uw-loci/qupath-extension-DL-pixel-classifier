@@ -324,10 +324,11 @@ public class TrainingDialog {
             ));
 
             // Build layout: header, image source, gated sections, error panel, button bar
+            // Classifier info (naming) comes after model/training params so the user
+            // can choose a name informed by those settings.
             content.getChildren().addAll(
                     createHeaderBox(),
                     imageSourceSection,
-                    basicInfoSection,
                     modelSection,
                     weightInitSection,
                     trainingSection,
@@ -335,6 +336,7 @@ public class TrainingDialog {
                     channelSection,
                     classSection,
                     augmentationSection,
+                    basicInfoSection,
                     createErrorSummaryPanel(),
                     buttonBar
             );
@@ -1102,13 +1104,16 @@ public class TrainingDialog {
             classifierNameField = new TextField();
             classifierNameField.setPromptText("e.g., Collagen_Classifier_v1");
             classifierNameField.setPrefWidth(300);
-            TooltipHelper.install(classifierNameField,
-                    "Unique identifier for this classifier.\n" +
-                    "Used as the filename when saving.\n" +
-                    "Only letters, numbers, underscore, and hyphen allowed.");
             classifierNameField.textProperty().addListener((obs, old, newVal) -> validateClassifierName(newVal));
 
-            grid.add(new Label("Classifier Name:"), 0, row);
+            Label nameLabel = new Label("Classifier Name:");
+            TooltipHelper.install(
+                    "Unique identifier for this classifier.\n" +
+                    "Used as the filename when saving.\n" +
+                    "Only letters, numbers, underscore, and hyphen allowed.",
+                    nameLabel, classifierNameField);
+
+            grid.add(nameLabel, 0, row);
             grid.add(classifierNameField, 1, row);
             row++;
 
@@ -1117,18 +1122,23 @@ public class TrainingDialog {
             descriptionField.setPromptText("Optional description of what this classifier detects...");
             descriptionField.setPrefRowCount(2);
             descriptionField.setWrapText(true);
-            TooltipHelper.install(descriptionField,
+
+            Label descLabel = new Label("Description:");
+            TooltipHelper.install(
                     "Optional free-text description of what this classifier detects.\n" +
                     "Stored in classifier metadata for documentation.\n" +
-                    "Example: 'Collagen vs. epithelium in H&E stained liver sections'");
+                    "Example: 'Collagen vs. epithelium in H&E stained liver sections'",
+                    descLabel, descriptionField);
 
-            grid.add(new Label("Description:"), 0, row);
+            grid.add(descLabel, 0, row);
             grid.add(descriptionField, 1, row);
 
             TitledPane pane = new TitledPane("CLASSIFIER INFO", grid);
-            pane.setExpanded(true);
+            pane.setExpanded(false);
             pane.setStyle("-fx-font-weight: bold;");
-            pane.setTooltip(TooltipHelper.create("Basic identification for the trained classifier model"));
+            pane.setTooltip(TooltipHelper.create(
+                    "Name and describe your classifier.\n" +
+                    "Positioned after training settings so you can name based on your chosen parameters."));
             return pane;
         }
 
@@ -1250,33 +1260,25 @@ public class TrainingDialog {
             } else {
                 architectureCombo.setValue(architectures.isEmpty() ? "unet" : architectures.get(0));
             }
-            TooltipHelper.installWithLink(architectureCombo,
+            Label archLabel = new Label("Architecture:");
+            TooltipHelper.installWithLink(
                     "Segmentation architecture:\n\n" +
                     "UNet: Symmetric encoder-decoder with skip connections.\n" +
                     "  Best general-purpose choice. Good default for most tasks.\n\n" +
                     "MuViT (Transformer): Multi-resolution Vision Transformer\n" +
                     "  with multi-scale feature fusion. Supports MAE pretraining.\n\n" +
                     "Custom ONNX: Import externally trained models for inference.",
-                    "https://arxiv.org/abs/1505.04597");
+                    "https://arxiv.org/abs/1505.04597",
+                    archLabel, architectureCombo);
             architectureCombo.valueProperty().addListener((obs, old, newVal) -> updateBackboneOptions(newVal));
 
-            grid.add(new Label("Architecture:"), 0, row);
+            grid.add(archLabel, 0, row);
             grid.add(architectureCombo, 1, row);
             row++;
 
             // Backbone selection
             backboneCombo = new ComboBox<>();
-            TooltipHelper.installWithLink(backboneCombo,
-                    "Pretrained encoder network that extracts features:\n\n" +
-                    "resnet34: Best default. Good balance of speed and accuracy.\n" +
-                    "resnet50: More capacity. For large datasets or complex tasks.\n" +
-                    "efficientnet-b0: Lightweight, fast inference, low VRAM.\n\n" +
-                    "Histology encoders (marked 'Histology') were pretrained on\n" +
-                    "millions of H&E tissue patches at 20x. Best for H&E brightfield.\n" +
-                    "NOT recommended for fluorescence or multi-channel images --\n" +
-                    "use ImageNet backbones (resnet34/50) for IF instead.\n" +
-                    "~100MB download on first use (cached).",
-                    "https://github.com/MichaelSNelson/qupath-extension-DL-pixel-classifier/blob/main/docs/BEST_PRACTICES.md#backbone-selection");
+            // Tooltip installed after backboneLabel is created below
             updateBackboneOptions(architectureCombo.getValue());
 
             // When architecture or backbone changes, invalidate pretrained weight loading
@@ -1288,6 +1290,18 @@ public class TrainingDialog {
             backboneCombo.valueProperty().addListener((obs, old, newVal) -> updateLayerFreezePanel());
 
             backboneLabel = new Label("Encoder:");
+            TooltipHelper.installWithLink(
+                    "Pretrained encoder network that extracts features:\n\n" +
+                    "resnet34: Best default. Good balance of speed and accuracy.\n" +
+                    "resnet50: More capacity. For large datasets or complex tasks.\n" +
+                    "efficientnet-b0: Lightweight, fast inference, low VRAM.\n\n" +
+                    "Histology encoders (marked 'Histology') were pretrained on\n" +
+                    "millions of H&E tissue patches at 20x. Best for H&E brightfield.\n" +
+                    "NOT recommended for fluorescence or multi-channel images --\n" +
+                    "use ImageNet backbones (resnet34/50) for IF instead.\n" +
+                    "~100MB download on first use (cached).",
+                    "https://github.com/MichaelSNelson/qupath-extension-DL-pixel-classifier/blob/main/docs/BEST_PRACTICES.md#backbone-selection",
+                    backboneLabel, backboneCombo);
             grid.add(backboneLabel, 0, row);
             grid.add(backboneCombo, 1, row);
 
@@ -1442,15 +1456,18 @@ public class TrainingDialog {
             epochsSpinner = new Spinner<>(1, 1000, DLClassifierPreferences.getDefaultEpochs(), 10);
             epochsSpinner.setEditable(true);
             epochsSpinner.setPrefWidth(100);
-            TooltipHelper.install(epochsSpinner,
+
+            Label epochsLabel = new Label("Epochs:");
+            TooltipHelper.install(
                     "Number of complete passes through the training data.\n" +
                     "More epochs allow the model to learn more but risk overfitting.\n" +
                     "Watch validation loss to determine when to stop.\n\n" +
                     "Typical range: 50-200 for small datasets, 20-100 for large.\n" +
                     "Early stopping will halt training automatically if the model\n" +
-                    "stops improving, so it is safe to set a high value.");
+                    "stops improving, so it is safe to set a high value.",
+                    epochsLabel, epochsSpinner);
 
-            grid.add(new Label("Epochs:"), 0, row);
+            grid.add(epochsLabel, 0, row);
             grid.add(epochsSpinner, 1, row);
             row++;
 
@@ -1458,15 +1475,18 @@ public class TrainingDialog {
             batchSizeSpinner = new Spinner<>(1, 128, DLClassifierPreferences.getDefaultBatchSize(), 4);
             batchSizeSpinner.setEditable(true);
             batchSizeSpinner.setPrefWidth(100);
-            TooltipHelper.install(batchSizeSpinner,
+
+            Label batchLabel = new Label("Batch Size:");
+            TooltipHelper.install(
                     "Number of tiles processed together in each training step.\n" +
                     "Larger batches give more stable gradients but use more GPU memory.\n" +
                     "Reduce if you get CUDA out-of-memory errors.\n\n" +
                     "Typical: 4-16 depending on tile size and GPU VRAM.\n" +
                     "With 512px tiles: 4-8 for 8GB VRAM, 8-16 for 12+ GB VRAM.\n" +
-                    "With 256px tiles: double the above batch sizes.");
+                    "With 256px tiles: double the above batch sizes.",
+                    batchLabel, batchSizeSpinner);
 
-            grid.add(new Label("Batch Size:"), 0, row);
+            grid.add(batchLabel, 0, row);
             grid.add(batchSizeSpinner, 1, row);
             row++;
 
@@ -1490,15 +1510,17 @@ public class TrainingDialog {
                     }
                 }
             });
-            TooltipHelper.install(learningRateSpinner,
+            Label lrLabel = new Label("Learning Rate:");
+            TooltipHelper.install(
                     "Controls the step size during gradient descent.\n" +
                     "Too high: training diverges. Too low: training stalls.\n\n" +
                     "Default 1e-3 (0.001) is a safe starting point for Adam optimizer.\n" +
                     "Reduce to 1e-4 if loss oscillates wildly.\n" +
                     "Use 1e-5 when fine-tuning all layers (no freezing).\n" +
-                    "The LR scheduler will adjust the rate during training.");
+                    "The LR scheduler will adjust the rate during training.",
+                    lrLabel, learningRateSpinner);
 
-            grid.add(new Label("Learning Rate:"), 0, row);
+            grid.add(lrLabel, 0, row);
             grid.add(learningRateSpinner, 1, row);
             row++;
 
@@ -1506,15 +1528,17 @@ public class TrainingDialog {
             validationSplitSpinner = new Spinner<>(5, 50, DLClassifierPreferences.getValidationSplit(), 5);
             validationSplitSpinner.setEditable(true);
             validationSplitSpinner.setPrefWidth(100);
-            TooltipHelper.install(validationSplitSpinner,
+            Label valSplitLabel = new Label("Validation Split (%):");
+            TooltipHelper.install(
                     "Percentage of annotated tiles held out for validation.\n" +
                     "Used to monitor overfitting during training.\n" +
                     "Higher values give more reliable validation metrics\n" +
                     "but leave less data for training.\n\n" +
                     "15-25% is typical. Use 10% for very small datasets.\n" +
-                    "Use 25-30% for large datasets where you can afford it.");
+                    "Use 25-30% for large datasets where you can afford it.",
+                    valSplitLabel, validationSplitSpinner);
 
-            grid.add(new Label("Validation Split (%):"), 0, row);
+            grid.add(valSplitLabel, 0, row);
             grid.add(validationSplitSpinner, 1, row);
             row++;
 
@@ -1522,13 +1546,15 @@ public class TrainingDialog {
             tileSizeSpinner = new Spinner<>(64, 1024, DLClassifierPreferences.getTileSize(), 64);
             tileSizeSpinner.setEditable(true);
             tileSizeSpinner.setPrefWidth(100);
-            TooltipHelper.install(tileSizeSpinner,
+            Label tileSizeLabel = new Label("Tile Size:");
+            TooltipHelper.install(
                     "Size of square patches extracted from annotations for training.\n" +
                     "Must be divisible by 32 (encoder downsampling requirement).\n" +
                     "Larger tiles capture more context but use more memory.\n\n" +
                     "256: Good for cell-level features. Faster training.\n" +
                     "512: Good balance of context and memory. Recommended default.\n" +
-                    "1024: Maximum context but requires large GPU VRAM.");
+                    "1024: Maximum context but requires large GPU VRAM.",
+                    tileSizeLabel, tileSizeSpinner);
 
             // Whole-image checkbox
             wholeImageCheck = new CheckBox("Whole image\n(small images only)");
@@ -1571,7 +1597,7 @@ public class TrainingDialog {
             wholeImageInfoLabel.setVisible(false);
             wholeImageInfoLabel.setManaged(false);
 
-            grid.add(new Label("Tile Size:"), 0, row);
+            grid.add(tileSizeLabel, 0, row);
             grid.add(tileSizeSpinner, 1, row);
             grid.add(wholeImageCheck, 2, row);
             row++;
@@ -1587,7 +1613,8 @@ public class TrainingDialog {
                     "16x (1/16 resolution)"
             ));
             downsampleCombo.setValue(mapDownsampleToDisplay(DLClassifierPreferences.getDefaultDownsample()));
-            TooltipHelper.install(downsampleCombo,
+            Label resLabel = new Label("Resolution:");
+            TooltipHelper.install(
                     "Controls image resolution for training.\n" +
                     "Higher downsample = more spatial context per tile but less detail.\n\n" +
                     "1x: Full resolution -- best for cell-level features.\n" +
@@ -1602,7 +1629,8 @@ public class TrainingDialog {
                     "so the model sees features at the expected physical scale.\n\n" +
                     "Use the Preview button to see what the model will see\n" +
                     "at the selected downsample level.\n\n" +
-                    "Must match at inference time for consistent results.");
+                    "Must match at inference time for consistent results.",
+                    resLabel, downsampleCombo);
 
             Button previewBtn = new Button("Preview");
             previewBtn.setMinWidth(Region.USE_PREF_SIZE);
@@ -1633,7 +1661,7 @@ public class TrainingDialog {
                     "selected downsample level. This is what the model\n" +
                     "will see during training.");
 
-            grid.add(new Label("Resolution:"), 0, row);
+            grid.add(resLabel, 0, row);
             HBox dsBox = new HBox(8, downsampleCombo, previewBtn);
             dsBox.setAlignment(Pos.CENTER_LEFT);
             grid.add(dsBox, 1, row);
@@ -1655,7 +1683,8 @@ public class TrainingDialog {
                     "16x context"
             ));
             contextScaleCombo.setValue(mapContextScaleToDisplay(DLClassifierPreferences.getDefaultContextScale()));
-            TooltipHelper.install(contextScaleCombo,
+            contextScaleLabel = new Label("Context Scale:");
+            TooltipHelper.install(
                     "Multi-scale context feeds the model two views of each location:\n" +
                     "the full-resolution tile for detail, plus a larger surrounding\n" +
                     "region (downsampled to the same pixel size) for spatial context.\n\n" +
@@ -1665,9 +1694,8 @@ public class TrainingDialog {
                     "8x: Context covers 8x the area. For large-scale classification.\n" +
                     "16x: Context covers 16x the area. Maximum spatial context.\n\n" +
                     "Adds C extra input channels (e.g., 3ch RGB -> 6ch with context).\n" +
-                    "Modest memory increase (~5-10%). Compatible with all architectures.");
-
-            contextScaleLabel = new Label("Context Scale:");
+                    "Modest memory increase (~5-10%). Compatible with all architectures.",
+                    contextScaleLabel, contextScaleCombo);
             grid.add(contextScaleLabel, 0, row);
             grid.add(contextScaleCombo, 1, row);
             row++;
@@ -1700,15 +1728,17 @@ public class TrainingDialog {
             overlapSpinner = new Spinner<>(0, 50, DLClassifierPreferences.getTileOverlap(), 5);
             overlapSpinner.setEditable(true);
             overlapSpinner.setPrefWidth(100);
-            TooltipHelper.install(overlapSpinner,
+            Label overlapLabel = new Label("Tile Overlap (%):");
+            TooltipHelper.install(
                     "Overlap between adjacent training tiles as a percentage.\n" +
                     "Higher overlap generates more training patches from\n" +
                     "the same annotations but increases extraction time.\n\n" +
                     "0%: No overlap -- fastest extraction, fewer tiles.\n" +
                     "10-25%: Typical range -- good balance of diversity and speed.\n" +
-                    "Higher overlap is most beneficial with limited annotations.");
+                    "Higher overlap is most beneficial with limited annotations.",
+                    overlapLabel, overlapSpinner);
 
-            grid.add(new Label("Tile Overlap (%):"), 0, row);
+            grid.add(overlapLabel, 0, row);
             grid.add(overlapSpinner, 1, row);
             row++;
 
@@ -1725,15 +1755,17 @@ public class TrainingDialog {
             lineStrokeWidthSpinner = new Spinner<>(1, 50, savedStroke, 1);
             lineStrokeWidthSpinner.setEditable(true);
             lineStrokeWidthSpinner.setPrefWidth(100);
-            TooltipHelper.install(lineStrokeWidthSpinner,
+            Label strokeLabel = new Label("Line Stroke Width:");
+            TooltipHelper.install(
                     "Width in pixels for rendering line/polyline annotations as training masks.\n" +
                     "Pre-filled from QuPath's annotation stroke thickness.\n\n" +
                     "Thin strokes (<5px) produce sparse training signal from polyline\n" +
                     "annotations -- consider increasing for better training.\n" +
                     "Only affects line/polyline annotations; area annotations are\n" +
-                    "filled completely regardless of this setting.");
+                    "filled completely regardless of this setting.",
+                    strokeLabel, lineStrokeWidthSpinner);
 
-            grid.add(new Label("Line Stroke Width:"), 0, row);
+            grid.add(strokeLabel, 0, row);
             grid.add(lineStrokeWidthSpinner, 1, row);
 
             TitledPane pane = new TitledPane("TRAINING PARAMETERS", grid);
@@ -1762,7 +1794,8 @@ public class TrainingDialog {
             schedulerCombo = new ComboBox<>(FXCollections.observableArrayList(
                     "One Cycle", "Cosine Annealing", "Reduce on Plateau", "Step Decay", "None"));
             schedulerCombo.setValue(mapSchedulerToDisplay(DLClassifierPreferences.getDefaultScheduler()));
-            TooltipHelper.installWithLink(schedulerCombo,
+            Label schedulerLabel = new Label("LR Scheduler:");
+            TooltipHelper.installWithLink(
                     "Learning rate schedule during training:\n\n" +
                     "One Cycle (recommended): Smooth ramp-up then decay.\n" +
                     "  Auto-runs LR finder to choose max learning rate.\n\n" +
@@ -1773,9 +1806,10 @@ public class TrainingDialog {
                     "Step Decay: Reduce LR by factor every N epochs.\n" +
                     "  Predictable but requires manual tuning of step schedule.\n\n" +
                     "None: Constant learning rate throughout training.",
-                    "https://pytorch.org/docs/stable/optim.html");
+                    "https://pytorch.org/docs/stable/optim.html",
+                    schedulerLabel, schedulerCombo);
 
-            grid.add(new Label("LR Scheduler:"), 0, row);
+            grid.add(schedulerLabel, 0, row);
             grid.add(schedulerCombo, 1, row);
             row++;
 
@@ -1784,7 +1818,8 @@ public class TrainingDialog {
                     "Cross Entropy + Dice", "Cross Entropy",
                     "Focal + Dice", "Focal"));
             lossFunctionCombo.setValue(mapLossFunctionToDisplay(DLClassifierPreferences.getDefaultLossFunction()));
-            TooltipHelper.installWithLink(lossFunctionCombo,
+            Label lossLabel = new Label("Loss Function:");
+            TooltipHelper.installWithLink(
                     "Loss function for training:\n\n" +
                     "CE + Dice (recommended): Combines per-pixel Cross Entropy with\n" +
                     "  region overlap Dice loss. Modern standard for segmentation.\n\n" +
@@ -1793,9 +1828,10 @@ public class TrainingDialog {
                     "  (1-p)^gamma, combined with Dice. Best when some regions\n" +
                     "  are much harder than others (e.g., small structures).\n\n" +
                     "Focal: Focal loss only (no Dice component).",
-                    "https://smp.readthedocs.io/en/latest/losses.html");
+                    "https://smp.readthedocs.io/en/latest/losses.html",
+                    lossLabel, lossFunctionCombo);
 
-            grid.add(new Label("Loss Function:"), 0, row);
+            grid.add(lossLabel, 0, row);
             grid.add(lossFunctionCombo, 1, row);
             row++;
 
@@ -1804,13 +1840,14 @@ public class TrainingDialog {
             focalGammaSpinner = new Spinner<>(
                     new SpinnerValueFactory.DoubleSpinnerValueFactory(0.5, 5.0, 2.0, 0.5));
             focalGammaSpinner.setEditable(true);
-            TooltipHelper.install(focalGammaSpinner,
+            TooltipHelper.install(
                     "Focal loss focusing parameter (gamma).\n\n" +
                     "Higher gamma = stronger focus on hard pixels.\n" +
                     "  gamma=0: equivalent to standard Cross Entropy\n" +
                     "  gamma=1: mild focusing\n" +
                     "  gamma=2: standard (recommended)\n" +
-                    "  gamma=3-5: aggressive focusing for very hard regions");
+                    "  gamma=3-5: aggressive focusing for very hard regions",
+                    focalGammaLabel, focalGammaSpinner);
             boolean focalSelected = isFocalLossSelected(lossFunctionCombo.getValue());
             focalGammaLabel.setVisible(focalSelected);
             focalGammaLabel.setManaged(focalSelected);
@@ -1831,15 +1868,17 @@ public class TrainingDialog {
             ohemSpinner = new Spinner<>(
                     new SpinnerValueFactory.IntegerSpinnerValueFactory(10, 100, 100, 5));
             ohemSpinner.setEditable(true);
-            TooltipHelper.install(ohemSpinner,
+            Label ohemLabel = new Label("Hard Pixel %:");
+            TooltipHelper.install(
                     "Online Hard Example Mining (OHEM): keep only the\n" +
                     "hardest N% of pixels per batch.\n\n" +
                     "100% = all pixels (standard, no OHEM).\n" +
                     "25% = keep only the hardest quarter -- aggressive.\n\n" +
                     "More aggressive than focal loss: completely ignores\n" +
                     "easy pixels instead of down-weighting them.\n" +
-                    "Tip: try focal loss first as a softer alternative.");
-            grid.add(new Label("Hard Pixel %:"), 0, row);
+                    "Tip: try focal loss first as a softer alternative.",
+                    ohemLabel, ohemSpinner);
+            grid.add(ohemLabel, 0, row);
             grid.add(ohemSpinner, 1, row);
             row++;
 
@@ -1848,7 +1887,8 @@ public class TrainingDialog {
                     "Mean IoU", "Validation Loss"));
             earlyStoppingMetricCombo.setValue(
                     mapEarlyStoppingMetricToDisplay(DLClassifierPreferences.getDefaultEarlyStoppingMetric()));
-            TooltipHelper.install(earlyStoppingMetricCombo,
+            Label esMetricLabel = new Label("Early Stop Metric:");
+            TooltipHelper.install(
                     "Which metric decides the 'best' model checkpoint.\n\n" +
                     "The best model weights are saved whenever this metric improves,\n" +
                     "and training stops if it hasn't improved for 'patience' epochs.\n" +
@@ -1857,9 +1897,10 @@ public class TrainingDialog {
                     "  all classes. Directly measures segmentation quality.\n\n" +
                     "Validation Loss: Combined loss on held-out data.\n" +
                     "  Can oscillate while IoU still improves, so Mean IoU is\n" +
-                    "  generally more reliable.");
+                    "  generally more reliable.",
+                    esMetricLabel, earlyStoppingMetricCombo);
 
-            grid.add(new Label("Early Stop Metric:"), 0, row);
+            grid.add(esMetricLabel, 0, row);
             grid.add(earlyStoppingMetricCombo, 1, row);
             row++;
 
@@ -1868,7 +1909,8 @@ public class TrainingDialog {
                     DLClassifierPreferences.getDefaultEarlyStoppingPatience(), 1);
             earlyStoppingPatienceSpinner.setEditable(true);
             earlyStoppingPatienceSpinner.setPrefWidth(100);
-            TooltipHelper.install(earlyStoppingPatienceSpinner,
+            Label esPatienceLabel = new Label("Early Stop Patience:");
+            TooltipHelper.install(
                     "How many consecutive epochs without improvement before stopping.\n\n" +
                     "After each epoch, if the early stop metric hasn't improved in\n" +
                     "this many epochs, training stops and the best model is saved.\n\n" +
@@ -1876,9 +1918,10 @@ public class TrainingDialog {
                     "20-30: Use with cosine annealing or noisy loss curves.\n" +
                     "3-5: For quick experiments.\n\n" +
                     "It is safe to set a high epoch count (e.g. 200) and rely on\n" +
-                    "patience to stop training -- you won't waste GPU time.");
+                    "patience to stop training -- you won't waste GPU time.",
+                    esPatienceLabel, earlyStoppingPatienceSpinner);
 
-            grid.add(new Label("Early Stop Patience:"), 0, row);
+            grid.add(esPatienceLabel, 0, row);
             grid.add(earlyStoppingPatienceSpinner, 1, row);
             row++;
 
@@ -1886,7 +1929,8 @@ public class TrainingDialog {
             focusClassCombo = new ComboBox<>(FXCollections.observableArrayList(
                     "None (use Mean IoU)"));
             focusClassCombo.setValue("None (use Mean IoU)");
-            TooltipHelper.install(focusClassCombo,
+            Label focusClassLabel = new Label("Focus Class:");
+            TooltipHelper.install(
                     "Optionally select a class to focus on for best model selection.\n\n" +
                     "When set, the focus class's per-class IoU is used instead of\n" +
                     "the Early Stop Metric for determining the best model and\n" +
@@ -1894,7 +1938,8 @@ public class TrainingDialog {
                     "Use this when you care more about one class than the others.\n" +
                     "For example, if detecting 'Hinge' is critical, set it as the\n" +
                     "focus class so the best model is the one with the best Hinge IoU,\n" +
-                    "not the best average across all classes.");
+                    "not the best average across all classes.",
+                    focusClassLabel, focusClassCombo);
 
             focusClassCombo.valueProperty().addListener((obs, old, newVal) -> {
                 boolean hasFocusClass = newVal != null && !newVal.startsWith("None");
@@ -1906,20 +1951,22 @@ public class TrainingDialog {
                 // Visually disable early stopping metric combo when focus class overrides it
                 earlyStoppingMetricCombo.setDisable(hasFocusClass);
                 if (hasFocusClass) {
-                    TooltipHelper.install(earlyStoppingMetricCombo,
+                    TooltipHelper.install(
                             "Overridden by Focus Class selection.\n" +
                             "The focus class's IoU will be used for best model\n" +
-                            "selection and early stopping instead.");
+                            "selection and early stopping instead.",
+                            esMetricLabel, earlyStoppingMetricCombo);
                 } else {
-                    TooltipHelper.install(earlyStoppingMetricCombo,
+                    TooltipHelper.install(
                             "Which metric decides the 'best' model checkpoint.\n\n" +
                             "Mean IoU (recommended): Intersection-over-union averaged across\n" +
                             "  all classes. Directly measures segmentation quality.\n\n" +
-                            "Validation Loss: Combined loss on held-out data.");
+                            "Validation Loss: Combined loss on held-out data.",
+                            esMetricLabel, earlyStoppingMetricCombo);
                 }
             });
 
-            grid.add(new Label("Focus Class:"), 0, row);
+            grid.add(focusClassLabel, 0, row);
             grid.add(focusClassCombo, 1, row);
             row++;
 
@@ -1943,7 +1990,7 @@ public class TrainingDialog {
                     }
                 }
             });
-            TooltipHelper.install(focusClassMinIoUSpinner,
+            TooltipHelper.install(
                     "Minimum IoU threshold for the focus class.\n\n" +
                     "Training will not stop early until the focus class\n" +
                     "reaches this IoU, regardless of patience.\n\n" +
@@ -1951,7 +1998,8 @@ public class TrainingDialog {
                     "0.30: Training continues until focus class IoU >= 0.30,\n" +
                     "  then patience-based stopping resumes.\n\n" +
                     "Set this to prevent the model from stopping before the\n" +
-                    "focus class has had a chance to learn.");
+                    "focus class has had a chance to learn.",
+                    focusClassMinIoULabel, focusClassMinIoUSpinner);
 
             // Hidden by default
             focusClassMinIoUSpinner.setVisible(false);
@@ -1981,15 +2029,17 @@ public class TrainingDialog {
             gradientAccumulationSpinner = new Spinner<>(1, 8, 1, 1);
             gradientAccumulationSpinner.setEditable(true);
             gradientAccumulationSpinner.setPrefWidth(100);
-            TooltipHelper.install(gradientAccumulationSpinner,
+            Label gradAccLabel = new Label("Gradient Accumulation:");
+            TooltipHelper.install(
                     "Accumulate gradients over N batches before updating weights.\n\n" +
                     "Effective batch size = Batch Size x Accumulation Steps.\n" +
                     "Use this when GPU memory is too limited for large batches.\n\n" +
                     "1: Normal training (no accumulation).\n" +
                     "2-4: Simulates 2-4x larger batch without extra memory.\n" +
-                    "8: Maximum accumulation; very stable but slower per epoch.");
+                    "8: Maximum accumulation; very stable but slower per epoch.",
+                    gradAccLabel, gradientAccumulationSpinner);
 
-            grid.add(new Label("Gradient Accumulation:"), 0, row);
+            grid.add(gradAccLabel, 0, row);
             grid.add(gradientAccumulationSpinner, 1, row);
             row++;
 
@@ -2140,14 +2190,15 @@ public class TrainingDialog {
                     "None", "Brightfield (color jitter)", "Fluorescence (per-channel)"));
             intensityAugCombo.setValue(mapIntensityModeToDisplay(DLClassifierPreferences.getAugIntensityMode()));
             intensityAugCombo.setPrefWidth(220);
-            TooltipHelper.install(intensityAugCombo,
+            TooltipHelper.install(
                     "Intensity augmentation mode.\n\n" +
                     "None: No intensity/color transforms.\n\n" +
                     "Brightfield: Correlated brightness, contrast, and gamma\n" +
                     "  across all channels. Recommended for H&E stained images.\n\n" +
                     "Fluorescence: Independent random intensity scaling per channel.\n" +
                     "  Recommended for fluorescence or multi-spectral images where\n" +
-                    "  each channel is an independent signal.");
+                    "  each channel is an independent signal.",
+                    intensityLabel, intensityAugCombo);
             HBox intensityRow = new HBox(10, intensityLabel, intensityAugCombo);
             intensityRow.setAlignment(Pos.CENTER_LEFT);
 
