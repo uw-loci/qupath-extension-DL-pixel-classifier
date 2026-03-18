@@ -179,51 +179,14 @@ public class ApposeService {
                         .logDebug()
                         .build();
 
-                logger.info("Appose environment built successfully at: {}", environment.base());
+                logger.info("Appose environment configured at: {}", environment.base());
 
-                // Diagnostic: verify the environment is actually populated
-                Path envDir = Path.of(environment.base());
-                Path pixiEnvDir = envDir.resolve(".pixi/envs/default");
-                boolean hasPixiEnv = Files.isDirectory(pixiEnvDir);
-                logger.info("Environment diagnostics:");
-                logger.info("  base: {}", envDir);
-                logger.info("  .pixi/envs/default exists: {}", hasPixiEnv);
-                logger.info("  binPaths: {}", environment.binPaths());
-                if (hasPixiEnv) {
-                    // List top-level contents of the env dir to verify it's populated
-                    try (var entries = Files.list(pixiEnvDir)) {
-                        String contents = entries.map(p -> p.getFileName().toString())
-                                .collect(Collectors.joining(", "));
-                        logger.info("  .pixi/envs/default contents: {}", contents);
-                    }
-                } else {
-                    // Check what IS in the environment directory
-                    if (Files.isDirectory(envDir)) {
-                        try (var entries = Files.list(envDir)) {
-                            String contents = entries.map(p -> p.getFileName().toString())
-                                    .collect(Collectors.joining(", "));
-                            logger.info("  envDir contents: {}", contents);
-                        }
-                    }
-                }
-
-                if (!hasPixiEnv) {
-                    logger.error("pixi environment was not actually installed -- "
-                            + ".pixi/envs/default does not exist after build. "
-                            + "Appose may have skipped pixi install.");
-                    throw new IOException("Pixi environment build did not install dependencies. "
-                            + "The environment directory was created at " + envDir
-                            + " but .pixi/envs/default is missing. "
-                            + "This usually means pixi failed to run. "
-                            + "Check the QuPath log for pixi output above this message.");
-                }
-
-                // Install dlclassifier-server via pip (outside pixi resolver).
-                // Pixi's PyPI resolver panics on git+subdirectory dependencies,
-                // so we install this package separately using pip which handles
-                // git deps reliably on all platforms.
-                report(statusCallback, "Installing DL classifier server package...");
-                installDLClassifierServer();
+                // Install dependencies via pixi and then dlclassifier-server via pip.
+                // Appose's build() with .content() only writes pixi.toml -- it does
+                // NOT run pixi install. We must do that explicitly here.
+                // dlclassifier-server is installed separately via pip because pixi's
+                // PyPI resolver panics on git+subdirectory dependencies.
+                installDLClassifierServer(statusCallback);
 
                 report(statusCallback, "Starting Python service...");
 
@@ -756,37 +719,49 @@ public class ApposeService {
 
     /**
      * Installs or upgrades the dlclassifier-server package via pip in the
-     * pixi environment. Runs {@code pip install --upgrade} so that version
-     * bumps in the git repo are picked up on rebuild.
+     * pixi environment. Uses {@code pixi run} so that pixi installs all
+     * dependencies first (if not already done), then runs pip within the
+     * fully-configured environment.
+     * <p>
+     * Note: Appose 0.10.0's {@code build()} with {@code .content()} does NOT
+     * run {@code pixi install} -- it only writes pixi.toml. Dependencies are
+     * resolved lazily on the first {@code pixi run} command. This method
+     * triggers that first resolution.
      *
+     * @param statusCallback optional callback for progress messages
      * @throws IOException if pip install fails
      */
-    private void installDLClassifierServer() throws IOException {
+    private void installDLClassifierServer(Consumer<String> statusCallback) throws IOException {
         Path envBase = Path.of(environment.base());
+        Path manifestPath = envBase.resolve("pixi.toml");
 
-        // Find pip executable in the pixi environment
-        Path pip = findPipExecutable(envBase);
-
-        // Build the pip install command
-        java.util.List<String> command;
-        if (pip != null) {
-            logger.info("Installing dlclassifier-server via pip: {}", pip);
-            command = java.util.List.of(
-                    pip.toString(), "install", "--upgrade", "--no-deps",
-                    DL_SERVER_PIP_URL);
-        } else {
-            // Fallback: use python -m pip (works even when pip has no standalone script)
-            Path python = findPythonExecutable(envBase);
-            if (python == null) {
-                throw new IOException("Cannot find pip or python in the pixi environment at "
-                        + envBase + " -- environment may be corrupt. "
-                        + "Try Utilities > Rebuild DL Environment.");
-            }
-            logger.info("Installing dlclassifier-server via python -m pip: {}", python);
-            command = java.util.List.of(
-                    python.toString(), "-m", "pip", "install", "--upgrade", "--no-deps",
-                    DL_SERVER_PIP_URL);
+        // Find pixi binary -- Appose downloads it to ~/.local/share/appose/.pixi/bin/
+        Path pixi = findPixiBinary();
+        if (pixi == null) {
+            throw new IOException("Cannot find pixi binary. "
+                    + "The Appose environment may not have been set up correctly. "
+                    + "Try Utilities > Rebuild DL Environment.");
         }
+
+        // First, run "pixi install" to ensure all dependencies are resolved.
+        // Appose's build() with .content() only writes pixi.toml -- it does NOT
+        // actually install packages. This is the step that downloads Python,
+        // PyTorch, and all other dependencies (~2-4 GB on first run).
+        logger.info("Running pixi install to resolve dependencies...");
+        report(statusCallback, "Installing Python dependencies (this may take several minutes on first run)...");
+        runPixiCommand(pixi, envBase, manifestPath, "install");
+
+        // Now install dlclassifier-server via "pixi run pip install ..."
+        // At this point pip and python are installed in the environment.
+        logger.info("Installing dlclassifier-server via pixi run pip...");
+        report(statusCallback, "Installing DL classifier server package...");
+
+        java.util.List<String> command = java.util.List.of(
+                pixi.toString(), "run",
+                "--manifest-path", manifestPath.toString(),
+                "pip", "install", "--upgrade", "--no-deps",
+                DL_SERVER_PIP_URL
+        );
 
         ProcessBuilder pb = new ProcessBuilder(command);
         pb.directory(envBase.toFile());
@@ -820,55 +795,76 @@ public class ApposeService {
     }
 
     /**
-     * Finds the pip executable in the pixi environment.
-     * Checks the standard pixi location first, then falls back to
-     * environment bin paths.
-     *
-     * @return path to pip, or null if not found
+     * Runs a pixi command (e.g. "install") and waits for completion.
+     * Logs all output and throws on non-zero exit code.
      */
-    private Path findPipExecutable(Path envBase) {
-        // Standard pixi location
-        Path pip;
-        if (GeneralTools.isWindows()) {
-            pip = envBase.resolve(".pixi/envs/default/Scripts/pip.exe");
-        } else {
-            pip = envBase.resolve(".pixi/envs/default/bin/pip");
+    private void runPixiCommand(Path pixi, Path workDir, Path manifestPath,
+                                String... args) throws IOException {
+        java.util.List<String> command = new java.util.ArrayList<>();
+        command.add(pixi.toString());
+        for (String arg : args) {
+            command.add(arg);
         }
-        if (Files.isRegularFile(pip)) return pip;
+        command.add("--manifest-path");
+        command.add(manifestPath.toString());
 
-        // Fallback: search environment bin paths
-        for (String binPath : environment.binPaths()) {
-            Path candidate = GeneralTools.isWindows()
-                    ? Path.of(binPath, "pip.exe")
-                    : Path.of(binPath, "pip");
-            if (Files.isRegularFile(candidate)) return candidate;
+        logger.info("Running: {}", command);
+        ProcessBuilder pb = new ProcessBuilder(command);
+        pb.directory(workDir.toFile());
+        pb.redirectErrorStream(true);
+        Process process = pb.start();
+
+        StringBuilder output = new StringBuilder();
+        try (BufferedReader reader = new BufferedReader(
+                new InputStreamReader(process.getInputStream(), StandardCharsets.UTF_8))) {
+            String line;
+            while ((line = reader.readLine()) != null) {
+                output.append(line).append("\n");
+                logger.info("[pixi] {}", line);
+            }
         }
-        return null;
+
+        int exitCode;
+        try {
+            exitCode = process.waitFor();
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            throw new IOException("pixi command interrupted", e);
+        }
+
+        if (exitCode != 0) {
+            throw new IOException("pixi " + args[0] + " failed (exit code "
+                    + exitCode + "):\n" + output);
+        }
     }
 
     /**
-     * Finds the Python executable in the pixi environment.
-     * Uses the Appose Environment.python() method first, then falls back
-     * to standard pixi paths.
+     * Finds the pixi binary. Appose downloads pixi to
+     * {@code ~/.local/share/appose/.pixi/bin/pixi[.exe]}.
+     * Also checks if pixi is available on the system PATH.
      *
-     * @return path to python, or null if not found
+     * @return path to pixi, or null if not found
      */
-    private Path findPythonExecutable(Path envBase) {
-        // Standard pixi location
-        Path python;
-        if (GeneralTools.isWindows()) {
-            python = envBase.resolve(".pixi/envs/default/python.exe");
-        } else {
-            python = envBase.resolve(".pixi/envs/default/bin/python");
-        }
-        if (Files.isRegularFile(python)) return python;
+    private Path findPixiBinary() {
+        // Appose's default install location
+        Path apposeDir = Path.of(System.getProperty("user.home"),
+                ".local", "share", "appose");
+        String pixiName = GeneralTools.isWindows() ? "pixi.exe" : "pixi";
+        Path pixi = apposeDir.resolve(".pixi").resolve("bin").resolve(pixiName);
+        if (Files.isRegularFile(pixi)) return pixi;
 
-        // Search environment bin paths
-        for (String binPath : environment.binPaths()) {
-            String exeName = GeneralTools.isWindows() ? "python.exe" : "python";
-            Path candidate = Path.of(binPath, exeName);
-            if (Files.isRegularFile(candidate)) return candidate;
+        // Check if pixi is on the system PATH
+        try {
+            Process p = new ProcessBuilder(pixiName, "--version")
+                    .redirectErrorStream(true).start();
+            int exit = p.waitFor();
+            if (exit == 0) {
+                return Path.of(pixiName); // Available on PATH
+            }
+        } catch (IOException | InterruptedException ignored) {
+            // Not on PATH
         }
+
         return null;
     }
 
