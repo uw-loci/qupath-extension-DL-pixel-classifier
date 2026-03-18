@@ -709,13 +709,15 @@ public class ApposeService {
     }
 
     /**
-     * URL for the dlclassifier-server git-based pip install.
-     * This is installed separately from pixi because pixi's PyPI resolver
-     * panics on git+subdirectory dependencies.
+     * URL for the dlclassifier-server pip install via GitHub archive tarball.
+     * Uses an archive URL instead of git+ so that git does not need to be
+     * installed on the user's machine. The #subdirectory fragment tells pip
+     * to look for pyproject.toml in the python_server/ directory.
      */
     private static final String DL_SERVER_PIP_URL =
-            "dlclassifier-server @ git+https://github.com/MichaelSNelson/"
-                    + "qupath-extension-DL-pixel-classifier.git#subdirectory=python_server";
+            "dlclassifier-server @ https://github.com/MichaelSNelson/"
+                    + "qupath-extension-DL-pixel-classifier/archive/refs/heads/"
+                    + "master.tar.gz#subdirectory=python_server";
 
     /**
      * Installs or upgrades the dlclassifier-server package via pip in the
