@@ -1133,8 +1133,8 @@ public class TrainingDialog {
             grid.add(descLabel, 0, row);
             grid.add(descriptionField, 1, row);
 
-            TitledPane pane = new TitledPane("CLASSIFIER INFO", grid);
-            pane.setExpanded(false);
+            TitledPane pane = new TitledPane("NAME YOUR CLASSIFIER", grid);
+            pane.setExpanded(true);
             pane.setStyle("-fx-font-weight: bold;");
             pane.setTooltip(TooltipHelper.create(
                     "Name and describe your classifier.\n" +
