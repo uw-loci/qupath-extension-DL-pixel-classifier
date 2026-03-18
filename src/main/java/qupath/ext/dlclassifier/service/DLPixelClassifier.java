@@ -71,6 +71,7 @@ public class DLPixelClassifier implements PixelClassifier {
     private final AtomicBoolean errorNotified = new AtomicBoolean(false);
     private final AtomicBoolean contextResizeWarned = new AtomicBoolean(false);
     private final AtomicBoolean firstTileLogged = new AtomicBoolean(false);
+    private final AtomicBoolean oversizedWarned = new AtomicBoolean(false);
     private volatile String lastErrorMessage;
 
     /** Set to true when the overlay is being removed, to suppress error counting on interrupted threads. */
@@ -179,6 +180,23 @@ public class DLPixelClassifier implements PixelClassifier {
                     request.getX(), request.getY(),
                     request.getWidth(), request.getHeight(),
                     request.getDownsample());
+        }
+
+        // Guard: reject oversized tile requests. QuPath sometimes sends the entire
+        // viewport as a single region (especially when zoomed out on large images).
+        // Trying to read/process a region much larger than our tile size would OOM
+        // or hang indefinitely. Return empty and warn once.
+        int requestPixelsW = (int) (request.getWidth() / request.getDownsample());
+        int requestPixelsH = (int) (request.getHeight() / request.getDownsample());
+        int maxTilePixels = inferenceConfig.getTileSize() + 2 * inputPadding;
+        if (requestPixelsW > maxTilePixels * 2 || requestPixelsH > maxTilePixels * 2) {
+            if (oversizedWarned.compareAndSet(false, true)) {
+                logger.warn("Rejecting oversized tile request: {}x{} pixels "
+                        + "(max expected ~{}x{}). QuPath is requesting the full "
+                        + "viewport as a single tile -- zoom in for the overlay to work.",
+                        requestPixelsW, requestPixelsH, maxTilePixels, maxTilePixels);
+            }
+            return createEmptyClassificationImage(request);
         }
 
         // If shutting down (overlay being removed), return blank image instead of throwing.
