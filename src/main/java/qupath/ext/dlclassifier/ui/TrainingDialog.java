@@ -3112,48 +3112,81 @@ public class TrainingDialog {
                     int totalMb = ((Number) gpuTask.outputs.get("gpu_memory_mb")).intValue();
                     if (totalMb > 0) {
                         String modelType = trainingConfig.getModelType();
+                        String backbone = trainingConfig.getBackbone();
                         int tileSize = trainingConfig.getTileSize();
                         int batchSize = trainingConfig.getBatchSize();
                         int gradAccum = trainingConfig.getGradientAccumulationSteps();
-                        double modelMb = "muvit".equals(modelType) ? 140.0 : 30.0;
+                        boolean mixedPrec = trainingConfig.isMixedPrecision();
+                        int contextScale = trainingConfig.getContextScale();
+
+                        // Backbone-aware model size estimates (MB of parameters)
+                        double modelMb = estimateModelSizeMb(modelType, backbone);
                         double actMultiplier = "muvit".equals(modelType) ? 10.0 : 4.0;
+                        // Mixed precision roughly halves activation/gradient memory
+                        if (mixedPrec) actMultiplier *= 0.6;
+                        // Context scale doubles the input channels, increasing activations
+                        if (contextScale > 1) actMultiplier *= 1.5;
+
                         double areaScale = (double)(tileSize * tileSize) / (256.0 * 256.0);
                         double estimatedMb = modelMb * (1 + 3 + actMultiplier * areaScale * batchSize);
                         double budgetMb = totalMb * 0.85;
 
                         if (estimatedMb > budgetMb) {
-                            // Compute specific settings that would fit
-                            StringBuilder suggestions = new StringBuilder();
-                            suggestions.append(String.format(
-                                    "Estimated VRAM: %.0f MB (GPU has %d MB usable).\n"
-                                    + "Current settings: %s, %dx%d tiles, batch %d (x%d accum).\n\n"
-                                    + "Settings that would fit in VRAM:\n",
-                                    estimatedMb, totalMb, modelType, tileSize, tileSize,
-                                    batchSize, gradAccum));
-
-                            // Suggest batch=1 at current tile size
-                            double estBatch1 = modelMb * (1 + 3 + actMultiplier * areaScale * 1);
-                            if (estBatch1 <= budgetMb && batchSize > 1) {
-                                suggestions.append(String.format(
-                                        "  - Batch size 1 at %dpx (~%.0f MB)\n", tileSize, estBatch1));
+                            // Find the max batch size that fits at current tile size
+                            int maxBatchAtTile = 0;
+                            for (int b = batchSize; b >= 1; b--) {
+                                double est = modelMb * (1 + 3 + actMultiplier * areaScale * b);
+                                if (est <= budgetMb) { maxBatchAtTile = b; break; }
                             }
 
-                            // Suggest smaller tile sizes with current batch
-                            for (int candidate : new int[]{512, 256, 128}) {
+                            int effectiveBatch = batchSize * gradAccum;
+                            StringBuilder suggestions = new StringBuilder();
+                            suggestions.append(String.format(
+                                    "Estimated VRAM: %.0f MB (GPU has %d MB, ~%.0f MB usable).\n"
+                                    + "Current: %s (%s), %dx%d tiles, batch %d"
+                                    + (gradAccum > 1 ? " (x%d accum = %d effective)" : "")
+                                    + ".\n\n",
+                                    estimatedMb, totalMb, budgetMb,
+                                    modelType, backbone, tileSize, tileSize,
+                                    batchSize, gradAccum, effectiveBatch));
+
+                            if (maxBatchAtTile > 0) {
+                                // Can fit at current tile size with smaller batch
+                                int suggestedAccum = Math.max(1,
+                                        (int) Math.ceil((double) effectiveBatch / maxBatchAtTile));
+                                double estFit = modelMb * (1 + 3 + actMultiplier * areaScale * maxBatchAtTile);
+                                suggestions.append("Suggested settings that fit in VRAM:\n");
+                                suggestions.append(String.format(
+                                        "  - Batch size %d with gradient accumulation %d "
+                                        + "(effective batch %d, ~%.0f MB)\n",
+                                        maxBatchAtTile, suggestedAccum,
+                                        maxBatchAtTile * suggestedAccum, estFit));
+                            } else {
+                                // Even batch=1 doesn't fit at this tile size
+                                suggestions.append("Even batch size 1 exceeds VRAM at this tile size.\n");
+                                suggestions.append("Suggested settings that fit in VRAM:\n");
+                            }
+
+                            // Suggest smaller tile sizes if needed
+                            for (int candidate : new int[]{512, 384, 256, 128}) {
                                 if (candidate >= tileSize) continue;
                                 double candArea = (double)(candidate * candidate) / (256.0 * 256.0);
-                                double candEst = modelMb * (1 + 3 + actMultiplier * candArea * batchSize);
-                                if (candEst <= budgetMb) {
-                                    int maxBatch = 1;
-                                    for (int b = batchSize; b >= 1; b--) {
-                                        double bEst = modelMb * (1 + 3 + actMultiplier * candArea * b);
-                                        if (bEst <= budgetMb) { maxBatch = b; break; }
-                                    }
+                                // Find max batch at this tile size
+                                int candMaxBatch = 0;
+                                for (int b = batchSize; b >= 1; b--) {
+                                    double bEst = modelMb * (1 + 3 + actMultiplier * candArea * b);
+                                    if (bEst <= budgetMb) { candMaxBatch = b; break; }
+                                }
+                                if (candMaxBatch > 0) {
+                                    int candAccum = Math.max(1,
+                                            (int) Math.ceil((double) effectiveBatch / candMaxBatch));
+                                    double candEst = modelMb * (1 + 3 + actMultiplier * candArea * candMaxBatch);
                                     suggestions.append(String.format(
-                                            "  - %dpx tiles, batch %d (~%.0f MB)\n",
-                                            candidate, maxBatch,
-                                            modelMb * (1 + 3 + actMultiplier * candArea * maxBatch)));
-                                    break;  // Show best fitting option
+                                            "  - %dpx tiles, batch %d x%d accum "
+                                            + "(effective %d, ~%.0f MB)\n",
+                                            candidate, candMaxBatch, candAccum,
+                                            candMaxBatch * candAccum, candEst));
+                                    break; // Show best fitting alternative
                                 }
                             }
 
@@ -3165,8 +3198,9 @@ public class TrainingDialog {
                                         maeEncoderTileSize));
                             }
 
-                            suggestions.append("\nIncrease downsample to compensate for smaller tiles.\n"
-                                    + "Gradient accumulation can simulate larger batches without extra VRAM.\n\n"
+                            suggestions.append("\nGradient accumulation simulates larger batches "
+                                    + "without extra VRAM.\n"
+                                    + "Increase downsample to compensate for smaller tiles.\n\n"
                                     + "Go back and adjust settings?");
 
                             boolean goBack = Dialogs.showConfirmDialog("VRAM Warning",
@@ -3271,6 +3305,51 @@ public class TrainingDialog {
             if (displayValue.startsWith("4x")) return 4;
             if (displayValue.startsWith("2x")) return 2;
             return 1;
+        }
+
+        // ==================== VRAM Estimation ====================
+
+        /**
+         * Estimates model parameter size in MB based on architecture and backbone.
+         * These are approximate values for the model weights only -- optimizer state
+         * and activations are accounted for by multipliers in the caller.
+         */
+        private static double estimateModelSizeMb(String modelType, String backbone) {
+            if ("muvit".equals(modelType)) return 140.0;
+            if (backbone == null) return 30.0;
+            // Approximate parameter counts (MB) for common backbones in a UNet decoder.
+            // Values include both encoder and decoder parameters.
+            return switch (backbone.toLowerCase()) {
+                // ResNet family
+                case "resnet18" -> 47.0;   // ~11.7M params
+                case "resnet34" -> 87.0;   // ~21.8M params
+                case "resnet50" -> 100.0;  // ~25.6M params
+                case "resnet101" -> 170.0; // ~44.5M params
+                case "resnet152" -> 230.0; // ~60.2M params
+                // EfficientNet family
+                case "efficientnet-b0" -> 21.0;  // ~5.3M params
+                case "efficientnet-b1" -> 31.0;  // ~7.8M params
+                case "efficientnet-b2" -> 36.0;  // ~9.1M params
+                case "efficientnet-b3" -> 48.0;  // ~12M params
+                case "efficientnet-b4" -> 76.0;  // ~19.3M params
+                case "efficientnet-b5" -> 120.0; // ~30.4M params
+                // DenseNet family
+                case "densenet121" -> 32.0;  // ~8M params
+                case "densenet169" -> 56.0;  // ~14.1M params
+                case "densenet201" -> 80.0;  // ~20M params
+                // MobileNet
+                case "mobilenet_v2" -> 14.0;       // ~3.5M params
+                case "timm-mobilenetv3_large_100" -> 22.0; // ~5.4M params
+                // Pathology encoders (large)
+                case "uni", "conch", "virchow", "phikon" -> 350.0; // ~86M+ params
+                // Default for unknown backbones
+                default -> {
+                    // Heuristic: if the name contains "50" or "101", assume larger
+                    if (backbone.contains("50")) yield 100.0;
+                    if (backbone.contains("101")) yield 170.0;
+                    yield 50.0; // Conservative default
+                }
+            };
         }
 
         // ==================== Display/Value Mapping Helpers ====================
