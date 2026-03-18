@@ -1972,7 +1972,7 @@ public class TrainingDialog {
 
             // Focus class min IoU threshold (hidden by default)
             focusClassMinIoULabel = new Label("Min Focus IoU:");
-            focusClassMinIoUSpinner = new Spinner<>(0.0, 1.0, 0.0, 0.05);
+            focusClassMinIoUSpinner = new Spinner<>(0.0, 1.0, 0.5, 0.05);
             focusClassMinIoUSpinner.setEditable(true);
             focusClassMinIoUSpinner.setPrefWidth(100);
             var minIoUFactory = (SpinnerValueFactory.DoubleSpinnerValueFactory) focusClassMinIoUSpinner.getValueFactory();

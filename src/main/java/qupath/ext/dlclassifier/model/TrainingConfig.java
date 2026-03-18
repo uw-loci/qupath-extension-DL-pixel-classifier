@@ -637,7 +637,7 @@ public class TrainingConfig {
         private int earlyStoppingPatience = 15;
         private boolean mixedPrecision = true;
         private String focusClass = null;
-        private double focusClassMinIoU = 0.0;
+        private double focusClassMinIoU = 0.5;
         private String intensityAugMode = "none";
         private int gradientAccumulationSteps = 1;
         private boolean progressiveResize = false;

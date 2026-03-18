@@ -180,6 +180,14 @@ public class ApposeService {
                         .build();
 
                 logger.info("Appose environment built successfully");
+
+                // Install dlclassifier-server via pip (outside pixi resolver).
+                // Pixi's PyPI resolver panics on git+subdirectory dependencies,
+                // so we install this package separately using pip which handles
+                // git deps reliably on all platforms.
+                report(statusCallback, "Installing DL classifier server package...");
+                installDLClassifierServer();
+
                 report(statusCallback, "Starting Python service...");
 
                 // Create Python service (lazy - subprocess starts on first task)
@@ -698,6 +706,87 @@ public class ApposeService {
             sb.append(line).append("\n");
         }
         return sb.toString();
+    }
+
+    /**
+     * URL for the dlclassifier-server git-based pip install.
+     * This is installed separately from pixi because pixi's PyPI resolver
+     * panics on git+subdirectory dependencies.
+     */
+    private static final String DL_SERVER_PIP_URL =
+            "dlclassifier-server @ git+https://github.com/MichaelSNelson/"
+                    + "qupath-extension-DL-pixel-classifier.git#subdirectory=python_server";
+
+    /**
+     * Installs or upgrades the dlclassifier-server package via pip in the
+     * pixi environment. Runs {@code pip install --upgrade} so that version
+     * bumps in the git repo are picked up on rebuild.
+     *
+     * @throws IOException if pip install fails
+     */
+    private void installDLClassifierServer() throws IOException {
+        Path envBase = Path.of(environment.base());
+
+        // Find pip in the pixi environment's bin directory
+        Path pip;
+        if (GeneralTools.isWindows()) {
+            pip = envBase.resolve(".pixi/envs/default/Scripts/pip.exe");
+        } else {
+            pip = envBase.resolve(".pixi/envs/default/bin/pip");
+        }
+
+        if (!Files.isRegularFile(pip)) {
+            // Fallback: try to find pip via environment bin paths
+            for (String binPath : environment.binPaths()) {
+                Path candidate = GeneralTools.isWindows()
+                        ? Path.of(binPath, "pip.exe")
+                        : Path.of(binPath, "pip");
+                if (Files.isRegularFile(candidate)) {
+                    pip = candidate;
+                    break;
+                }
+            }
+        }
+
+        if (!Files.isRegularFile(pip)) {
+            throw new IOException("Cannot find pip in the pixi environment at "
+                    + envBase + " -- environment may be corrupt. "
+                    + "Try Utilities > Rebuild DL Environment.");
+        }
+
+        logger.info("Installing dlclassifier-server via pip: {}", pip);
+        ProcessBuilder pb = new ProcessBuilder(
+                pip.toString(), "install", "--upgrade", "--no-deps",
+                DL_SERVER_PIP_URL
+        );
+        pb.directory(envBase.toFile());
+        pb.redirectErrorStream(true);
+        Process process = pb.start();
+
+        // Read output for logging
+        StringBuilder output = new StringBuilder();
+        try (BufferedReader reader = new BufferedReader(
+                new InputStreamReader(process.getInputStream(), StandardCharsets.UTF_8))) {
+            String line;
+            while ((line = reader.readLine()) != null) {
+                output.append(line).append("\n");
+                logger.info("[pip] {}", line);
+            }
+        }
+
+        int exitCode;
+        try {
+            exitCode = process.waitFor();
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            throw new IOException("pip install interrupted", e);
+        }
+
+        if (exitCode != 0) {
+            throw new IOException("pip install dlclassifier-server failed (exit code "
+                    + exitCode + "):\n" + output);
+        }
+        logger.info("dlclassifier-server installed successfully");
     }
 
     /**

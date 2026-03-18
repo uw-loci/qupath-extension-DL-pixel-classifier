@@ -46,6 +46,7 @@ einops = ">=0.7.0"
 onnx = ">=1.15.0"
 onnxruntime = ">=1.16.0"
 
-# DL classifier server (from GitHub)
-# Bump this comment to force pixi re-fetch: v0.3.7+drop-osx64
-dlclassifier-server = { git = "https://github.com/MichaelSNelson/qupath-extension-DL-pixel-classifier.git", subdirectory = "python_server" }
+# dlclassifier-server is installed separately via pip after the pixi
+# environment is built (see ApposeService.java). Pixi's PyPI resolver
+# panics on git-based subdirectory dependencies, so this is handled
+# outside pixi to avoid the resolver entirely.
