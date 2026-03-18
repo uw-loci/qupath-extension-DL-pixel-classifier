@@ -378,9 +378,18 @@ public class SetupDLClassifier implements QuPathExtension, GitHubProject {
                 new qupath.ext.dlclassifier.ui.OverlaySettingsDialog(overlayService).show());
         overlaySettingsOption.visibleProperty().bind(environmentReady);
 
+        // Where Are My Files? - always visible
+        MenuItem whereFilesOption = new MenuItem("Where Are My Files?");
+        TooltipHelper.installOnMenuItem(whereFilesOption,
+                "Show all directories where this extension stores files:\n" +
+                        "trained classifiers, Python environment, temp data, etc.\n" +
+                        "Includes disk usage and links to open each folder.");
+        whereFilesOption.setOnAction(e -> showWhereAreMyFiles());
+
         utilitiesMenu.getItems().addAll(overlaySettingsOption, freeGpuOption,
                 maePretrainOption, new SeparatorMenuItem(), systemInfoOption,
-                pythonConsoleOption, new SeparatorMenuItem(), rebuildItem);
+                whereFilesOption, pythonConsoleOption, new SeparatorMenuItem(),
+                rebuildItem);
 
         // === BUILD FINAL MENU ===
         extensionMenu.getItems().addAll(
@@ -499,6 +508,220 @@ public class SetupDLClassifier implements QuPathExtension, GitHubProject {
                 });
 
         dialog.showAndWait();
+    }
+
+    /**
+     * Shows a dialog listing all directories where this extension stores files,
+     * with disk usage for each location and buttons to open them.
+     */
+    private void showWhereAreMyFiles() {
+        String userHome = System.getProperty("user.home");
+        String tempDir = System.getProperty("java.io.tmpdir");
+
+        // Collect all file locations
+        StringBuilder sb = new StringBuilder();
+
+        // 1. Python environment
+        Path envPath = ApposeService.getEnvironmentPath();
+        sb.append("=== Python Environment (PyTorch, CUDA, dependencies) ===\n");
+        sb.append("  ").append(envPath).append("\n");
+        sb.append("  Size: ").append(formatDirSize(envPath)).append("\n\n");
+
+        // 2. Project classifiers
+        var project = QuPathGUI.getInstance().getProject();
+        if (project != null) {
+            Path projectClassifiers = project.getPath().getParent().resolve("classifiers/dl");
+            sb.append("=== Project Classifiers (this project's trained models) ===\n");
+            sb.append("  ").append(projectClassifiers).append("\n");
+            sb.append("  Size: ").append(formatDirSize(projectClassifiers)).append("\n");
+            sb.append("  Models: ").append(countSubdirs(projectClassifiers)).append("\n\n");
+        } else {
+            sb.append("=== Project Classifiers ===\n");
+            sb.append("  No project open.\n\n");
+        }
+
+        // 3. User-level classifiers (shared across projects)
+        Path userClassifiers = Path.of(userHome, ".qupath", "classifiers", "dl");
+        sb.append("=== Shared Classifiers (available to all projects) ===\n");
+        sb.append("  ").append(userClassifiers).append("\n");
+        sb.append("  Size: ").append(formatDirSize(userClassifiers)).append("\n");
+        sb.append("  Models: ").append(countSubdirs(userClassifiers)).append("\n\n");
+
+        // 4. Default model storage (Python side)
+        Path defaultModels = Path.of(userHome, ".dlclassifier", "models");
+        sb.append("=== Default Model Storage (Python training output) ===\n");
+        sb.append("  ").append(defaultModels).append("\n");
+        sb.append("  Size: ").append(formatDirSize(defaultModels)).append("\n\n");
+
+        // 5. Checkpoints
+        Path checkpoints = Path.of(userHome, ".dlclassifier", "checkpoints");
+        sb.append("=== Training Checkpoints (pause/resume state) ===\n");
+        sb.append("  ").append(checkpoints).append("\n");
+        sb.append("  Size: ").append(formatDirSize(checkpoints)).append("\n\n");
+
+        // 6. Training data export
+        String exportDir = DLClassifierPreferences.getTrainingExportDir();
+        sb.append("=== Training Data Export (temporary tile images) ===\n");
+        if (exportDir != null && !exportDir.isEmpty()) {
+            sb.append("  Configured: ").append(exportDir).append("\n");
+            sb.append("  Size: ").append(formatDirSize(Path.of(exportDir))).append("\n");
+        } else {
+            sb.append("  Using system temp: ").append(tempDir).append("\n");
+        }
+        sb.append("  (Normally cleaned up after training; orphaned on crash)\n\n");
+
+        // 7. System temp - count dl-* orphans
+        sb.append("=== System Temp Directory ===\n");
+        sb.append("  ").append(tempDir).append("\n");
+        long[] orphanInfo = countDLOrphans(Path.of(tempDir));
+        sb.append("  DL classifier temp items: ").append(orphanInfo[0]).append("\n");
+        if (orphanInfo[1] > 0) {
+            sb.append("  Total size of DL temp items: ").append(formatBytes(orphanInfo[1])).append("\n");
+        }
+        if (orphanInfo[0] > 0) {
+            sb.append("  (These may be orphaned from crashed/cancelled training runs)\n");
+        }
+        sb.append("\n");
+
+        // Summary
+        sb.append("=== Notes ===\n");
+        sb.append("- Trained classifiers are saved in your QuPath project's classifiers/dl/ folder.\n");
+        sb.append("- The Python environment is shared across all projects (~2-4 GB).\n");
+        sb.append("- Temp files (dl-training-*, dl-pause-*, dl-overlay-*) in the system temp\n");
+        sb.append("  directory are safe to delete when QuPath is not training.\n");
+        sb.append("- To change where training tiles are exported, go to:\n");
+        sb.append("  Edit > Preferences > DL Pixel Classifier > Training Data Export Directory\n");
+
+        // Show dialog
+        showWhereAreMyFilesDialog(sb.toString());
+    }
+
+    /**
+     * Shows the file locations dialog with open-folder and copy buttons.
+     */
+    private void showWhereAreMyFilesDialog(String infoText) {
+        javafx.scene.control.TextArea textArea = new javafx.scene.control.TextArea(infoText);
+        textArea.setEditable(false);
+        textArea.setWrapText(false);
+        textArea.setFont(javafx.scene.text.Font.font("monospace", 12));
+        textArea.setPrefWidth(700);
+        textArea.setPrefHeight(550);
+
+        javafx.scene.control.Dialog<Void> dialog = new javafx.scene.control.Dialog<>();
+        dialog.setTitle(EXTENSION_NAME + " - Where Are My Files?");
+        dialog.setHeaderText("All directories used by the DL Pixel Classifier extension");
+        dialog.getDialogPane().setContent(textArea);
+        dialog.getDialogPane().getButtonTypes().add(javafx.scene.control.ButtonType.CLOSE);
+        dialog.setResizable(true);
+
+        // Copy button
+        javafx.scene.control.ButtonType copyType = new javafx.scene.control.ButtonType(
+                "Copy to Clipboard", javafx.scene.control.ButtonBar.ButtonData.LEFT);
+        dialog.getDialogPane().getButtonTypes().add(copyType);
+        dialog.getDialogPane().lookupButton(copyType).addEventFilter(
+                javafx.event.ActionEvent.ACTION, event -> {
+                    javafx.scene.input.Clipboard clipboard = javafx.scene.input.Clipboard.getSystemClipboard();
+                    javafx.scene.input.ClipboardContent content = new javafx.scene.input.ClipboardContent();
+                    content.putString(infoText);
+                    clipboard.setContent(content);
+                    Dialogs.showInfoNotification(EXTENSION_NAME, "File locations copied to clipboard.");
+                    event.consume();
+                });
+
+        // Open Temp Folder button
+        javafx.scene.control.ButtonType openTempType = new javafx.scene.control.ButtonType(
+                "Open Temp Folder", javafx.scene.control.ButtonBar.ButtonData.LEFT);
+        dialog.getDialogPane().getButtonTypes().add(openTempType);
+        dialog.getDialogPane().lookupButton(openTempType).addEventFilter(
+                javafx.event.ActionEvent.ACTION, event -> {
+                    try {
+                        java.awt.Desktop.getDesktop().open(
+                                new java.io.File(System.getProperty("java.io.tmpdir")));
+                    } catch (Exception ex) {
+                        logger.warn("Could not open temp folder", ex);
+                    }
+                    event.consume();
+                });
+
+        dialog.showAndWait();
+    }
+
+    /**
+     * Formats the total size of a directory, or returns "does not exist" / "empty".
+     */
+    private static String formatDirSize(Path dir) {
+        if (!Files.isDirectory(dir)) {
+            return "(does not exist)";
+        }
+        try (var stream = Files.walk(dir)) {
+            long totalBytes = stream
+                    .filter(Files::isRegularFile)
+                    .mapToLong(p -> {
+                        try { return Files.size(p); }
+                        catch (IOException e) { return 0; }
+                    })
+                    .sum();
+            return totalBytes == 0 ? "(empty)" : formatBytes(totalBytes);
+        } catch (IOException e) {
+            return "(error reading)";
+        }
+    }
+
+    /**
+     * Counts immediate subdirectories in a directory.
+     */
+    private static int countSubdirs(Path dir) {
+        if (!Files.isDirectory(dir)) return 0;
+        try (var stream = Files.list(dir)) {
+            return (int) stream.filter(Files::isDirectory).count();
+        } catch (IOException e) {
+            return 0;
+        }
+    }
+
+    /**
+     * Counts dl-* prefixed items in the temp directory and their total size.
+     *
+     * @return [count, totalBytes]
+     */
+    private static long[] countDLOrphans(Path tempDir) {
+        if (!Files.isDirectory(tempDir)) return new long[]{0, 0};
+        long count = 0;
+        long totalSize = 0;
+        try (var stream = Files.list(tempDir)) {
+            var items = stream
+                    .filter(p -> p.getFileName().toString().startsWith("dl-"))
+                    .toList();
+            count = items.size();
+            for (Path item : items) {
+                if (Files.isDirectory(item)) {
+                    try (var walk = Files.walk(item)) {
+                        totalSize += walk
+                                .filter(Files::isRegularFile)
+                                .mapToLong(p -> {
+                                    try { return Files.size(p); }
+                                    catch (IOException e) { return 0; }
+                                })
+                                .sum();
+                    }
+                } else {
+                    totalSize += Files.size(item);
+                }
+            }
+        } catch (IOException e) {
+            // ignore
+        }
+        return new long[]{count, totalSize};
+    }
+
+    /**
+     * Formats a byte count as a human-readable string.
+     */
+    private static String formatBytes(long bytes) {
+        if (bytes < 1024) return bytes + " B";
+        if (bytes < 1024 * 1024) return String.format("%.1f KB", bytes / 1024.0);
+        if (bytes < 1024L * 1024 * 1024) return String.format("%.1f MB", bytes / (1024.0 * 1024));
+        return String.format("%.2f GB", bytes / (1024.0 * 1024 * 1024));
     }
 
     /**
