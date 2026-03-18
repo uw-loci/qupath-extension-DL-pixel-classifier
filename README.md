@@ -80,8 +80,11 @@ See [QUICKSTART.md](QUICKSTART.md) for a complete walkthrough (zero to classifie
 ## Requirements
 
 - QuPath 0.6.0+ (including 0.7.0)
-- NVIDIA GPU with CUDA recommended (CPU and Apple Silicon MPS also supported)
+- **Windows 10+ (64-bit)**, **Linux (64-bit)**, or **macOS Apple Silicon (M1+)**
+- NVIDIA GPU with CUDA recommended (Apple Silicon MPS also works; CPU fallback available)
 - Internet connection for first-time environment setup (~2-4 GB download)
+
+> **Not supported:** Intel Macs (x86_64 macOS) and 32-bit systems. See [Installation Guide](docs/INSTALLATION.md) for full platform details.
 
 > **Note:** A separate Python installation is **not** required. The extension manages its own embedded Python environment via [Appose](https://github.com/apposed/appose).
 

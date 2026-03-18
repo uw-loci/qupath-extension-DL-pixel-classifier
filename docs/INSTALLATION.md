@@ -2,6 +2,30 @@
 
 Complete setup instructions for the DL Pixel Classifier extension.
 
+## Supported Platforms
+
+| Platform | GPU Backend | Training | Inference | Status |
+|----------|-------------|----------|-----------|--------|
+| **Windows 10/11 (64-bit)** | NVIDIA CUDA | Fast | Fast | **Recommended** |
+| **Linux (64-bit)** | NVIDIA CUDA | Fast | Fast | Supported |
+| **macOS Apple Silicon (M1/M2/M3/M4)** | MPS | Slow | Moderate | Supported |
+| **Windows / Linux (no GPU)** | CPU | Very slow | Slow | Functional but impractical for training |
+| ~~macOS Intel~~ | -- | -- | -- | **Not supported** |
+| ~~32-bit systems~~ | -- | -- | -- | **Not supported** |
+
+> **Intel Mac users:** This extension does not support Intel-based Macs (x86_64 macOS). The Python environment cannot be built on this platform. You will need a machine with an Apple Silicon Mac, Windows PC, or Linux system.
+
+### NVIDIA Driver Requirements
+
+The extension bundles **PyTorch with CUDA 12**. You do **not** need to install CUDA separately -- PyTorch includes its own CUDA runtime. You **do** need NVIDIA drivers new enough to support CUDA 12:
+
+| Requirement | Version |
+|-------------|---------|
+| Minimum NVIDIA driver (Linux) | >= 525.60.13 |
+| Minimum NVIDIA driver (Windows) | >= 528.33 |
+
+Run `nvidia-smi` in a terminal to check your driver version. Update from [NVIDIA Driver Downloads](https://www.nvidia.com/Download/index.aspx) if needed.
+
 ## Prerequisites
 
 | Component | Requirement |

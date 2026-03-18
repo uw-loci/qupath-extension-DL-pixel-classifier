@@ -9,8 +9,11 @@ Get from zero to your first trained pixel classifier in about 10 minutes.
 | Component | Requirement |
 |-----------|-------------|
 | QuPath | 0.6.0 or later (including 0.7.0) |
+| Platform | Windows 10+ (64-bit), Linux (64-bit), or macOS Apple Silicon (M1+) |
 | GPU | NVIDIA GPU with CUDA recommended; Apple Silicon (MPS) also works; CPU fallback available |
 | Internet | Required for first-time environment setup (~2-4 GB download) |
+
+> **Not supported:** Intel Macs and 32-bit systems. See [Installation Guide](docs/INSTALLATION.md) for full platform details and NVIDIA driver requirements.
 
 > **Note:** A separate Python installation is **not** required. The extension manages its own embedded Python environment via [Appose](https://github.com/apposed/appose).
 
