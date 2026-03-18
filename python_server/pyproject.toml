@@ -24,11 +24,20 @@ classifiers = [
 ]
 
 dependencies = [
+    # Runtime dependencies are managed by pixi.toml (conda + PyPI sections).
+    # Declaring torch/torchvision here causes pixi's PyPI resolver to panic
+    # on osx-64 (Intel Mac) because PyTorch dropped x86_64 macOS PyPI wheels.
+    # For standalone pip install, use: pip install dlclassifier-server[standalone]
+]
+
+[project.optional-dependencies]
+# Full dependency list for standalone pip install (outside pixi environment)
+standalone = [
     "torch>=2.1.0",
     "torchvision>=0.16.0",
     "segmentation-models-pytorch>=0.3.3",
     "onnx>=1.15.0",
-    "onnxruntime>=1.16.0",  # Base package, works cross-platform
+    "onnxruntime>=1.16.0",
     "numpy>=1.24.0",
     "Pillow>=10.0.0",
     "scikit-image>=0.21.0",
@@ -38,8 +47,6 @@ dependencies = [
     "timm>=1.0.0",
     "ttach>=0.0.3",
 ]
-
-[project.optional-dependencies]
 cuda = [
     "onnxruntime-gpu>=1.16.0",
 ]
