@@ -174,10 +174,11 @@ public class DLPixelClassifier implements PixelClassifier {
                     + "tileSize={}, padding={}, stride~={}, est. total tiles~={}",
                     imgW, imgH, downsample, tileSize, inputPadding, stride,
                     estTilesX * estTilesY);
-            logger.info("First tile request: region=({},{}) {}x{} @ downsample={}",
+            logger.info("First tile request: region=({},{}) {}x{} @ downsample={} "
+                    + "(will expand by {} padding for model context)",
                     request.getX(), request.getY(),
                     request.getWidth(), request.getHeight(),
-                    request.getDownsample());
+                    request.getDownsample(), inputPadding);
         }
 
         // Guard: reject oversized tile requests. QuPath sometimes sends the entire
@@ -240,7 +241,9 @@ public class DLPixelClassifier implements PixelClassifier {
             float[][][] blended = blendCache.blendWithNeighbors(cachedProbMap,
                     request.getX(), request.getY(), cachedW, cachedH);
             consecutiveErrors.set(0);
-            return createClassIndexImage(blended, cachedW, cachedH);
+            // Crop expanded prob map to the stride region QuPath expects
+            float[][][] cropped = cropToStride(blended, request);
+            return createClassIndexImage(cropped, cropped[0].length, cropped.length);
         }
 
         ImageServer<BufferedImage> server = imageData.getServer();
@@ -256,10 +259,13 @@ public class DLPixelClassifier implements PixelClassifier {
             }
         }
 
-        // Read the tile from the image server
-        BufferedImage tileImage = server.readRegion(request);
+        // QuPath sends stride-sized tiles (tileSize - 2*padding) without
+        // surrounding context. Expand the request by inputPadding on each side
+        // so the model receives the full context it was trained with.
+        RegionRequest expandedRequest = expandRequest(request, server);
+        BufferedImage tileImage = server.readRegion(expandedRequest);
         if (tileImage == null) {
-            throw new IOException("Failed to read tile at " + request);
+            throw new IOException("Failed to read tile at " + expandedRequest);
         }
 
         // Encode detail tile as raw binary (uint8 fast path for simple RGB, float32 for N-channel)
@@ -284,7 +290,7 @@ public class DLPixelClassifier implements PixelClassifier {
         byte[] rawBytes;
         int numChannels;
         if (contextScale > 1) {
-            BufferedImage contextImage = readContextTile(server, request,
+            BufferedImage contextImage = readContextTile(server, expandedRequest,
                     tileImage.getWidth(), tileImage.getHeight());
             byte[] contextBytes;
             if ("uint8".equals(dtype)) {
@@ -320,8 +326,8 @@ public class DLPixelClassifier implements PixelClassifier {
         try {
             // Use binary pixel inference (single-tile batch)
             // Pass channelConfigWithStats which includes precomputed normalization stats
-            // QuPath's inputPadding already provides real surrounding image data.
-            // Reflection padding would add artificial data on top of real context.
+            // Context is provided by the expanded region read above. Additional
+            // reflection padding is not needed since we already have real image data.
             int reflectionPadding = 0;
             PixelInferenceResult result = backend.runPixelInferenceBinary(
                     modelDirPath, rawBytes, List.of(tileId),
@@ -386,14 +392,18 @@ public class DLPixelClassifier implements PixelClassifier {
             // this tile now available as a neighbor for blending
             blendCache.scheduleRefresh();
 
+            // Crop expanded prob map to the stride region QuPath expects
+            float[][][] cropped = cropToStride(blended, request);
+
             // Success -- reset error counter and log progress
             consecutiveErrors.set(0);
             int completed = tilesCompleted.incrementAndGet();
             if (completed <= 10 || completed % 50 == 0) {
-                logger.info("Overlay tile {} completed at ({}, {})",
-                        completed, request.getX(), request.getY());
+                logger.info("Overlay tile {} completed at ({}, {}), expanded={}x{}, stride={}x{}",
+                        completed, request.getX(), request.getY(),
+                        tileWidth, tileHeight, cropped[0].length, cropped.length);
             }
-            return createClassIndexImage(blended, tileWidth, tileHeight);
+            return createClassIndexImage(cropped, cropped[0].length, cropped.length);
 
         } catch (IOException e) {
             // During shutdown, interrupted threads and missing temp files are expected.
@@ -736,6 +746,68 @@ public class DLPixelClassifier implements PixelClassifier {
         // Clamp: at least 64, at most 3/8 of tileSize (ensures >= 25% visible stride)
         int maxPadding = Math.max(64, tileSize * 3 / 8);
         return Math.max(64, Math.min(padding, maxPadding));
+    }
+
+    /**
+     * Expands a stride-sized RegionRequest by inputPadding on each side,
+     * clipped to image bounds. QuPath sends stride-sized tiles without
+     * surrounding context; this provides the model with the full receptive
+     * field it was trained with.
+     */
+    private RegionRequest expandRequest(RegionRequest request, ImageServer<?> server) {
+        double ds = request.getDownsample();
+        int padFullRes = (int) (inputPadding * ds);
+        int expX = Math.max(0, request.getX() - padFullRes);
+        int expY = Math.max(0, request.getY() - padFullRes);
+        int expRight = Math.min(server.getWidth(),
+                request.getX() + request.getWidth() + padFullRes);
+        int expBottom = Math.min(server.getHeight(),
+                request.getY() + request.getHeight() + padFullRes);
+        return RegionRequest.createInstance(
+                server.getPath(), ds,
+                expX, expY, expRight - expX, expBottom - expY,
+                request.getZ(), request.getT());
+    }
+
+    /**
+     * Crops an expanded probability map to the stride region that QuPath expects.
+     * The stride region corresponds to the original (unexpanded) request within
+     * the expanded tile. At image edges where expansion was clipped, the offset
+     * is reduced accordingly.
+     */
+    private float[][][] cropToStride(float[][][] probMap, RegionRequest request) {
+        int strideW = (int) (request.getWidth() / request.getDownsample());
+        int strideH = (int) (request.getHeight() / request.getDownsample());
+        int expandedW = probMap[0].length;
+        int expandedH = probMap.length;
+
+        // If already stride-sized (no expansion happened), return as-is
+        if (expandedW <= strideW && expandedH <= strideH) {
+            return probMap;
+        }
+
+        // Compute how much padding was actually added on the left/top
+        // (less at image edges due to clipping)
+        double ds = request.getDownsample();
+        int padFullRes = (int) (inputPadding * ds);
+        int expandedX = Math.max(0, request.getX() - padFullRes);
+        int expandedY = Math.max(0, request.getY() - padFullRes);
+        int offsetX = (int) ((request.getX() - expandedX) / ds);
+        int offsetY = (int) ((request.getY() - expandedY) / ds);
+
+        // Clamp crop to available dimensions
+        int cropW = Math.min(strideW, expandedW - offsetX);
+        int cropH = Math.min(strideH, expandedH - offsetY);
+
+        int numClasses = probMap[0][0].length;
+        float[][][] cropped = new float[cropH][cropW][numClasses];
+        for (int y = 0; y < cropH; y++) {
+            for (int x = 0; x < cropW; x++) {
+                System.arraycopy(probMap[y + offsetY][x + offsetX], 0,
+                        cropped[y][x], 0, numClasses);
+            }
+        }
+        return cropped;
     }
 
     /**
