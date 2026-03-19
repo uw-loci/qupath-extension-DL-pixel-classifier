@@ -1,6 +1,7 @@
 package qupath.ext.dlclassifier.ui;
 
 import javafx.scene.control.Control;
+import javafx.scene.control.Label;
 import javafx.scene.control.MenuItem;
 import javafx.scene.control.Tooltip;
 import javafx.util.Duration;
@@ -61,6 +62,7 @@ public final class TooltipHelper {
      * @param text    the tooltip text
      */
     public static void install(Control control, String text) {
+        ensureFillWidth(control);
         control.setTooltip(create(text));
     }
 
@@ -74,6 +76,7 @@ public final class TooltipHelper {
     public static void install(String text, Control... controls) {
         Tooltip tooltip = create(text);
         for (Control c : controls) {
+            ensureFillWidth(c);
             c.setTooltip(tooltip);
         }
     }
@@ -86,6 +89,7 @@ public final class TooltipHelper {
      * @param url     the URL to append as a "Learn more" link
      */
     public static void installWithLink(Control control, String text, String url) {
+        ensureFillWidth(control);
         control.setTooltip(createWithLink(text, url));
     }
 
@@ -99,6 +103,7 @@ public final class TooltipHelper {
     public static void installWithLink(String text, String url, Control... controls) {
         Tooltip tooltip = createWithLink(text, url);
         for (Control c : controls) {
+            ensureFillWidth(c);
             c.setTooltip(tooltip);
         }
     }
@@ -147,6 +152,18 @@ public final class TooltipHelper {
                 });
             }
         });
+    }
+
+    /**
+     * Ensures Labels fill their layout cell width so the tooltip is accessible
+     * across the entire cell, not just over the text. Without this, a label
+     * like "Epochs:" (50px) in a 150px GridPane column leaves 100px of dead
+     * space where hovering shows no tooltip.
+     */
+    private static void ensureFillWidth(Control control) {
+        if (control instanceof Label) {
+            control.setMaxWidth(Double.MAX_VALUE);
+        }
     }
 
     /**
