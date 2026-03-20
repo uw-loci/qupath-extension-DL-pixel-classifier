@@ -246,7 +246,14 @@ public class InferenceWorkflow {
                         server, classifier, channels,
                         classifier.getContextScale(), classifier.getDownsample());
 
-                TileProcessor tileProcessor = new TileProcessor(config);
+                // Enforce minimum overlap for spatial output (see runInferenceWithProgress)
+                int effectiveOverlap = config.getOverlap();
+                if (config.getOutputType() == InferenceConfig.OutputType.OBJECTS) {
+                    effectiveOverlap = Math.max(effectiveOverlap, config.getTileSize() / 2);
+                }
+                TileProcessor tileProcessor = new TileProcessor(
+                        config.getTileSize(), effectiveOverlap,
+                        config.getBlendMode(), config.getMaxTilesInMemory());
 
                 ClassifierBackend backend = BackendFactory.getBackend();
 
@@ -449,8 +456,21 @@ public class InferenceWorkflow {
                         server, metadata, channelConfig,
                         metadata.getContextScale(), metadata.getDownsample());
 
-                // Create tile processor
-                TileProcessor tileProcessor = new TileProcessor(inferenceConfig);
+                // Create tile processor.
+                // For spatial output (OBJECTS), enforce minimum 50% overlap so
+                // each pixel is covered by the reliable center region of at least
+                // one tile -- matching the overlay's expanded-read + center-crop
+                // approach. Without this, the model's less reliable edge predictions
+                // contaminate the merged result, causing patchy missing detections.
+                int effectiveOverlap = inferenceConfig.getOverlap();
+                if (inferenceConfig.getOutputType() == InferenceConfig.OutputType.OBJECTS) {
+                    int minOverlap = inferenceConfig.getTileSize() / 2;
+                    effectiveOverlap = Math.max(effectiveOverlap, minOverlap);
+                }
+                TileProcessor tileProcessor = new TileProcessor(
+                        inferenceConfig.getTileSize(), effectiveOverlap,
+                        inferenceConfig.getBlendMode(),
+                        inferenceConfig.getMaxTilesInMemory());
 
                 // Get appropriate backend (Appose or HTTP)
                 progress.setStatus("Connecting to backend...");
