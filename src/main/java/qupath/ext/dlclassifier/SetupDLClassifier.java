@@ -42,7 +42,10 @@ import qupath.lib.gui.extensions.GitHubProject;
 import qupath.lib.gui.extensions.QuPathExtension;
 import qupath.lib.images.ImageData;
 
+import javafx.stage.FileChooser;
+
 import java.awt.image.BufferedImage;
+import java.io.File;
 import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
@@ -336,6 +339,16 @@ public class SetupDLClassifier implements QuPathExtension, GitHubProject {
         });
         freeGpuOption.visibleProperty().bind(environmentReady);
 
+        // Recover from Checkpoint - finalize a model from a .pt checkpoint file
+        MenuItem recoverCheckpointOption = new MenuItem("Recover from Checkpoint...");
+        TooltipHelper.installOnMenuItem(recoverCheckpointOption,
+                "Recover a trained model from a checkpoint (.pt) file.\n" +
+                        "Use this after a crash, power outage, or paused training\n" +
+                        "that was interrupted before the model could be finalized.\n" +
+                        "The best model weights are extracted and saved as a usable classifier.");
+        recoverCheckpointOption.setOnAction(e -> recoverFromCheckpoint(qupath));
+        recoverCheckpointOption.visibleProperty().bind(environmentReady);
+
         // MAE Pretrain Encoder - visible when environment ready
         MenuItem maePretrainOption = new MenuItem("MAE Pretrain Encoder...");
         TooltipHelper.installOnMenuItem(maePretrainOption,
@@ -387,7 +400,8 @@ public class SetupDLClassifier implements QuPathExtension, GitHubProject {
         whereFilesOption.setOnAction(e -> showWhereAreMyFiles());
 
         utilitiesMenu.getItems().addAll(overlaySettingsOption, freeGpuOption,
-                maePretrainOption, new SeparatorMenuItem(), systemInfoOption,
+                recoverCheckpointOption, maePretrainOption,
+                new SeparatorMenuItem(), systemInfoOption,
                 whereFilesOption, pythonConsoleOption, new SeparatorMenuItem(),
                 rebuildItem);
 
@@ -413,6 +427,75 @@ public class SetupDLClassifier implements QuPathExtension, GitHubProject {
      * Collects Java-side and Python-side system information and shows it
      * in a copyable text dialog.
      */
+    /**
+     * Recovers a trained model from a checkpoint (.pt) file.
+     * Opens a file chooser, then runs finalize_training.py on the selected file.
+     * The finalized model is saved to the project's classifiers directory.
+     */
+    private void recoverFromCheckpoint(QuPathGUI qupath) {
+        FileChooser fileChooser = new FileChooser();
+        fileChooser.setTitle("Select Checkpoint File");
+        fileChooser.getExtensionFilters().addAll(
+                new FileChooser.ExtensionFilter("PyTorch Checkpoint", "*.pt"),
+                new FileChooser.ExtensionFilter("All Files", "*.*"));
+
+        // Default to checkpoints directory if it exists
+        Path defaultDir = Path.of(System.getProperty("user.home"), ".dlclassifier", "checkpoints");
+        if (Files.isDirectory(defaultDir)) {
+            fileChooser.setInitialDirectory(defaultDir.toFile());
+        }
+
+        File selected = fileChooser.showOpenDialog(qupath.getStage());
+        if (selected == null) return;
+
+        String checkpointPath = selected.getAbsolutePath();
+        logger.info("Recovering model from checkpoint: {}", checkpointPath);
+
+        // Determine output directory: project classifiers dir if available
+        String modelOutputDir = null;
+        if (qupath.getProject() != null) {
+            Path classifiersDir = qupath.getProject().getPath().getParent()
+                    .resolve("classifiers").resolve("dl");
+            // Use a subdirectory named after the checkpoint file
+            String baseName = selected.getName().replace(".pt", "");
+            Path outputDir = classifiersDir.resolve("recovered_" + baseName);
+            try {
+                Files.createDirectories(outputDir);
+                modelOutputDir = outputDir.toString();
+            } catch (IOException ex) {
+                logger.warn("Could not create output dir, using default location", ex);
+            }
+        }
+
+        String finalOutputDir = modelOutputDir;
+        Dialogs.showInfoNotification(EXTENSION_NAME,
+                "Recovering model from checkpoint...\nThis may take a moment.");
+
+        Thread recoverThread = new Thread(() -> {
+            try {
+                ClassifierBackend backend = BackendFactory.getBackend();
+                ClassifierClient.TrainingResult result =
+                        backend.finalizeTraining(checkpointPath, finalOutputDir);
+                Platform.runLater(() -> {
+                    String msg = String.format(
+                            "Model recovered successfully!\n\n" +
+                            "Best epoch: %d\nMean IoU: %.4f\nSaved to: %s",
+                            result.bestEpoch(), result.bestMeanIoU(), result.modelPath());
+                    Dialogs.showInfoNotification(EXTENSION_NAME, msg);
+                    logger.info("Model recovered: {} (best epoch {}, mIoU {})",
+                            result.modelPath(), result.bestEpoch(), result.bestMeanIoU());
+                });
+            } catch (Exception ex) {
+                logger.error("Failed to recover from checkpoint", ex);
+                Platform.runLater(() ->
+                        Dialogs.showErrorNotification(EXTENSION_NAME,
+                                "Failed to recover model: " + ex.getMessage()));
+            }
+        }, "DLClassifier-RecoverCheckpoint");
+        recoverThread.setDaemon(true);
+        recoverThread.start();
+    }
+
     private void showSystemInfo() {
         // Collect Java-side info immediately
         StringBuilder sb = new StringBuilder();
