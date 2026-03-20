@@ -392,9 +392,23 @@ public class OutputGenerator {
                 numClasses
         );
 
-        // Create objects from the merged classification map using ContourTracing
+        // Apply probability smoothing to match overlay quality.
+        // The overlay smooths each tile's probabilities before argmax;
+        // here we smooth the merged map which is even better (crosses
+        // tile boundaries). Uses the same sigma as the overlay.
+        double sigma = config.getOverlaySmoothingSigma();
+        int[][] classMap;
+        if (sigma > 0) {
+            float[][][] smoothed = gaussianSmoothProbabilities(
+                    merged.probabilityMap(), regionWidth, regionHeight, sigma);
+            classMap = computeArgmax(smoothed, regionWidth, regionHeight, numClasses);
+        } else {
+            classMap = merged.classificationMap();
+        }
+
+        // Create objects from the classification map using ContourTracing
         List<PathObject> objects = createObjectsFromMergedMap(
-                merged.classificationMap(),
+                classMap,
                 regionX, regionY,
                 objectType
         );
@@ -744,5 +758,83 @@ public class OutputGenerator {
             }
             return leftResult != null ? leftResult : rightResult;
         }
+    }
+
+    // ==================== Probability Map Utilities ====================
+
+    /**
+     * Applies separable Gaussian smoothing to each class channel of a probability map.
+     * Same algorithm as DLPixelClassifier.gaussianSmoothProbabilities() but operates
+     * on the merged (full-region) probability map for cross-tile boundary smoothing.
+     */
+    private static float[][][] gaussianSmoothProbabilities(float[][][] probMap,
+                                                            int width, int height, double sigma) {
+        int radius = (int) Math.ceil(sigma * 2.5);
+        if (radius < 1) return probMap;
+
+        float[] kernel = new float[2 * radius + 1];
+        float kernelSum = 0;
+        for (int i = -radius; i <= radius; i++) {
+            kernel[i + radius] = (float) Math.exp(-0.5 * (i * i) / (sigma * sigma));
+            kernelSum += kernel[i + radius];
+        }
+        for (int i = 0; i < kernel.length; i++) {
+            kernel[i] /= kernelSum;
+        }
+
+        int numClasses = probMap[0][0].length;
+
+        // Horizontal pass
+        float[][][] temp = new float[height][width][numClasses];
+        for (int y = 0; y < height; y++) {
+            for (int x = 0; x < width; x++) {
+                for (int c = 0; c < numClasses; c++) {
+                    float sum = 0;
+                    for (int k = -radius; k <= radius; k++) {
+                        int xx = Math.max(0, Math.min(width - 1, x + k));
+                        sum += kernel[k + radius] * probMap[y][xx][c];
+                    }
+                    temp[y][x][c] = sum;
+                }
+            }
+        }
+
+        // Vertical pass
+        float[][][] result = new float[height][width][numClasses];
+        for (int y = 0; y < height; y++) {
+            for (int x = 0; x < width; x++) {
+                for (int c = 0; c < numClasses; c++) {
+                    float sum = 0;
+                    for (int k = -radius; k <= radius; k++) {
+                        int yy = Math.max(0, Math.min(height - 1, y + k));
+                        sum += kernel[k + radius] * temp[yy][x][c];
+                    }
+                    result[y][x][c] = sum;
+                }
+            }
+        }
+
+        return result;
+    }
+
+    /**
+     * Computes argmax classification from a probability map.
+     */
+    private static int[][] computeArgmax(float[][][] probMap, int width, int height, int numClasses) {
+        int[][] classMap = new int[height][width];
+        for (int y = 0; y < height; y++) {
+            for (int x = 0; x < width; x++) {
+                int maxClass = 0;
+                float maxProb = probMap[y][x][0];
+                for (int c = 1; c < numClasses; c++) {
+                    if (probMap[y][x][c] > maxProb) {
+                        maxProb = probMap[y][x][c];
+                        maxClass = c;
+                    }
+                }
+                classMap[y][x] = maxClass;
+            }
+        }
+        return classMap;
     }
 }
