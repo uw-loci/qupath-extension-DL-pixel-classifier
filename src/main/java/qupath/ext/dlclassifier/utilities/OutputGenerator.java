@@ -502,7 +502,7 @@ public class OutputGenerator {
      * Objects that don't intersect the parent are removed.
      * Objects that partially intersect are clipped to the parent boundary.
      */
-    private List<PathObject> clipObjectsToParent(List<PathObject> objects, ROI parentROI) {
+    public List<PathObject> clipObjectsToParent(List<PathObject> objects, ROI parentROI) {
         Geometry parentGeom = GeometryTools.roiToGeometry(parentROI);
         if (parentGeom == null) return objects;
 

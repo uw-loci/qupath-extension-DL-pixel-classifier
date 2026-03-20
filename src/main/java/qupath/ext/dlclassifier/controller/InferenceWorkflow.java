@@ -260,12 +260,19 @@ public class InferenceWorkflow {
                 int objectsCreated = 0;
 
                 for (PathObject annotation : annotations) {
-                    ROI region = annotation.getROI();
-                    int tilesForRegion = processRegionCore(
-                            region, annotation, tileProcessor, backend,
-                            classifier, channelsWithStats, config, server, imgData,
-                            null // no progress monitor
-                    );
+                    int tilesForRegion;
+                    if (config.getOutputType() == InferenceConfig.OutputType.OBJECTS) {
+                        // Unified pipeline: same DLPixelClassifier as overlay
+                        tilesForRegion = classifyRegionUnified(
+                                classifier, channelsWithStats, config,
+                                imgData, annotation, null);
+                    } else {
+                        ROI region = annotation.getROI();
+                        tilesForRegion = processRegionCore(
+                                region, annotation, tileProcessor, backend,
+                                classifier, channelsWithStats, config, server, imgData,
+                                null);
+                    }
                     processedTiles += tilesForRegion;
                     processedAnnotations++;
                 }
@@ -537,7 +544,14 @@ public class InferenceWorkflow {
                         if (classified != null) {
                             classifiedRegions.add(classified);
                         }
+                    } else if (inferenceConfig.getOutputType() == InferenceConfig.OutputType.OBJECTS) {
+                        // Unified pipeline: same DLPixelClassifier as overlay
+                        int tilesForRegion = classifyRegionUnified(
+                                metadata, channelCfg, inferenceConfig,
+                                imageData, annotation, progress);
+                        processedTiles += tilesForRegion;
                     } else {
+                        // MEASUREMENTS: batch pipeline
                         int tilesForRegion = processRegionWithProgress(
                                 region, annotation, tileProcessor, backend, metadata,
                                 channelCfg, inferenceConfig, server, imageData, progress
@@ -599,6 +613,133 @@ public class InferenceWorkflow {
                              ChannelConfiguration channelConfig,
                              List<PathObject> targetObjects) {
         runInferenceWithProgress(metadata, inferenceConfig, channelConfig, targetObjects);
+    }
+
+    /**
+     * Classifies a region using the same pipeline as the overlay (DLPixelClassifier)
+     * and creates detection/annotation objects from the result.
+     * <p>
+     * This ensures overlay and Apply Classifier produce identical predictions:
+     * the same expanded reads, normalization, model inference, center-crop, and
+     * smoothing are applied to every tile. The classification map is then
+     * vectorized into PathObjects via contour tracing.
+     *
+     * @param metadata        classifier metadata
+     * @param channelConfig   channel configuration (with precomputed stats)
+     * @param inferenceConfig inference configuration
+     * @param imageData       image data
+     * @param parentObject    parent annotation
+     * @param progress        progress monitor (nullable for headless)
+     * @return the number of tiles processed
+     */
+    static int classifyRegionUnified(ClassifierMetadata metadata,
+                                      ChannelConfiguration channelConfig,
+                                      InferenceConfig inferenceConfig,
+                                      ImageData<BufferedImage> imageData,
+                                      PathObject parentObject,
+                                      ProgressMonitorController progress) throws IOException {
+        ROI region = parentObject.getROI();
+
+        // Create the SAME classifier the overlay uses
+        DLPixelClassifier classifier = new DLPixelClassifier(
+                metadata, channelConfig, inferenceConfig, imageData);
+
+        try {
+            // Get tile geometry from the classifier's metadata (single source of truth)
+            PixelClassifierMetadata pixelMeta = classifier.getMetadata();
+            int inputSize = pixelMeta.getInputWidth();
+            int padding = pixelMeta.getInputPadding();
+            int stride = inputSize - 2 * padding;
+            double ds = metadata.getDownsample();
+
+            // Region bounds in full-resolution coordinates
+            int regionX = (int) region.getBoundsX();
+            int regionY = (int) region.getBoundsY();
+            int regionW = (int) region.getBoundsWidth();
+            int regionH = (int) region.getBoundsHeight();
+
+            // Stride in full-res coordinates
+            int strideFull = (int) (stride * ds);
+            if (strideFull <= 0) strideFull = 1;
+
+            // Region dimensions at classifier resolution
+            int pixelW = (int) Math.ceil((double) regionW / ds);
+            int pixelH = (int) Math.ceil((double) regionH / ds);
+
+            int[][] classMap = new int[pixelH][pixelW];
+
+            // Count tiles for progress
+            int tilesX = (int) Math.ceil((double) regionW / strideFull);
+            int tilesY = (int) Math.ceil((double) regionH / strideFull);
+            int totalTiles = tilesX * tilesY;
+            int processed = 0;
+
+            if (progress != null) {
+                progress.log(String.format("Unified pipeline: %d tiles (%dx%d), stride=%d, padding=%d",
+                        totalTiles, tilesX, tilesY, stride, padding));
+            }
+
+            String serverPath = imageData.getServer().getPath();
+
+            // Process tiles on the same grid the overlay uses
+            for (int tileYFull = regionY; tileYFull < regionY + regionH; tileYFull += strideFull) {
+                for (int tileXFull = regionX; tileXFull < regionX + regionW; tileXFull += strideFull) {
+                    if (progress != null && progress.isCancelled()) {
+                        return processed;
+                    }
+
+                    int w = Math.min(strideFull, regionX + regionW - tileXFull);
+                    int h = Math.min(strideFull, regionY + regionH - tileYFull);
+
+                    RegionRequest request = RegionRequest.createInstance(
+                            serverPath, ds, tileXFull, tileYFull, w, h);
+
+                    // Call the SAME method the overlay calls
+                    BufferedImage tileResult = classifier.applyClassification(
+                            imageData, request);
+
+                    // Copy class indices into the map
+                    int outX = (int) ((tileXFull - regionX) / ds);
+                    int outY = (int) ((tileYFull - regionY) / ds);
+                    var raster = tileResult.getRaster();
+                    int tileH = raster.getHeight();
+                    int tileW = raster.getWidth();
+                    for (int py = 0; py < tileH && outY + py < pixelH; py++) {
+                        for (int px = 0; px < tileW && outX + px < pixelW; px++) {
+                            classMap[outY + py][outX + px] = raster.getSample(px, py, 0);
+                        }
+                    }
+
+                    processed++;
+                    if (progress != null && (processed <= 10 || processed % 25 == 0)) {
+                        progress.setDetail(String.format("Tile %d/%d", processed, totalTiles));
+                        progress.setCurrentProgress((double) processed / totalTiles);
+                    }
+                }
+            }
+
+            // Create objects from the classification map
+            OutputGenerator outputGenerator = new OutputGenerator(imageData, metadata, inferenceConfig);
+            List<PathObject> objects = outputGenerator.createObjectsFromMergedMap(
+                    classMap, regionX, regionY, inferenceConfig.getObjectType());
+
+            // Clip to parent ROI
+            if (region != null) {
+                objects = outputGenerator.clipObjectsToParent(objects, region);
+            }
+
+            imageData.getHierarchy().addObjects(objects);
+
+            if (progress != null) {
+                progress.log("Created " + objects.size() + " " +
+                        inferenceConfig.getObjectType().name().toLowerCase() +
+                        " objects from " + processed + " tiles");
+            }
+
+            return processed;
+        } finally {
+            classifier.cleanup();
+        }
     }
 
     /**
