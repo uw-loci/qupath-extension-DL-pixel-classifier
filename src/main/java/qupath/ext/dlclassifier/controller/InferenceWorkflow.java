@@ -13,6 +13,7 @@ import qupath.ext.dlclassifier.service.BackendFactory;
 import qupath.ext.dlclassifier.service.ClassifierBackend;
 import qupath.ext.dlclassifier.service.ClassifierClient;
 import qupath.ext.dlclassifier.service.DLPixelClassifier;
+import qupath.ext.dlclassifier.service.NormalizationStatsComputer;
 import qupath.ext.dlclassifier.service.ModelManager;
 import qupath.ext.dlclassifier.service.OverlayService;
 import qupath.ext.dlclassifier.service.PrecomputedPixelClassifier;
@@ -238,6 +239,13 @@ public class InferenceWorkflow {
                 }
 
                 ImageServer<BufferedImage> server = imgData.getServer();
+
+                // Compute image-level normalization stats for consistent
+                // tile normalization (prevents per-tile fallback artifacts)
+                ChannelConfiguration channelsWithStats = NormalizationStatsComputer.compute(
+                        server, classifier, channels,
+                        classifier.getContextScale(), classifier.getDownsample());
+
                 TileProcessor tileProcessor = new TileProcessor(config);
 
                 ClassifierBackend backend = BackendFactory.getBackend();
@@ -250,7 +258,7 @@ public class InferenceWorkflow {
                     ROI region = annotation.getROI();
                     int tilesForRegion = processRegionCore(
                             region, annotation, tileProcessor, backend,
-                            classifier, channels, config, server, imgData,
+                            classifier, channelsWithStats, config, server, imgData,
                             null // no progress monitor
                     );
                     processedTiles += tilesForRegion;
@@ -432,6 +440,15 @@ public class InferenceWorkflow {
 
                 ImageServer<BufferedImage> server = imageData.getServer();
 
+                // Compute image-level normalization stats so all tiles are
+                // normalized consistently. Without this, the Python side falls
+                // back to per-tile normalization which produces artifacts on
+                // uniform/background tiles (near-zero variance -> extreme values).
+                progress.setStatus("Computing normalization stats...");
+                ChannelConfiguration channelCfg = NormalizationStatsComputer.compute(
+                        server, metadata, channelConfig,
+                        metadata.getContextScale(), metadata.getDownsample());
+
                 // Create tile processor
                 TileProcessor tileProcessor = new TileProcessor(inferenceConfig);
 
@@ -503,14 +520,14 @@ public class InferenceWorkflow {
                         PrecomputedPixelClassifier.ClassifiedRegion classified =
                                 processRegionForRenderedOverlay(
                                         region, annotation, tileProcessor, backend, metadata,
-                                        channelConfig, inferenceConfig, server, imageData, progress);
+                                        channelCfg, inferenceConfig, server, imageData, progress);
                         if (classified != null) {
                             classifiedRegions.add(classified);
                         }
                     } else {
                         int tilesForRegion = processRegionWithProgress(
                                 region, annotation, tileProcessor, backend, metadata,
-                                channelConfig, inferenceConfig, server, imageData, progress
+                                channelCfg, inferenceConfig, server, imageData, progress
                         );
                         processedTiles += tilesForRegion;
                     }
