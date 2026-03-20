@@ -244,13 +244,18 @@ public class DLPixelClassifier implements PixelClassifier {
 
         ImageServer<BufferedImage> server = imageData.getServer();
 
-        // Lazily compute image-level normalization stats on first tile request
-        // (double-checked locking for thread safety)
-        if (channelConfigWithStats == null) {
+        // Lazily compute image-level normalization stats on first tile request.
+        // Capture into a local variable to avoid TOCTOU race: another thread
+        // could null out the volatile field (via image-switch detection) between
+        // our check and the use ~80 lines below.
+        ChannelConfiguration channelCfg = channelConfigWithStats;
+        if (channelCfg == null) {
             synchronized (statsLock) {
-                if (channelConfigWithStats == null) {
-                    channelConfigWithStats = NormalizationStatsComputer.compute(
+                channelCfg = channelConfigWithStats;
+                if (channelCfg == null) {
+                    channelCfg = NormalizationStatsComputer.compute(
                             server, metadata, channelConfig, contextScale, downsample);
+                    channelConfigWithStats = channelCfg;
                 }
             }
         }
@@ -318,7 +323,7 @@ public class DLPixelClassifier implements PixelClassifier {
 
         try {
             // Use binary pixel inference (single-tile batch)
-            // Pass channelConfigWithStats which includes precomputed normalization stats
+            // Pass channelCfg which includes precomputed normalization stats.
             // QuPath sends stride-sized tiles without surrounding context. Use
             // reflection padding so the model receives tileSize input (stride +
             // 2*padding with mirrored edges). The Python side pads before inference
@@ -327,7 +332,7 @@ public class DLPixelClassifier implements PixelClassifier {
             PixelInferenceResult result = backend.runPixelInferenceBinary(
                     modelDirPath, rawBytes, List.of(tileId),
                     tileImage.getHeight(), tileImage.getWidth(), numChannels,
-                    dtype, channelConfigWithStats, inferenceConfig, sharedTempDir,
+                    dtype, channelCfg, inferenceConfig, sharedTempDir,
                     reflectionPadding);
 
             // Fall back to JSON/PNG path if binary endpoint unavailable.
@@ -347,7 +352,7 @@ public class DLPixelClassifier implements PixelClassifier {
                         new ClassifierClient.TileData(tileId, encoded,
                                 request.getX(), request.getY()));
                 result = backend.runPixelInference(
-                        modelDirPath, tiles, channelConfigWithStats, inferenceConfig,
+                        modelDirPath, tiles, channelCfg, inferenceConfig,
                         sharedTempDir, reflectionPadding);
             }
 
