@@ -175,7 +175,7 @@ public class DLPixelClassifier implements PixelClassifier {
                     imgW, imgH, downsample, tileSize, inputPadding, stride,
                     estTilesX * estTilesY);
             logger.info("First tile request: region=({},{}) {}x{} @ downsample={} "
-                    + "(will expand by {} padding for model context)",
+                    + "(reflection padding={} for model context)",
                     request.getX(), request.getY(),
                     request.getWidth(), request.getHeight(),
                     request.getDownsample(), inputPadding);
@@ -257,13 +257,10 @@ public class DLPixelClassifier implements PixelClassifier {
             }
         }
 
-        // QuPath sends stride-sized tiles (tileSize - 2*padding) without
-        // surrounding context. Expand the request by inputPadding on each side
-        // so the model receives the full context it was trained with.
-        RegionRequest expandedRequest = expandRequest(request, server);
-        BufferedImage tileImage = server.readRegion(expandedRequest);
+        // Read the tile from the image server (stride-sized as QuPath sends it)
+        BufferedImage tileImage = server.readRegion(request);
         if (tileImage == null) {
-            throw new IOException("Failed to read tile at " + expandedRequest);
+            throw new IOException("Failed to read tile at " + request);
         }
 
         // Encode detail tile as raw binary (uint8 fast path for simple RGB, float32 for N-channel)
@@ -288,7 +285,7 @@ public class DLPixelClassifier implements PixelClassifier {
         byte[] rawBytes;
         int numChannels;
         if (contextScale > 1) {
-            BufferedImage contextImage = readContextTile(server, expandedRequest,
+            BufferedImage contextImage = readContextTile(server, request,
                     tileImage.getWidth(), tileImage.getHeight());
             byte[] contextBytes;
             if ("uint8".equals(dtype)) {
@@ -324,9 +321,11 @@ public class DLPixelClassifier implements PixelClassifier {
         try {
             // Use binary pixel inference (single-tile batch)
             // Pass channelConfigWithStats which includes precomputed normalization stats
-            // Context is provided by the expanded region read above. Additional
-            // reflection padding is not needed since we already have real image data.
-            int reflectionPadding = 0;
+            // QuPath sends stride-sized tiles without surrounding context. Use
+            // reflection padding so the model receives tileSize input (stride +
+            // 2*padding with mirrored edges). The Python side pads before inference
+            // and crops the output back to stride size.
+            int reflectionPadding = inputPadding;
             PixelInferenceResult result = backend.runPixelInferenceBinary(
                     modelDirPath, rawBytes, List.of(tileId),
                     tileImage.getHeight(), tileImage.getWidth(), numChannels,
@@ -376,22 +375,18 @@ public class DLPixelClassifier implements PixelClassifier {
                 logger.debug("Failed to delete tile output: {}", outputPath);
             }
 
-            // Crop expanded prob map to stride dimensions before caching.
-            // The expanded read gave the model full context, but the cache and
-            // blending must use stride-sized maps (the blending code assumes
-            // symmetric inputPadding which doesn't hold for edge tiles).
-            float[][][] strideProbMap = cropToStride(probMap, request);
-            int strideW = strideProbMap[0].length;
-            int strideH = strideProbMap.length;
+            // ProbMap is stride-sized (Python crops after reflection padding)
+            int strideW = tileWidth;
+            int strideH = tileHeight;
 
-            // Cache stride-sized map and blend with available neighbors
-            blendCache.cache(request.getX(), request.getY(), strideProbMap);
+            // Cache and blend with available neighbors
+            blendCache.cache(request.getX(), request.getY(), probMap);
             logger.debug("BLEND cached at ({}, {}), dims={}x{}, step=({},{}), cache={}",
                     request.getX(), request.getY(), strideW, strideH,
                     blendCache.getEmpiricalStepX(), blendCache.getEmpiricalStepY(),
                     blendCache.size());
 
-            float[][][] blended = blendCache.blendWithNeighbors(strideProbMap,
+            float[][][] blended = blendCache.blendWithNeighbors(probMap,
                     request.getX(), request.getY(), strideW, strideH);
 
             // Schedule deferred refresh so earlier tiles get re-rendered with
@@ -402,9 +397,9 @@ public class DLPixelClassifier implements PixelClassifier {
             consecutiveErrors.set(0);
             int completed = tilesCompleted.incrementAndGet();
             if (completed <= 10 || completed % 50 == 0) {
-                logger.info("Overlay tile {} completed at ({}, {}), expanded={}x{}, stride={}x{}",
+                logger.info("Overlay tile {} completed at ({}, {}), dims={}x{}, reflPad={}",
                         completed, request.getX(), request.getY(),
-                        tileWidth, tileHeight, strideW, strideH);
+                        strideW, strideH, reflectionPadding);
             }
             return createClassIndexImage(blended, strideW, strideH);
 
