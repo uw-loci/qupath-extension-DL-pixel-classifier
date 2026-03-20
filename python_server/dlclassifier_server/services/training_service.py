@@ -1930,10 +1930,14 @@ class TrainingService:
                 else:
                     metric_name = "mIoU" if early_stopping_metric == "mean_iou" else "loss"
                 logger.info(f"  New best model at epoch {epoch+1} ({metric_name}={current_metric:.4f})")
-                # Persist best weights to disk immediately for crash recovery.
-                # If training crashes or power is lost, this file can be loaded
-                # with finalize_training.py to recover the best model.
+                # Persist full checkpoint to disk for crash recovery.
+                # If training is interrupted, this file supports both model
+                # recovery (finalize_training.py) and training resume.
                 self._save_best_in_progress(
+                    model=model,
+                    optimizer=optimizer,
+                    scheduler=scheduler,
+                    early_stopping=early_stopping,
                     best_model_state=best_model_state,
                     model_type=model_type,
                     best_epoch=best_epoch,
@@ -2498,6 +2502,10 @@ class TrainingService:
 
     def _save_best_in_progress(
         self,
+        model,
+        optimizer,
+        scheduler,
+        early_stopping,
         best_model_state: Dict[str, Any],
         model_type: str,
         best_epoch: int,
@@ -2506,15 +2514,18 @@ class TrainingService:
         training_config: Dict[str, Any],
         training_history: List[Dict[str, Any]]
     ) -> str:
-        """Save the current best model weights to disk for crash recovery.
+        """Save a full training checkpoint to disk for crash recovery.
 
         Called every time a new best epoch is found during training.
         The file is overwritten each time, keeping only the latest best.
-        If training crashes or power is lost, this file can be loaded
-        with finalize_training.py to recover the best model weights.
+        If training is interrupted (crash, power loss), this file can be
+        used to either recover the best model (finalize_training.py) or
+        resume training (same format as _save_checkpoint).
 
-        The saved format is compatible with _save_checkpoint / finalize_training.py:
-        both model_state_dict and best_model_state point to the best weights.
+        The saved format is identical to _save_checkpoint: includes model,
+        optimizer, scheduler, early stopping, and training history state.
+        At the point of saving, model_state_dict == best_model_state since
+        this is called immediately when a new best epoch is found.
 
         Returns:
             Path to the saved file.
@@ -2525,7 +2536,8 @@ class TrainingService:
         save_path = checkpoint_dir / f"best_in_progress_{model_type}.pt"
 
         data = {
-            "model_state_dict": best_model_state,
+            "model_state_dict": model.state_dict(),
+            "optimizer_state_dict": optimizer.state_dict(),
             "best_model_state": best_model_state,
             "best_score": best_score,
             "best_score_mode": best_score_mode,
@@ -2533,8 +2545,22 @@ class TrainingService:
             "training_history": training_history,
         }
 
+        if (scheduler is not None
+                and not isinstance(scheduler, OneCycleLR)
+                and not isinstance(scheduler, ReduceLROnPlateau)):
+            data["scheduler_state_dict"] = scheduler.state_dict()
+
+        if early_stopping is not None:
+            data["early_stopping"] = {
+                "best_score": early_stopping.best_score,
+                "mode": early_stopping.mode,
+                "best_epoch": early_stopping.best_epoch,
+                "counter": early_stopping.counter,
+                "best_state": early_stopping.best_state,
+            }
+
         torch.save(data, str(save_path))
-        logger.info(f"  Best model checkpoint saved to disk (epoch {best_epoch}): {save_path}")
+        logger.info(f"  Best checkpoint saved to disk (epoch {best_epoch}): {save_path}")
         return str(save_path)
 
     def _cleanup_best_in_progress(self, model_type: str) -> None:
