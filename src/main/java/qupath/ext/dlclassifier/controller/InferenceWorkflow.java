@@ -718,10 +718,12 @@ public class InferenceWorkflow {
                 }
             }
 
-            // Create objects from the classification map
+            // Create objects from the classification map.
+            // Pass ds so contour tracing maps classification pixels to
+            // full-res image coordinates correctly.
             OutputGenerator outputGenerator = new OutputGenerator(imageData, metadata, inferenceConfig);
             List<PathObject> objects = outputGenerator.createObjectsFromMergedMap(
-                    classMap, regionX, regionY, inferenceConfig.getObjectType());
+                    classMap, regionX, regionY, ds, inferenceConfig.getObjectType());
 
             // Clip to parent ROI
             if (region != null) {

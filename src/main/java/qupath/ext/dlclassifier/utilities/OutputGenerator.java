@@ -325,18 +325,44 @@ public class OutputGenerator {
     public List<PathObject> createObjectsFromMergedMap(int[][] classMap,
                                                         int offsetX, int offsetY,
                                                         OutputObjectType objectType) {
-        logger.info("Creating objects from merged map ({}x{}) at ({},{}), type={}",
-                classMap[0].length, classMap.length, offsetX, offsetY, objectType);
+        return createObjectsFromMergedMap(classMap, offsetX, offsetY, 1.0, objectType);
+    }
 
-        List<PathObject> objects = new ArrayList<>();
+    /**
+     * Creates detection/annotation objects from a merged classification map.
+     * <p>
+     * The downsample parameter maps classification pixels to image coordinates:
+     * each pixel in the classMap covers a (downsample x downsample) area in the
+     * full-resolution image. The offsets and region dimensions are in full-res
+     * image coordinates.
+     *
+     * @param classMap    argmax classification map [height][width]
+     * @param offsetX     region X offset in full-res image coordinates
+     * @param offsetY     region Y offset in full-res image coordinates
+     * @param downsample  downsample factor (classMap pixels per image pixel)
+     * @param objectType  DETECTION or ANNOTATION
+     * @return list of PathObjects
+     */
+    public List<PathObject> createObjectsFromMergedMap(int[][] classMap,
+                                                        int offsetX, int offsetY,
+                                                        double downsample,
+                                                        OutputObjectType objectType) {
         int height = classMap.length;
         int width = classMap[0].length;
+        int fullResW = (int) (width * downsample);
+        int fullResH = (int) (height * downsample);
+
+        logger.info("Creating objects from merged map ({}x{} @ ds={}) at ({},{}), type={}",
+                width, height, downsample, offsetX, offsetY, objectType);
+
+        List<PathObject> objects = new ArrayList<>();
         int numClasses = metadata.getClasses().size();
 
-        // Create a RegionRequest to translate contour coordinates to image space
+        // Create a RegionRequest mapping classMap pixels to full-res image space.
+        // ContourTracing uses this to scale traced geometries to image coordinates.
         RegionRequest region = RegionRequest.createInstance(
-                imageData.getServer().getPath(), 1.0,
-                offsetX, offsetY, width, height);
+                imageData.getServer().getPath(), downsample,
+                offsetX, offsetY, fullResW, fullResH);
 
         // Process each class (skip background = class 0, skip ignored classes)
         List<ClassifierMetadata.ClassInfo> classes = metadata.getClasses();
