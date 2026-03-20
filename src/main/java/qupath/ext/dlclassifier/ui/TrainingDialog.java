@@ -1110,8 +1110,9 @@ public class TrainingDialog {
                 // Augmentation config
                 if (ts.containsKey("augmentation_config")) {
                     Object augObj = ts.get("augmentation_config");
-                    if (augObj instanceof Map) {
-                        Map<String, Object> augConfig = (Map<String, Object>) augObj;
+                    if (augObj instanceof Map<?, ?> rawAugMap) {
+                        @SuppressWarnings("unchecked")
+                        Map<String, Object> augConfig = (Map<String, Object>) rawAugMap;
                         if (augConfig.containsKey("flip_horizontal"))
                             flipHorizontalCheck.setSelected(Boolean.TRUE.equals(augConfig.get("flip_horizontal")));
                         if (augConfig.containsKey("flip_vertical"))
@@ -1156,8 +1157,9 @@ public class TrainingDialog {
                 // is set so the correct handler UI exists.
                 if (ts.containsKey("handler_parameters")) {
                     Object hp = ts.get("handler_parameters");
-                    if (hp instanceof Map && currentHandlerUI != null) {
-                        Map<String, Object> handlerParams = (Map<String, Object>) hp;
+                    if (hp instanceof Map<?, ?> rawHpMap && currentHandlerUI != null) {
+                        @SuppressWarnings("unchecked")
+                        Map<String, Object> handlerParams = (Map<String, Object>) rawHpMap;
                         Platform.runLater(() -> {
                             if (currentHandlerUI != null) {
                                 currentHandlerUI.applyParameters(handlerParams);
