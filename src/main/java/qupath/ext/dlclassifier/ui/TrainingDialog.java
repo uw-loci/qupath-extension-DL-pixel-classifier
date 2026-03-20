@@ -910,17 +910,26 @@ public class TrainingDialog {
                     Platform.runLater(() -> {
                         if (finalRecovered != null) {
                             loadSettingsFromModel(finalRecovered);
-                            // Override the .pt path since getModelPath can't find it
+                            // Override the .pt path and arch/backbone since
+                            // getModelPath can't find the recovered model by ID
+                            // (directory name doesn't match model ID).
+                            // Must set AFTER loadSettingsFromModel which clears these.
                             if (finalPtPath != null) {
                                 pretrainedModelPtPath = finalPtPath;
+                                pretrainedModelArchitecture = finalRecovered.getModelType();
+                                pretrainedModelBackbone = finalRecovered.getBackbone();
                                 selectWeightInitStrategy(
                                         ClassifierHandler.WeightInitStrategy.CONTINUE_TRAINING);
+                                updateValidation();
                             }
                             loadedModelLabel.setText("Recovered from: " + selected.getName());
                             loadedModelLabel.setStyle(
                                     "-fx-text-fill: #666; -fx-font-style: italic;");
-                            logger.info("Loaded settings from recovered checkpoint: {}",
-                                    selected.getName());
+                            logger.info("Loaded settings from recovered checkpoint: {} "
+                                    + "(ptPath={}, arch={}, backbone={})",
+                                    selected.getName(), finalPtPath,
+                                    finalRecovered.getModelType(),
+                                    finalRecovered.getBackbone());
                         } else {
                             loadedModelLabel.setText("Recovered but could not load metadata");
                             loadedModelLabel.setStyle(
@@ -3027,7 +3036,7 @@ public class TrainingDialog {
             if (weightStrategy == ClassifierHandler.WeightInitStrategy.CONTINUE_TRAINING
                     && (pretrainedModelPtPath == null || pretrainedModelPtPath.isEmpty())) {
                 validationErrors.put("weightInit",
-                        "Continue training requires a model -- click 'Select model...' first");
+                        "Continue training requires a model -- click 'Select model...' or 'Load checkpoint...'");
             } else if (weightStrategy == ClassifierHandler.WeightInitStrategy.MAE_ENCODER
                     && (maeEncoderPathField.getText() == null || maeEncoderPathField.getText().isEmpty())) {
                 validationErrors.put("weightInit",
