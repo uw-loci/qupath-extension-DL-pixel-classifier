@@ -252,15 +252,21 @@ Quick checklist:
 
 ### Tile seams visible in output
 
-Newly trained models use **BatchRenorm** normalization layers, which eliminate tiling artifacts caused by the neural network's internal normalization. Combined with image-level input normalization (enabled by default), this addresses both sources of tile boundary artifacts.
+Both the overlay and Apply Classifier (OBJECTS) use the same unified inference pipeline, so they should produce identical results. The pipeline reads expanded tile regions from the actual image (real context, not reflection padding), center-crops to the stride region, and applies Gaussian smoothing. This eliminates most tile boundary artifacts.
 
 If seams are still visible:
 
 - **Re-train the model** -- new models use BatchRenorm and save dataset normalization statistics, giving the best cross-tile consistency. Older models trained with standard BatchNorm are more susceptible to tiling artifacts.
-- Increase tile overlap percentage (10-15% recommended)
-- Use LINEAR or GAUSSIAN blend mode instead of NONE
-- Verify overlap is not 0%
-- For overlays, adjust the **Overlay Overlap (um)** preference (Edit > Preferences) to increase physical overlap distance
+- Increase the **Overlay Smoothing** sigma (Edit > Preferences or Overlay Settings) -- higher values smooth noisy per-pixel predictions
+- The tile overlap is enforced automatically (minimum 25% per side) -- manually increasing it beyond the default has diminishing returns
+
+### Objects don't match the overlay
+
+The overlay and Apply Classifier (OBJECTS) use the exact same `DLPixelClassifier.applyClassification()` method. If objects appear different from the overlay:
+
+- **Check application scope**: The overlay covers the entire image. Apply Classifier processes only within the selected annotation(s). Make sure the annotation covers the area you expect.
+- **Annotation shape clipping**: Objects are clipped to the parent annotation's geometric shape (not just its bounding box). An elliptical annotation will produce elliptically-bounded objects.
+- Objects are vectorized from the pixel classification via contour tracing, so very thin features or single-pixel classifications may not produce visible objects. Adjust **Min Object Size** if small features are missing.
 
 ### Objects are fragmented or too small
 

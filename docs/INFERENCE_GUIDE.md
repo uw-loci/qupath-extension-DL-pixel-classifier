@@ -38,10 +38,8 @@ For unmatched channels, use the dropdown to manually remap to the correct image 
 
 | Output Type | Description | Best for |
 |-------------|-------------|----------|
-| **RENDERED_OVERLAY** | Batch inference with tile blending, producing a seamless overlay. **Default and recommended.** Best for validating classifier quality -- accurately represents what OBJECTS output would look like. | Quality validation, visual comparison |
 | **MEASUREMENTS** | Adds per-class probability values as annotation measurements | Quantification (% area per class) |
-| **OBJECTS** | Creates detection or annotation objects from the classification map | Spatial analysis, counting structures |
-| **OVERLAY** | Renders a live on-demand color overlay as you pan and zoom. Uses CENTER_CROP tile handling (artifact-free) with configurable Gaussian smoothing. | Quick visual inspection |
+| **OBJECTS** | Creates detection or annotation objects from the classification map. Uses the same unified inference pipeline as the overlay -- predictions are identical. | Spatial analysis, counting structures |
 
 ### Object output options (OBJECTS only)
 
@@ -64,32 +62,23 @@ These options are collapsed by default. Expand **PROCESSING OPTIONS** to adjust.
 | **Use GPU** | Yes | 10-50x faster than CPU |
 | **Test-Time Augmentation (TTA)** | No | Apply D4 transforms (flips + 90-degree rotations) and average predictions. ~8x slower but typically 1-3% better quality. Best for final production runs. |
 
-### Tile overlap and blending
+### Tile overlap and context
 
-Overlap determines how much adjacent tiles share:
+The overlap setting controls how much context the model sees around each tile's visible region. Both the overlay and Apply Classifier use the same computation (`InferenceConfig.computeEffectivePadding`) with guardrails:
 
-| Overlap | Quality | Speed | Notes |
-|---------|---------|-------|-------|
-| 0% | Seams visible | Fastest | Objects may split at tile boundaries |
-| 5-10% | Moderate | Fast | Some seam reduction |
-| 10-15% | Good | Moderate | Recommended for seamless results |
-| 15-25% | Best | Slower | ~2x processing time vs 0% |
-| 25-50% | Diminishing returns | Much slower | Only needed for very large receptive fields |
+- **Minimum**: 25% of tile size per side (e.g., 128px for 512 tiles)
+- **Maximum**: 3/8 of tile size per side (ensures stride >= 25% of tile size)
+- **Floor**: 64px absolute minimum
 
-### Real-data context padding
+The effective stride (visible pixels per tile) is `tileSize - 2 * effectivePadding`. For a 512px tile with default settings, this produces stride=256, meaning 50% overlap between adjacent tiles and each pixel's prediction comes from a tile's center region where the model has full context on all sides.
 
-During inference, QuPath provides real surrounding image data around each tile via `inputPadding`. QuPath's `inputPadding` is **per-side** -- the visible stride equals `tileSize - 2 * inputPadding`. The padding amount is computed automatically: for CENTER_CROP mode, padding is `tileSize/4` per side (center 50% visible); for other blend modes, padding is `max(64, min(max(overlap, tileSize/4), tileSize * 3/8))` per side. This provides the CNN with real context at every tile boundary, eliminating the need for artificial reflection padding -- the model always sees real image data, matching how training tiles are extracted with real surrounding context.
+### Expanded reads (real context)
 
-The **blend mode** controls how overlapping predictions merge:
+Each tile is read from the image as a tileSize-sized region (not just the stride portion). This provides the model with **real neighboring pixel data** at every tile boundary -- no artificial reflection padding. The output is center-cropped to the stride region, discarding edge predictions where the model has less context. This follows the recommendation from Buglakova et al. (ICCV 2025): "Completely remove halo region during stitching."
 
-| Blend Mode | Description | Recommended for |
-|------------|-------------|-----------------|
-| **CENTER_CROP** | Keep only center predictions, discard overlap margins. **Default and recommended.** Zero boundary artifacts. Each pixel comes from a single tile's center where predictions are most reliable. | All models. Required for overlay mode. |
-| **LINEAR** | Weighted average favoring tile centers. Good balance of quality and speed. | Batch inference (RENDERED_OVERLAY, OBJECTS) with CNN models |
-| **GAUSSIAN** | Cosine-bell blending for smoother transitions. | Batch inference with ViT/MuViT models |
-| **NONE** | No blending; last tile wins. Fastest but may show visible tile seams. | Debugging, or with 0% overlap |
+### Unified pipeline (overlay = objects)
 
-> **Note:** For the live **OVERLAY** output type, CENTER_CROP is always used (the blend mode selector is disabled). This follows the recommendation from Buglakova et al. (ICCV 2025): "Completely remove halo region during stitching (don't blend it)." For batch inference (RENDERED_OVERLAY, OBJECTS), blend modes remain selectable since Python-side blending operates on the full tile batch.
+The **OBJECTS** output and the **overlay** use the exact same inference pipeline (`DLPixelClassifier.applyClassification()`). This guarantees identical predictions: same expanded reads, same normalization, same model input, same center-crop, same Gaussian smoothing. The only difference is output format: the overlay renders pixels directly, while OBJECTS vectorizes the classification map into PathObjects via contour tracing.
 
 ### Image-level normalization
 
@@ -124,7 +113,7 @@ Check **Create backup of annotation measurements** to save existing measurements
 
 Click **Apply** to start inference. Progress is shown in the QuPath log.
 
-> **Note:** All inference dialog settings (output type, blend mode, smoothing, application scope, backup) are remembered across sessions.
+> **Note:** All inference dialog settings (output type, blend mode, smoothing, tile size, overlap, GPU, object type, min object size, hole filling, application scope, backup) are remembered across sessions.
 
 ## Live Overlay Mode
 
