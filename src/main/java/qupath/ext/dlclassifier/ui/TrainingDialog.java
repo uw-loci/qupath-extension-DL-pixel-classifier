@@ -1689,11 +1689,16 @@ public class TrainingDialog {
             Label valSplitLabel = new Label("Validation Split (%):");
             TooltipHelper.install(
                     "Percentage of annotated tiles held out for validation.\n" +
-                    "Used to monitor overfitting during training.\n" +
+                    "Used to monitor overfitting and select the best model.\n" +
                     "Higher values give more reliable validation metrics\n" +
                     "but leave less data for training.\n\n" +
-                    "15-25% is typical. Use 10% for very small datasets.\n" +
-                    "Use 25-30% for large datasets where you can afford it.",
+                    "15-25% is typical. Use 10% for very small datasets\n" +
+                    "(fewer than ~50 annotations). Use 25-30% for large\n" +
+                    "datasets where you can afford it.\n\n" +
+                    "Important: if you use a Focus Class, ensure it has\n" +
+                    "enough annotations that some end up in the validation\n" +
+                    "split. A focus class with 0 validation samples will\n" +
+                    "always show 0.0 IoU, preventing meaningful model selection.",
                     valSplitLabel, validationSplitSpinner);
 
             grid.add(valSplitLabel, 0, row);
@@ -1852,6 +1857,11 @@ public class TrainingDialog {
                     "4x: Context covers 4x the area. Good for tissue-level patterns.\n" +
                     "8x: Context covers 8x the area. For large-scale classification.\n" +
                     "16x: Context covers 16x the area. Maximum spatial context.\n\n" +
+                    "When to use: classification depends on what surrounds a region,\n" +
+                    "not just the region itself. For example, distinguishing tumor\n" +
+                    "from stroma may require seeing the tissue architecture around\n" +
+                    "each tile. Not needed when local texture is sufficient (e.g.,\n" +
+                    "collagen vs. epithelium in H&E).\n\n" +
                     "Adds C extra input channels (e.g., 3ch RGB -> 6ch with context).\n" +
                     "Modest memory increase (~5-10%). Compatible with all architectures.",
                     contextScaleLabel, contextScaleCombo);
@@ -2046,12 +2056,17 @@ public class TrainingDialog {
                     new SpinnerValueFactory.DoubleSpinnerValueFactory(0.5, 5.0, 2.0, 0.5));
             focalGammaSpinner.setEditable(true);
             TooltipHelper.install(
-                    "Focal loss focusing parameter (gamma).\n\n" +
-                    "Higher gamma = stronger focus on hard pixels.\n" +
+                    "Focal loss focusing parameter (gamma). Down-weights\n" +
+                    "easy pixels so the model pays more attention to mistakes.\n\n" +
                     "  gamma=0: equivalent to standard Cross Entropy\n" +
                     "  gamma=1: mild focusing\n" +
                     "  gamma=2: standard (recommended)\n" +
-                    "  gamma=3-5: aggressive focusing for very hard regions",
+                    "  gamma=3-5: aggressive focusing for very hard regions\n\n" +
+                    "When to use: your classes have very different difficulty\n" +
+                    "levels (e.g., small structures surrounded by large easy\n" +
+                    "regions). Unlike OHEM, focal loss keeps ALL pixels but\n" +
+                    "gradually reduces the weight of confident predictions.\n" +
+                    "Good first step before trying the more aggressive OHEM.",
                     focalGammaLabel, focalGammaSpinner);
             boolean focalSelected = isFocalLossSelected(lossFunctionCombo.getValue());
             focalGammaLabel.setVisible(focalSelected);
@@ -2075,13 +2090,22 @@ public class TrainingDialog {
             ohemSpinner.setEditable(true);
             Label ohemLabel = new Label("Hard Pixel %:");
             TooltipHelper.install(
-                    "Online Hard Example Mining (OHEM): keep only the\n" +
-                    "hardest N% of pixels per batch.\n\n" +
+                    "Online Hard Example Mining (OHEM): each batch, keep only the\n" +
+                    "hardest N% of pixels and ignore the rest. Resets every batch\n" +
+                    "(not cumulative across epochs).\n\n" +
                     "100% = all pixels (standard, no OHEM).\n" +
-                    "25% = keep only the hardest quarter -- aggressive.\n\n" +
-                    "More aggressive than focal loss: completely ignores\n" +
-                    "easy pixels instead of down-weighting them.\n" +
-                    "Tip: try focal loss first as a softer alternative.",
+                    "25% = keep only the hardest quarter -- aggressive.\n" +
+                    "5% = very aggressive, focuses almost entirely on mistakes.\n\n" +
+                    "When to use: your images have large uniform regions (e.g.,\n" +
+                    "background, empty glass) that the model learns quickly. Without\n" +
+                    "OHEM, easy pixels dominate training and the model spends most\n" +
+                    "of its time on regions it already classifies correctly. With\n" +
+                    "OHEM, training focuses on boundaries and confusing regions\n" +
+                    "where accuracy actually needs improvement.\n\n" +
+                    "Tip: try Focal loss first as a softer alternative -- it\n" +
+                    "down-weights easy pixels rather than completely ignoring them.\n" +
+                    "Note: only affects the pixel-loss component; Dice loss still\n" +
+                    "uses all pixels so the model doesn't forget easy classes.",
                     ohemLabel, ohemSpinner);
             grid.add(ohemLabel, 0, row);
             grid.add(ohemSpinner, 1, row);
@@ -2258,7 +2282,11 @@ public class TrainingDialog {
                     "- Faster early training (4x fewer pixels)\n" +
                     "- Acts as regularization (prevents overfitting)\n" +
                     "- Helps model learn coarse features first\n\n" +
-                    "Leave unchecked for standard training.");
+                    "When to use: you have limited training data and the model\n" +
+                    "overfits before learning good features. Also helpful for\n" +
+                    "long training runs where you want faster initial epochs.\n" +
+                    "Leave unchecked for standard training or when you have\n" +
+                    "plenty of annotated data.");
 
             grid.add(progressiveResizeCheck, 0, row, 2, 1);
 
