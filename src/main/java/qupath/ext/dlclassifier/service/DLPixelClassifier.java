@@ -123,11 +123,22 @@ public class DLPixelClassifier implements PixelClassifier {
         this.colorModel = buildColorModel();
         this.backend = BackendFactory.getBackend();
 
-        // Resolve classifier ID to filesystem path for the Python server
+        // Resolve classifier ID to filesystem path for the Python server.
+        // getModelPath looks for classifiers/dl/{id}/model.pt in the project
+        // and user directories. If the metadata ID doesn't match the directory
+        // name (e.g., Python-generated ID vs Java-generated ID from an older
+        // version), fall back to scanning all classifier directories for a
+        // metadata.json that matches this classifier's name.
         ModelManager modelManager = new ModelManager();
         this.modelDirPath = modelManager.getModelPath(metadata.getId())
                 .map(p -> p.getParent().toString())
-                .orElse(metadata.getId());
+                .orElseGet(() -> {
+                    // ID-based lookup failed. Try to find by scanning metadata name.
+                    logger.warn("Model directory not found for ID '{}', searching by name '{}'",
+                            metadata.getId(), metadata.getName());
+                    return modelManager.findModelDirByName(metadata.getName())
+                            .orElse(metadata.getId());
+                });
 
         try {
             this.sharedTempDir = Files.createTempDirectory("dl-overlay-");

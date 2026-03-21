@@ -531,6 +531,59 @@ public class ModelManager {
     }
 
     /**
+     * Finds a model directory by scanning all classifier directories for a
+     * metadata.json whose name matches. Used as fallback when the metadata ID
+     * doesn't match the directory name (e.g., Python-generated vs Java-generated
+     * IDs from pause + complete early in older versions).
+     *
+     * @param classifierName the display name to search for
+     * @return the model directory path, or empty if not found
+     */
+    public Optional<String> findModelDirByName(String classifierName) {
+        if (classifierName == null) return Optional.empty();
+
+        // Search project classifiers directory
+        Project<?> project = QuPathGUI.getInstance().getProject();
+        if (project != null) {
+            Path classifiersDir = project.getPath().getParent().resolve(CLASSIFIERS_DIR);
+            Optional<String> found = scanDirsForName(classifiersDir, classifierName);
+            if (found.isPresent()) return found;
+        }
+
+        // Search user directory
+        return scanDirsForName(userClassifiersDir, classifierName);
+    }
+
+    /**
+     * Scans subdirectories of a parent directory for a metadata.json with matching name.
+     */
+    private Optional<String> scanDirsForName(Path parentDir, String targetName) {
+        if (!Files.exists(parentDir) || !Files.isDirectory(parentDir)) {
+            return Optional.empty();
+        }
+        try (var dirs = Files.list(parentDir)) {
+            for (Path dir : dirs.filter(Files::isDirectory).toList()) {
+                Path metaFile = dir.resolve(METADATA_FILE);
+                if (!Files.exists(metaFile)) continue;
+                try {
+                    String json = Files.readString(metaFile);
+                    var obj = com.google.gson.JsonParser.parseString(json).getAsJsonObject();
+                    String name = obj.has("name") ? obj.get("name").getAsString() : null;
+                    if (targetName.equals(name) && findModelFile(dir).isPresent()) {
+                        logger.info("Found model for '{}' in directory: {}", targetName, dir);
+                        return Optional.of(dir.toString());
+                    }
+                } catch (Exception e) {
+                    logger.debug("Could not read metadata from {}: {}", metaFile, e.getMessage());
+                }
+            }
+        } catch (IOException e) {
+            logger.debug("Could not scan directory {}: {}", parentDir, e.getMessage());
+        }
+        return Optional.empty();
+    }
+
+    /**
      * Finds the model file in a classifier directory.
      */
     private Optional<Path> findModelFile(Path dir) {
