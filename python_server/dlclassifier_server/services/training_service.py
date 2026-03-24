@@ -827,7 +827,7 @@ class TrainingService:
         Training params can include:
             - epochs: Number of training epochs (default: 50)
             - batch_size: Batch size (default: 8)
-            - learning_rate: Initial learning rate (default: 0.001)
+            - learning_rate: Initial learning rate (default: 0.0001)
             - weight_decay: L2 regularization (default: 1e-4)
             - augmentation: Enable data augmentation (default: True)
             - scheduler: Learning rate scheduler type ("cosine", "step", "onecycle", "none")
@@ -1193,7 +1193,7 @@ class TrainingService:
         logger.info(f"Model parameters: {total_params:,} total, {trainable_count:,} trainable "
                    f"({100*trainable_count/total_params:.1f}%)")
 
-        learning_rate = training_params.get("learning_rate", 0.001)
+        learning_rate = training_params.get("learning_rate", 0.0001)
         weight_decay = training_params.get("weight_decay", 0.01)
 
         # Discriminative learning rates for pretrained encoders (fast.ai style)

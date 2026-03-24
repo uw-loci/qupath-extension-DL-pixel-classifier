@@ -35,6 +35,42 @@ The histology-pretrained encoders were all trained on **3-channel H&E-stained br
 - **Multi-channel images (>3 channels)**: When the model has more than 3 input channels, the first convolutional layer must be adapted regardless of pretraining. ImageNet weights for the first conv are replicated across the extra channels. Histology first-conv weights encode H&E color responses that would be meaningless for IF channel combinations.
 - **Non-tissue images**: Bright-field stains other than H&E where color patterns differ significantly.
 
+### Foundation model encoders
+
+Foundation model encoders are large-scale vision transformers pretrained on massive histopathology datasets (typically millions of whole-slide images). They provide rich, general-purpose tissue representations that transfer well to a wide range of downstream tasks with minimal fine-tuning. Foundation model integration inspired by LazySlide (Zheng et al. 2026, Nature Methods).
+
+All foundation model encoders are **downloaded on-demand** from HuggingFace (~100 MB to ~2 GB depending on model size) and cached locally. They are not bundled with the extension. Only models with **commercially-permissive licenses** (Apache 2.0 or MIT) are included.
+
+| Encoder | Parameters | License | Training data | Best for |
+|---------|-----------|---------|---------------|----------|
+| h-optimus-0 | 1.1B | Apache 2.0 | Large-scale histopathology | Highest capacity; best when VRAM and data are sufficient |
+| virchow | 632M | Apache 2.0 | Large-scale histopathology | Strong general-purpose tissue encoder |
+| hibou-l | 300M | Apache 2.0 | Histopathology | Good balance of capacity and efficiency |
+| hibou-b | 86M | Apache 2.0 | Histopathology | Lightweight foundation model; good for limited VRAM |
+| midnight | 1.1B | MIT | Histopathology | Large capacity with permissive license |
+| dinov2-large | 300M | Apache 2.0 | General images (ImageNet-22k+) | General-purpose; not histology-specific but strong on diverse image types |
+
+**When to use foundation models vs histology-pretrained ResNet-50:**
+
+- **Use foundation models when:** You have 12+ GB VRAM, your task involves H&E or general tissue classification, and you want the best possible feature quality with less annotation effort. Foundation models learn richer representations than ResNet-based encoders and often achieve better results with fewer training examples.
+- **Use histology-pretrained ResNet-50 when:** You have limited VRAM (8 GB or less), need fast training/inference, or your dataset is large enough that a simpler encoder works well. ResNet-50 histology backbones are much smaller and faster while still outperforming ImageNet-only weights on H&E.
+- **Use ImageNet ResNet-34/50 when:** Your images are fluorescence, multiplex IF, or multi-channel (>3 channels). Foundation models, like histology ResNet-50, were trained on H&E RGB images and their features do not transfer to fluorescence intensity patterns.
+
+**Important notes:**
+
+- Foundation model encoders default to **encoder-frozen training** because their pretrained representations are already very strong. Freezing the encoder and only training the decoder is recommended for small-to-medium datasets. Unfreeze selectively only with large datasets (>5000 tiles).
+- **Gated models** on HuggingFace require a HuggingFace authentication token. If a model requires authentication, the extension will prompt you to enter your HuggingFace token. You can obtain a token at https://huggingface.co/settings/tokens and accept the model's license agreement on its HuggingFace page.
+- Foundation model encoders are significantly larger than ResNet backbones. Plan for higher VRAM usage and longer per-epoch training times.
+
+| Encoder | Approximate VRAM (batch=4, 512px) | Download size |
+|---------|-----------------------------------|---------------|
+| hibou-b | ~6 GB | ~350 MB |
+| hibou-l | ~10 GB | ~1.2 GB |
+| virchow | ~12 GB | ~2.5 GB |
+| h-optimus-0 | ~16 GB | ~4.4 GB |
+| midnight | ~16 GB | ~4.4 GB |
+| dinov2-large | ~10 GB | ~1.2 GB |
+
 ### By dataset size
 
 | Dataset size | Recommended backbone | Freeze strategy |
@@ -99,7 +135,7 @@ Architecture: UNet
 Backbone: resnet34
 Epochs: 50 (early stopping will handle the rest)
 Batch Size: 8
-Learning Rate: 0.001  (auto-tuned by LR finder when using One Cycle)
+Learning Rate: 0.0001  (auto-tuned by LR finder when using One Cycle)
 Tile Size: 512
 Pretrained: Yes
 LR Scheduler: One Cycle

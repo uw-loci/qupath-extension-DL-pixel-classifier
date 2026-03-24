@@ -139,6 +139,29 @@ Histology-pretrained backbones (marked "Histology" in the dropdown) use weights 
 
 > **Important:** Histology backbones are designed for H&E brightfield images. For **fluorescence, multiplex IF, or multi-channel (>3 channel) images**, use a standard ImageNet backbone (resnet34 or resnet50) instead. The histology-pretrained first conv layer encodes H&E color responses that do not transfer to fluorescence intensity patterns. See [Backbone Selection](BEST_PRACTICES.md#backbone-selection) for detailed guidance.
 
+**Foundation model encoders (downloaded on-demand from HuggingFace):**
+
+Foundation models are large-scale vision transformers pretrained on massive histopathology datasets. They provide richer tissue representations than ResNet-based encoders and often achieve better results with fewer training examples. Foundation model integration inspired by LazySlide (Zheng et al. 2026, Nature Methods). Only commercially-permissive licenses (Apache 2.0, MIT) are included.
+
+| Encoder | Parameters | License | VRAM (batch=4, 512px) |
+|---------|-----------|---------|----------------------|
+| hibou-b | 86M | Apache 2.0 | ~6 GB |
+| hibou-l | 300M | Apache 2.0 | ~10 GB |
+| dinov2-large | 300M | Apache 2.0 | ~10 GB |
+| virchow | 632M | Apache 2.0 | ~12 GB |
+| h-optimus-0 | 1.1B | Apache 2.0 | ~16 GB |
+| midnight | 1.1B | MIT | ~16 GB |
+
+Foundation model weights are **downloaded on-demand** (~100 MB to ~2 GB depending on model size) and cached locally after the first download. They are not bundled with the extension.
+
+**Key considerations for foundation models:**
+
+- Foundation models default to **encoder-frozen training**. Their pretrained features are already very strong, so freezing the encoder and training only the decoder is recommended for most datasets. Unfreeze selectively only with large datasets (>5000 tiles).
+- **Gated models** on HuggingFace require authentication. If a model requires a HuggingFace token, the extension will prompt you. Obtain a token at https://huggingface.co/settings/tokens and accept the model's license agreement on its HuggingFace page.
+- Like histology-pretrained ResNet-50 backbones, foundation models were trained on H&E RGB images. For fluorescence or multi-channel images, use ImageNet backbones instead.
+
+See [Backbone Selection](BEST_PRACTICES.md#backbone-selection) for detailed guidance on choosing between foundation models, histology ResNet-50, and ImageNet backbones.
+
 ### MuViT Configuration
 
 When MuViT (Transformer) is selected, the encoder combo is hidden and model-specific controls appear:
@@ -174,7 +197,7 @@ When **Use pretrained backbone weights** is selected, a layer freeze panel appea
 |-----------|---------|----------|
 | **Epochs** | 50 | 50-200 for small datasets, 20-100 for large. Early stopping prevents overfitting. |
 | **Batch Size** | 8 | 4-8 for 8GB VRAM with 512px tiles. Reduce if out-of-memory. |
-| **Learning Rate** | 0.001 | Safe default for AdamW. Reduce to 1e-4 if loss oscillates. When using OneCycleLR, an LR finder auto-runs to suggest the optimal max learning rate. |
+| **Learning Rate** | 0.0001 | Safe default for AdamW. Reduce further if loss oscillates. When using OneCycleLR, an LR finder auto-runs to suggest the optimal max learning rate. |
 | **Validation Split** | 20% | 15-25% typical. Uses stratified sampling for balanced splits. |
 | **Tile Size** | 512 | Must be divisible by 32. 256 for cell-level, 512 for tissue-level. |
 | **Whole image** | Off | Checkbox. Uses entire image as one tile (small images only). Disables tile size, overlap, and context scale -- but downsample stays unlocked so you can adjust resolution to fit within the max tile size. A dynamic warning shows orange (images fit) or red (images will be tiled) based on your actual image dimensions at the current downsample. |

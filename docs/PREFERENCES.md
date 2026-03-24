@@ -19,6 +19,9 @@ These appear in **Edit > Preferences > DL Pixel Classifier**.
 | Overlay Overlap (um) | `dlclassifier.overlayOverlapUm` | `25.0` | Target tile overlap distance in microns for overlays. Converted to pixels using the image's pixel calibration. Ensures consistent overlap regardless of objective/resolution. Minimum 64 pixels. |
 | Use GPU for Inference | `dlclassifier.useGPU` | `true` | Use GPU acceleration when available |
 | Training Data Export Directory | `dlclassifier.trainingExportDir` | `""` | Directory for exporting training data patches. Empty = use temp directory. |
+| Auto-Rebuild Environment on Update | `dlclassifier.autoRebuildEnvironment` | `true` | Automatically rebuild the Python environment when the JAR version changes. Menu items are temporarily disabled during rebuild. |
+| Show Menu Indicator Dot | `dlclassifier.showMenuDot` | `true` | Show a colored dot next to the extension name in the Extensions menu. Takes effect after restart. |
+| Menu Indicator Dot Color | `dlclassifier.menuDotColor` | Magenta | Color of the menu indicator dot. Uses QuPath's color picker. Takes effect after restart. |
 
 ## Tile Settings
 
@@ -42,7 +45,7 @@ These appear in **Edit > Preferences > DL Pixel Classifier**.
 |-----------|-----|---------|-------------|
 | Default Epochs | `dlclassifier.defaultEpochs` | `50` | Initial epoch count |
 | Default Batch Size | `dlclassifier.defaultBatchSize` | `8` | Initial batch size |
-| Default Learning Rate | `dlclassifier.defaultLearningRate` | `0.001` | Initial learning rate |
+| Default Learning Rate | `dlclassifier.defaultLearningRate` | `0.0001` | Initial learning rate |
 | Use Augmentation | `dlclassifier.useAugmentation` | `true` | Enable data augmentation |
 | Use Pretrained Weights | `dlclassifier.usePretrainedWeights` | `true` | Use pretrained encoder weights |
 | Default Normalization | `dlclassifier.defaultNormalization` | `PERCENTILE_99` | Channel normalization strategy |
