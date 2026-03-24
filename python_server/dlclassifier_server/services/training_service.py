@@ -433,20 +433,25 @@ class OHEMCrossEntropyLoss(nn.Module):
         )
 
     def forward(self, inputs: torch.Tensor, targets: torch.Tensor) -> torch.Tensor:
-        """Compute OHEM loss.
+        """Compute OHEM loss with per-class minimum representation.
+
+        Ensures every class present in the batch contributes at least some
+        hard pixels to the loss, preventing minority classes (e.g. Gland)
+        from being entirely dropped when their pixels are "easy."
 
         Args:
             inputs: Model logits of shape (N, C, H, W)
             targets: Ground truth labels of shape (N, H, W)
 
         Returns:
-            Scalar loss averaged over the hardest K% of valid pixels
+            Scalar loss averaged over the selected hard pixels
         """
         per_pixel = self.ce(inputs, targets)  # (N, H, W)
 
         # Flatten and filter to valid pixels
         valid_mask = targets != self.ignore_index
         valid_losses = per_pixel[valid_mask]
+        valid_targets = targets[valid_mask]
 
         if valid_losses.numel() == 0:
             return per_pixel.sum() * 0.0
@@ -456,8 +461,42 @@ class OHEMCrossEntropyLoss(nn.Module):
             return valid_losses.mean()
 
         k = max(1, int(valid_losses.numel() * self.hard_ratio))
-        topk_losses, _ = torch.topk(valid_losses, k)
-        return topk_losses.mean()
+
+        # Per-class minimum: guarantee each class gets at least
+        # (hard_ratio * class_pixel_count) pixels in the selection,
+        # with a floor of 1 pixel per class. This prevents minority
+        # classes from being entirely excluded when their pixels are
+        # easy relative to the majority class boundaries.
+        num_classes = inputs.shape[1]
+        selected_mask = torch.zeros_like(valid_losses, dtype=torch.bool)
+
+        for c in range(num_classes):
+            class_mask = valid_targets == c
+            class_count = class_mask.sum().item()
+            if class_count == 0:
+                continue
+            class_losses = valid_losses[class_mask]
+            # Keep at least hard_ratio of this class's pixels (min 1)
+            class_k = max(1, int(class_count * self.hard_ratio))
+            if class_k >= class_count:
+                selected_mask[class_mask] = True
+            else:
+                _, top_indices = torch.topk(class_losses, class_k)
+                # Map back to the valid_losses index space
+                class_indices = torch.where(class_mask)[0]
+                selected_mask[class_indices[top_indices]] = True
+
+        # If per-class selection is less than k, fill remaining with
+        # global hardest pixels (original OHEM behavior for the rest)
+        selected_count = selected_mask.sum().item()
+        if selected_count < k:
+            remaining = valid_losses.clone()
+            remaining[selected_mask] = -1.0  # exclude already-selected
+            fill_k = k - int(selected_count)
+            _, fill_indices = torch.topk(remaining, min(fill_k, remaining.numel()))
+            selected_mask[fill_indices] = True
+
+        return valid_losses[selected_mask].mean()
 
 
 class _CombinedPixelDiceLoss(nn.Module):
