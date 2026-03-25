@@ -1688,9 +1688,18 @@ class TrainingService:
 
         # BatchRenorm warmup: linearly increase rmax/dmax over first 20% of
         # epochs from BatchNorm-equivalent (1, 0) to full BatchRenorm (3, 5).
-        brenorm_warmup_epochs = max(1, int(epochs * 0.2))
+        # Skip warmup when continuing from a pretrained model that already has
+        # calibrated BatchRenorm statistics -- the warmup would revert to
+        # standard BatchNorm behavior and destabilize validation.
         brenorm_rmax_target = 3.0
         brenorm_dmax_target = 5.0
+        if pretrained_model_path or checkpoint_path:
+            brenorm_warmup_epochs = 0
+            set_batchrenorm_limits(model, rmax=brenorm_rmax_target,
+                                  dmax=brenorm_dmax_target)
+            logger.info("BatchRenorm warmup skipped (continuing from pretrained model)")
+        else:
+            brenorm_warmup_epochs = max(1, int(epochs * 0.2))
 
         for epoch in range(start_epoch, epochs):
             # Progressive resizing: switch to full resolution at phase boundary
