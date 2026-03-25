@@ -154,10 +154,14 @@ public class ApposeService {
         // Restart Python service
         report(statusCallback, "Restarting Python service...");
         pythonService = environment.python();
-        pythonService.debug(msg -> logger.info("[Appose Python] {}", msg));
+        pythonService.debug(msg -> {
+            logger.info("[Appose Python] {}", msg);
+            qupath.ext.dlclassifier.ui.PythonConsoleWindow.appendMessage(msg);
+        });
 
-        // Run init script
-        String initScript = loadResource("init_services.py");
+        // Run init script -- prepend numpy import to prevent Windows deadlock
+        // (see Appose #23 / numpy #24290)
+        String initScript = "import numpy\n" + loadScript("init_services.py");
         pythonService.init(initScript);
 
         report(statusCallback, "Upgrade complete");

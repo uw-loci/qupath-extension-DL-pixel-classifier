@@ -251,6 +251,10 @@ public class TrainingDialog {
         private MiniViewers.MiniViewerManager contextPreviewManager;
         private Stage contextPreviewStage;
 
+        // Live VRAM estimation
+        private Label vramEstimateLabel;
+        private int gpuTotalMb = 0;  // cached GPU memory (0 = unknown/CPU)
+
         // Error display
         private VBox errorSummaryPanel;
         private VBox errorListBox;
@@ -384,8 +388,12 @@ public class TrainingDialog {
             // Apply architecture-specific section visibility
             updateSectionsForArchitecture(architectureCombo.getValue());
 
-            // Initial validation
+            // Cache GPU memory for live VRAM estimation
+            cacheGpuMemory();
+
+            // Initial validation and VRAM estimate
             updateValidation();
+            updateVramEstimate();
 
             dialog.show();
         }
@@ -1462,8 +1470,14 @@ public class TrainingDialog {
                     archLabel, architectureCombo);
             architectureCombo.valueProperty().addListener((obs, old, newVal) -> updateBackboneOptions(newVal));
 
+            Button archHelpBtn = new Button("?");
+            archHelpBtn.setStyle("-fx-font-size: 10; -fx-padding: 1 6 1 6; -fx-min-width: 22;");
+            archHelpBtn.setTooltip(new Tooltip("Model architecture guide"));
+            archHelpBtn.setOnAction(e -> showArchitectureGuide());
+
             grid.add(archLabel, 0, row);
             grid.add(architectureCombo, 1, row);
+            grid.add(archHelpBtn, 2, row);
             row++;
 
             // Backbone selection
@@ -1691,6 +1705,13 @@ public class TrainingDialog {
 
             grid.add(batchLabel, 0, row);
             grid.add(batchSizeSpinner, 1, row);
+            row++;
+
+            // Live VRAM estimate (updated when architecture/batch/tile/etc. change)
+            vramEstimateLabel = new Label();
+            vramEstimateLabel.setWrapText(true);
+            vramEstimateLabel.setStyle("-fx-font-size: 11px;");
+            grid.add(vramEstimateLabel, 0, row, 3, 1);
             row++;
 
             // Learning rate
@@ -1985,6 +2006,13 @@ public class TrainingDialog {
             });
             // Initial update (will show pixel-only info until image is loaded)
             updateSpatialInfoLabels();
+
+            // Wire VRAM estimation listeners to all parameters that affect GPU memory
+            tileSizeSpinner.valueProperty().addListener((obs, old, newVal) -> updateVramEstimate());
+            batchSizeSpinner.valueProperty().addListener((obs, old, newVal) -> updateVramEstimate());
+            contextScaleCombo.valueProperty().addListener((obs, old, newVal) -> updateVramEstimate());
+            architectureCombo.valueProperty().addListener((obs, old, newVal) -> updateVramEstimate());
+            backboneCombo.valueProperty().addListener((obs, old, newVal) -> updateVramEstimate());
 
             // Overlap
             overlapSpinner = new Spinner<>(0, 50, DLClassifierPreferences.getTileOverlap(), 5);
@@ -2298,6 +2326,7 @@ public class TrainingDialog {
                     "operations use FP16 vs FP32 for numerical stability.",
                     "https://pytorch.org/docs/stable/amp.html");
 
+            mixedPrecisionCheck.selectedProperty().addListener((obs, old, newVal) -> updateVramEstimate());
             grid.add(mixedPrecisionCheck, 0, row, 2, 1);
             row++;
 
@@ -3543,6 +3572,99 @@ public class TrainingDialog {
         // ==================== VRAM Estimation ====================
 
         /**
+         * Caches the GPU total memory from the Appose health check.
+         * Runs on a background thread to avoid blocking the FX thread,
+         * then updates the VRAM estimate label when done.
+         */
+        private void cacheGpuMemory() {
+            CompletableFuture.runAsync(() -> {
+                try {
+                    ApposeService appose = ApposeService.getInstance();
+                    if (appose.isAvailable() && "cuda".equals(appose.getGpuType())) {
+                        var task = appose.runTask("health_check", java.util.Map.of());
+                        Object mem = task.outputs.get("gpu_memory_mb");
+                        if (mem instanceof Number n) {
+                            gpuTotalMb = n.intValue();
+                            Platform.runLater(this::updateVramEstimate);
+                        }
+                    }
+                } catch (Exception e) {
+                    logger.debug("Could not cache GPU memory: {}", e.getMessage());
+                }
+            });
+        }
+
+        /**
+         * Updates the live VRAM estimate label based on current dialog settings.
+         * Uses the same estimation formula as the pre-flight check but runs
+         * instantly from cached GPU info.
+         */
+        private void updateVramEstimate() {
+            if (vramEstimateLabel == null) return;
+
+            // Hide if no GPU info or controls not yet initialized
+            if (gpuTotalMb <= 0 || architectureCombo == null || backboneCombo == null
+                    || tileSizeSpinner == null || batchSizeSpinner == null) {
+                vramEstimateLabel.setText("");
+                return;
+            }
+
+            try {
+                String modelType = architectureCombo.getValue();
+                String backbone = backboneCombo.getValue();
+                int tileSize = tileSizeSpinner.getValue();
+                int batchSize = batchSizeSpinner.getValue();
+                boolean mixedPrec = mixedPrecisionCheck != null && mixedPrecisionCheck.isSelected();
+                int contextScale = contextScaleCombo != null
+                        ? parseContextScale(contextScaleCombo.getValue()) : 1;
+
+                double modelMb = estimateModelSizeMb(modelType, backbone);
+                double actMultiplier = "muvit".equals(modelType) ? 10.0 : 4.0;
+                if (mixedPrec) actMultiplier *= 0.6;
+                if (contextScale > 1) actMultiplier *= 1.5;
+
+                double areaScale = (double)(tileSize * tileSize) / (256.0 * 256.0);
+                double estimatedMb = modelMb * (1 + 3 + actMultiplier * areaScale * batchSize);
+                double budgetMb = gpuTotalMb * 0.85;
+
+                double pct = (estimatedMb / gpuTotalMb) * 100;
+
+                String text = String.format("Est. VRAM: ~%.0f MB / %,d MB (%.0f%%)",
+                        estimatedMb, gpuTotalMb, pct);
+
+                if (estimatedMb > budgetMb) {
+                    // Exceeds safe budget -- red warning
+                    vramEstimateLabel.setStyle(
+                            "-fx-font-size: 11px; -fx-text-fill: #CC0000; -fx-font-weight: bold;");
+                    // Find max batch that fits
+                    int maxBatch = 0;
+                    for (int b = batchSize; b >= 1; b--) {
+                        double est = modelMb * (1 + 3 + actMultiplier * areaScale * b);
+                        if (est <= budgetMb) { maxBatch = b; break; }
+                    }
+                    if (maxBatch > 0) {
+                        text += String.format("  --  EXCEEDS GPU! Try batch %d or smaller tiles", maxBatch);
+                    } else {
+                        text += "  --  EXCEEDS GPU! Reduce tile size";
+                    }
+                } else if (pct > 75) {
+                    // Tight -- orange warning
+                    vramEstimateLabel.setStyle(
+                            "-fx-font-size: 11px; -fx-text-fill: #CC7A00; -fx-font-weight: bold;");
+                    text += "  --  tight, may OOM with large augmentations";
+                } else {
+                    // OK -- normal color
+                    vramEstimateLabel.setStyle("-fx-font-size: 11px; -fx-text-fill: #228B22;");
+                }
+
+                vramEstimateLabel.setText(text);
+            } catch (Exception e) {
+                vramEstimateLabel.setText("");
+                logger.debug("VRAM estimate update failed: {}", e.getMessage());
+            }
+        }
+
+        /**
          * Estimates model parameter size in MB based on architecture and backbone.
          * These are approximate values for the model weights only -- optimizer state
          * and activations are accounted for by multipliers in the caller.
@@ -3573,13 +3695,24 @@ public class TrainingDialog {
                 // MobileNet
                 case "mobilenet_v2" -> 14.0;       // ~3.5M params
                 case "timm-mobilenetv3_large_100" -> 22.0; // ~5.4M params
-                // Pathology encoders (large)
-                case "uni", "conch", "virchow", "phikon" -> 350.0; // ~86M+ params
+                // Histology-pretrained ResNet-50 variants
+                case "resnet50_lunit-swav", "resnet50_lunit-bt",
+                     "resnet50_kather100k", "resnet50_tcga-brca" -> 100.0; // ~25.6M params
+                // Foundation models (large ViT encoders + UNet decoder)
+                case "h-optimus-0", "midnight" -> 4400.0;  // ~1.1B params ViT-G
+                case "virchow" -> 2500.0;                   // ~632M params ViT-H
+                case "hibou-l", "dinov2-large" -> 1200.0;   // ~304M params ViT-L
+                case "hibou-b" -> 350.0;                     // ~86M params ViT-B
+                // Other pathology encoders
+                case "uni", "conch", "phikon" -> 350.0;      // ~86M+ params
                 // Default for unknown backbones
                 default -> {
                     // Heuristic: if the name contains "50" or "101", assume larger
                     if (backbone.contains("50")) yield 100.0;
                     if (backbone.contains("101")) yield 170.0;
+                    if (backbone.contains("optimus") || backbone.contains("midnight")) yield 4400.0;
+                    if (backbone.contains("virchow")) yield 2500.0;
+                    if (backbone.contains("hibou") || backbone.contains("dinov2")) yield 1200.0;
                     yield 50.0; // Conservative default
                 }
             };
@@ -3697,6 +3830,195 @@ public class TrainingDialog {
             PauseTransition pause = new PauseTransition(Duration.seconds(2));
             pause.setOnFinished(e -> tooltip.hide());
             pause.play();
+        }
+
+        /**
+         * Shows a guide dialog explaining available model architectures and
+         * encoders with links to their associated papers.
+         */
+        private void showArchitectureGuide() {
+            Dialog<Void> dialog = new Dialog<>();
+            dialog.setTitle("Model Architecture Guide");
+            dialog.setHeaderText("Choosing an architecture and encoder for your task");
+            dialog.getDialogPane().getButtonTypes().add(ButtonType.CLOSE);
+            dialog.setResizable(true);
+
+            VBox content = new VBox(12);
+            content.setPadding(new Insets(10));
+            content.setPrefWidth(560);
+
+            // --- Architectures ---
+            content.getChildren().add(createSectionHeader("Segmentation Architectures"));
+
+            content.getChildren().add(createModelEntry(
+                    "UNet (Recommended Default)",
+                    "Symmetric encoder-decoder with skip connections. The most widely used "
+                    + "architecture for biomedical image segmentation. Works well for most "
+                    + "tasks including H&E gland segmentation, cell detection, and tissue "
+                    + "classification. Choose this unless you have a specific reason not to.",
+                    "Ronneberger et al. 2015",
+                    "https://arxiv.org/abs/1505.04597"));
+
+            content.getChildren().add(createModelEntry(
+                    "MuViT (Multi-resolution Vision Transformer)",
+                    "Transformer-based architecture with multi-scale feature fusion. "
+                    + "Supports self-supervised MAE pretraining on your own unlabeled data. "
+                    + "May outperform UNet on tasks requiring long-range context, but "
+                    + "requires more VRAM and training time.",
+                    null, null));
+
+            // --- Standard Encoders ---
+            content.getChildren().add(createSectionHeader("Standard Encoders (ImageNet-pretrained)"));
+
+            content.getChildren().add(createModelEntry(
+                    "ResNet-34 (Recommended Default)",
+                    "Good balance of speed, accuracy, and memory usage. The best starting "
+                    + "point for most tasks. 21.8M parameters.",
+                    "He et al. 2016",
+                    "https://arxiv.org/abs/1512.03385"));
+
+            content.getChildren().add(createModelEntry(
+                    "ResNet-50 / ResNet-101",
+                    "More capacity than ResNet-34. Use for larger datasets or complex "
+                    + "tasks where ResNet-34 plateaus. 25.6M / 44.5M parameters.",
+                    "He et al. 2016",
+                    "https://arxiv.org/abs/1512.03385"));
+
+            content.getChildren().add(createModelEntry(
+                    "EfficientNet-B0 / B3 / B4",
+                    "Lightweight and fast. Good for low-VRAM GPUs or when inference speed "
+                    + "is critical. B0 is the smallest (5.3M params), B4 largest (19M params).",
+                    "Tan & Le 2019",
+                    "https://arxiv.org/abs/1905.11946"));
+
+            // --- Histology Encoders ---
+            content.getChildren().add(createSectionHeader(
+                    "Histology-Pretrained Encoders (Best for H&E)"));
+
+            content.getChildren().add(new Label(
+                    "These ResNet-50 encoders were self-supervised on millions of H&E "
+                    + "tissue patches at 20x magnification. They already understand tissue "
+                    + "morphology, which gives a significant head start over ImageNet weights "
+                    + "for histopathology tasks."));
+
+            content.getChildren().add(createModelEntry(
+                    "Lunit SwAV / Lunit Barlow Twins",
+                    "Trained on 30M+ H&E patches from TCGA using SwAV or Barlow Twins "
+                    + "self-supervised learning. Among the best-performing histology encoders "
+                    + "for downstream tasks. Non-commercial license.",
+                    "Kang et al. 2023",
+                    "https://doi.org/10.1038/s41591-023-02512-1"));
+
+            content.getChildren().add(createModelEntry(
+                    "Kather100K",
+                    "Trained on 100K H&E patches across 9 tissue types from the NCT-CRC "
+                    + "colorectal cancer dataset. Good for colorectal tissue analysis.",
+                    "Kather et al. 2019",
+                    "https://doi.org/10.1038/s41591-019-0462-y"));
+
+            content.getChildren().add(createModelEntry(
+                    "TCGA-BRCA",
+                    "SimCLR self-supervised training on TCGA breast cancer slides. "
+                    + "Specifically tuned for breast tissue morphology.",
+                    null, null));
+
+            // --- Foundation Models ---
+            content.getChildren().add(createSectionHeader(
+                    "Foundation Models (Large-Scale, Downloaded On-Demand)"));
+
+            content.getChildren().add(new Label(
+                    "Large vision transformers (86M-1.1B parameters) trained on millions "
+                    + "of pathology or natural images. Powerful but require more VRAM and "
+                    + "download 200MB-2GB on first use. Best when you have limited labeled data."));
+
+            content.getChildren().add(createModelEntry(
+                    "H-optimus-0 (Bioptimus)",
+                    "ViT-G pathology foundation model trained on 500K+ whole slide images. "
+                    + "1.1B parameters, 1536-dim features. Apache 2.0 license.",
+                    "Filiot et al. 2024",
+                    "https://arxiv.org/abs/2309.07778"));
+
+            content.getChildren().add(createModelEntry(
+                    "Virchow (Paige AI)",
+                    "ViT-H pathology foundation model trained on 1.5M slides from "
+                    + "diverse tissue types. 632M parameters. Apache 2.0 license.",
+                    "Vorontsov et al. 2024",
+                    "https://arxiv.org/abs/2309.07778"));
+
+            content.getChildren().add(createModelEntry(
+                    "Hibou-B / Hibou-L (HistAI)",
+                    "DINOv2-based pathology models. Hibou-B (86M params) is lighter, "
+                    + "Hibou-L (304M params) is more powerful. Apache 2.0 license.",
+                    "Nechaev et al. 2024",
+                    "https://arxiv.org/abs/2406.09414"));
+
+            content.getChildren().add(createModelEntry(
+                    "Midnight (Kaiko AI)",
+                    "ViT-G trained on TCGA data only. 1.1B parameters. "
+                    + "MIT license (fully permissive, ungated).",
+                    null, null));
+
+            content.getChildren().add(createModelEntry(
+                    "DINOv2-Large (Meta)",
+                    "General-purpose vision transformer, not histology-specific. "
+                    + "Can work for non-H&E or unusual staining. 304M parameters. "
+                    + "Apache 2.0 license.",
+                    "Oquab et al. 2024",
+                    "https://arxiv.org/abs/2304.07193"));
+
+            // --- Recommendation ---
+            content.getChildren().add(createSectionHeader("Quick Recommendation"));
+            Label recommendation = new Label(
+                    "For H&E histology: UNet + Lunit SwAV or Kather100K encoder.\n"
+                    + "For fluorescence/multi-channel: UNet + ResNet-34.\n"
+                    + "For limited labeled data: UNet + foundation model (H-optimus-0).\n"
+                    + "For fastest inference: UNet + EfficientNet-B0.");
+            recommendation.setWrapText(true);
+            recommendation.setStyle("-fx-font-style: italic;");
+            content.getChildren().add(recommendation);
+
+            ScrollPane scrollPane = new ScrollPane(content);
+            scrollPane.setFitToWidth(true);
+            scrollPane.setPrefHeight(500);
+            dialog.getDialogPane().setContent(scrollPane);
+            dialog.getDialogPane().setPrefWidth(600);
+            dialog.showAndWait();
+        }
+
+        private Label createSectionHeader(String text) {
+            Label header = new Label(text);
+            header.setStyle("-fx-font-weight: bold; -fx-font-size: 13; "
+                    + "-fx-padding: 8 0 2 0;");
+            return header;
+        }
+
+        private VBox createModelEntry(String name, String description,
+                                       String paperRef, String paperUrl) {
+            VBox entry = new VBox(2);
+            entry.setPadding(new Insets(0, 0, 0, 10));
+
+            Label nameLabel = new Label(name);
+            nameLabel.setStyle("-fx-font-weight: bold;");
+            entry.getChildren().add(nameLabel);
+
+            Label descLabel = new Label(description);
+            descLabel.setWrapText(true);
+            entry.getChildren().add(descLabel);
+
+            if (paperRef != null && paperUrl != null) {
+                Hyperlink link = new Hyperlink("Paper: " + paperRef);
+                link.setOnAction(e -> {
+                    try {
+                        java.awt.Desktop.getDesktop().browse(
+                                java.net.URI.create(paperUrl));
+                    } catch (Exception ex) {
+                        logger.debug("Could not open URL: {}", ex.getMessage());
+                    }
+                });
+                entry.getChildren().add(link);
+            }
+
+            return entry;
         }
     }
 

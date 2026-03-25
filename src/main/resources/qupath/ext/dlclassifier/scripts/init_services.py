@@ -13,6 +13,7 @@ import os
 import logging
 import threading
 import time
+import numpy  # Must be imported during init, not in a task -- see Appose #23
 
 # Configure logging to stderr (stdout is reserved for Appose JSON protocol)
 logging.basicConfig(
@@ -31,7 +32,7 @@ logger = logging.getLogger("dlclassifier.appose")
 # Both sides MUST be in sync. This version MUST match pyproject.toml and
 # __init__.py exactly. When EITHER side is updated, ALL THREE version
 # locations must be bumped together (see memory/feedback_version_sync.md).
-_REQUIRED_PYTHON_VERSION = "0.4.8"
+_REQUIRED_PYTHON_VERSION = "0.4.9"
 
 
 def _parse_version(v):

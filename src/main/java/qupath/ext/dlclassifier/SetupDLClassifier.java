@@ -171,8 +171,24 @@ public class SetupDLClassifier implements QuPathExtension, GitHubProject {
                 if (!healthy || (versionWarn != null && !versionWarn.isEmpty())) {
                     serverAvailable = false;
 
-                    // Auto-rebuild if preference is enabled
-                    if (DLClassifierPreferences.isAutoRebuildEnvironment()) {
+                    // Distinguish version mismatch from generic health failure.
+                    // A crash (e.g. worker killed by concurrent rebuild) should
+                    // NOT trigger auto-rebuild -- only a real version warning should.
+                    boolean isVersionMismatch = versionWarn != null && !versionWarn.isEmpty();
+
+                    if (!isVersionMismatch) {
+                        // Generic health check failure (crash, timeout, etc.)
+                        logger.warn("Health check failed but no version mismatch detected. "
+                                + "The Python worker may have crashed or been shut down.");
+                        Platform.runLater(() -> {
+                            // Don't disable menu -- the service initialized OK,
+                            // this may be a transient issue
+                            Dialogs.showWarningNotification(
+                                    EXTENSION_NAME,
+                                    "Python health check failed (worker may have crashed).\n" +
+                                            "Try using the extension normally -- it will reconnect.");
+                        });
+                    } else if (DLClassifierPreferences.isAutoRebuildEnvironment()) {
                         logger.info("Version mismatch detected -- auto-rebuilding environment");
                         Platform.runLater(() -> {
                             environmentReady.set(false);
