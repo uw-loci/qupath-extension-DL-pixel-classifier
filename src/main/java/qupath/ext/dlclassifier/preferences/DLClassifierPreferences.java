@@ -158,6 +158,10 @@ public final class DLClassifierPreferences {
     private static final BooleanProperty autoRebuildEnvironment = PathPrefs.createPersistentPreference(
             "dlclassifier.autoRebuildEnvironment", true);
 
+    // Show the welcome/getting-started message when Train Classifier is first opened
+    private static final BooleanProperty showWelcomeMessage = PathPrefs.createPersistentPreference(
+            "dlclassifier.showWelcomeMessage", true);
+
     // ==================== Menu Appearance ====================
 
     // Show colored dot next to extension name in the Extensions menu
@@ -765,5 +769,19 @@ public final class DLClassifierPreferences {
 
     public static BooleanProperty overlayNoticeDismissedProperty() {
         return overlayNoticeDismissed;
+    }
+
+    // ==================== Welcome Message ====================
+
+    public static boolean isShowWelcomeMessage() {
+        return showWelcomeMessage.get();
+    }
+
+    public static void setShowWelcomeMessage(boolean show) {
+        showWelcomeMessage.set(show);
+    }
+
+    public static BooleanProperty showWelcomeMessageProperty() {
+        return showWelcomeMessage;
     }
 }

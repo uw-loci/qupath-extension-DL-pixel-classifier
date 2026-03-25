@@ -321,9 +321,69 @@ public class TrainingWorkflow {
     }
 
     /**
+     * Shows the welcome/getting-started message on first use.
+     * Returns true if the user dismissed or already dismissed it,
+     * false if the user closed the dialog (cancel).
+     */
+    private boolean showWelcomeMessageIfNeeded() {
+        if (!DLClassifierPreferences.isShowWelcomeMessage()) {
+            return true;
+        }
+
+        javafx.scene.control.CheckBox neverAgain = new javafx.scene.control.CheckBox(
+                "Don't show this message again");
+
+        javafx.scene.control.Label message = new javafx.scene.control.Label(
+                "Deep learning pixel classifiers are powerful but significantly slower "
+                + "than QuPath's built-in pixel classifiers and most other segmentation "
+                + "methods. They require training on annotated examples before they can "
+                + "be used.\n\n"
+                + "Performance considerations:\n"
+                + "  - A modern NVIDIA GPU with CUDA support is strongly recommended.\n"
+                + "    Without GPU acceleration, training can be extremely slow.\n"
+                + "  - Fast storage (SSD/NVMe) and a modern CPU also help, but training\n"
+                + "    will always take time -- minutes to hours depending on dataset size.\n"
+                + "  - Check the Tips & Tricks guide (Extensions > DL Pixel Classifier >\n"
+                + "    documentation) for ways to speed up training.\n\n"
+                + "Tips for creating training annotations efficiently:\n"
+                + "  - Use QuPath's built-in Pixel Classifier to generate initial annotations,\n"
+                + "    then correct mistakes manually.\n"
+                + "  - Use the Segment Anything Model (SAM) extension for targeted regions,\n"
+                + "    then refine the results.\n"
+                + "  - Editing existing annotations is much faster than drawing from scratch.\n"
+                + "  - A small number of high-quality annotations is better than many poor ones.");
+        message.setWrapText(true);
+        message.setMaxWidth(520);
+
+        javafx.scene.layout.VBox content = new javafx.scene.layout.VBox(12, message, neverAgain);
+        content.setPadding(new javafx.geometry.Insets(10));
+
+        javafx.scene.control.Dialog<javafx.scene.control.ButtonType> dialog = new javafx.scene.control.Dialog<>();
+        dialog.setTitle("Getting Started with DL Pixel Classification");
+        dialog.setHeaderText("Before you begin");
+        dialog.getDialogPane().setContent(content);
+        dialog.getDialogPane().getButtonTypes().addAll(
+                javafx.scene.control.ButtonType.OK, javafx.scene.control.ButtonType.CANCEL);
+        dialog.getDialogPane().setPrefWidth(560);
+
+        var result = dialog.showAndWait();
+        if (result.isPresent() && result.get() == javafx.scene.control.ButtonType.OK) {
+            if (neverAgain.isSelected()) {
+                DLClassifierPreferences.setShowWelcomeMessage(false);
+            }
+            return true;
+        }
+        return false;
+    }
+
+    /**
      * Shows the training configuration dialog.
      */
     private void showTrainingDialog() {
+        if (!showWelcomeMessageIfNeeded()) {
+            return;
+        }
+
         TrainingDialog.showDialog()
                 .thenAccept(result -> {
                     if (result != null) {
