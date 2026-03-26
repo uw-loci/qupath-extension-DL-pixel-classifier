@@ -913,6 +913,15 @@ public class SetupDLClassifier implements QuPathExtension, GitHubProject {
                                     || name.startsWith("dl-classifier-import");
                         })
                         .filter(p -> {
+                            // Never delete directories with an active training marker.
+                            // The marker is written by TrainingWorkflow when training
+                            // starts and removed when it finishes.  This prevents a
+                            // second QuPath instance from deleting files that a
+                            // running training session needs.
+                            if (Files.exists(p.resolve(
+                                    qupath.ext.dlclassifier.controller.TrainingWorkflow.ACTIVE_MARKER))) {
+                                return false;
+                            }
                             try {
                                 return Files.getLastModifiedTime(p).toMillis() < cutoffMs;
                             } catch (IOException e) {

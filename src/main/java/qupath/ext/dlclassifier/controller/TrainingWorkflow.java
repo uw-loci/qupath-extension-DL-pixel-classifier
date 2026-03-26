@@ -45,6 +45,10 @@ import qupath.lib.common.ColorTools;
 
 import java.awt.image.BufferedImage;
 import java.io.IOException;
+import java.io.RandomAccessFile;
+import java.nio.channels.FileChannel;
+import java.nio.channels.FileLock;
+import java.nio.channels.OverlappingFileLockException;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
@@ -77,10 +81,116 @@ public class TrainingWorkflow {
 
     private static final Logger logger = LoggerFactory.getLogger(TrainingWorkflow.class);
 
+    /** Name of the marker file written inside active training temp directories. */
+    public static final String ACTIVE_MARKER = ".dl-training-active";
+
+    /**
+     * Global lockfile preventing concurrent training across QuPath instances.
+     * Uses OS-level {@link FileLock} so the lock is automatically released if
+     * the process crashes.
+     */
+    private static final Path TRAINING_LOCK_PATH = Path.of(
+            System.getProperty("java.io.tmpdir"), "dl-classifier-training.lock");
+
+    private static RandomAccessFile lockRaf;
+    private static FileChannel lockChannel;
+    private static FileLock trainingLock;
+    private static volatile boolean trainingInProgress = false;
+
     private QuPathGUI qupath;
 
     public TrainingWorkflow() {
         this.qupath = QuPathGUI.getInstance();
+    }
+
+    /**
+     * Attempts to acquire the global training lock.  Returns true if acquired,
+     * false if another instance already holds it.
+     */
+    private static synchronized boolean acquireTrainingLock() {
+        if (trainingInProgress) {
+            // Same JVM is already training
+            return false;
+        }
+        if (trainingLock != null) {
+            // This JVM already holds the file lock (shouldn't happen, but be safe)
+            return true;
+        }
+        try {
+            lockRaf = new RandomAccessFile(TRAINING_LOCK_PATH.toFile(), "rw");
+            lockChannel = lockRaf.getChannel();
+            trainingLock = lockChannel.tryLock();
+            if (trainingLock == null) {
+                // Another process holds the lock
+                closeLockResources();
+                return false;
+            }
+            trainingInProgress = true;
+            return true;
+        } catch (OverlappingFileLockException e) {
+            // This JVM already has a lock on this channel
+            closeLockResources();
+            return false;
+        } catch (IOException e) {
+            logger.warn("Could not acquire training lock: {}", e.getMessage());
+            closeLockResources();
+            // Allow training to proceed if lock file is inaccessible
+            trainingInProgress = true;
+            return true;
+        }
+    }
+
+    /**
+     * Releases the global training lock.
+     */
+    private static synchronized void releaseTrainingLock() {
+        trainingInProgress = false;
+        try {
+            if (trainingLock != null) {
+                trainingLock.release();
+                trainingLock = null;
+            }
+        } catch (IOException e) {
+            logger.debug("Error releasing training lock", e);
+        }
+        closeLockResources();
+        try {
+            Files.deleteIfExists(TRAINING_LOCK_PATH);
+        } catch (IOException ignored) {}
+    }
+
+    private static void closeLockResources() {
+        try { if (lockChannel != null) lockChannel.close(); } catch (IOException ignored) {}
+        try { if (lockRaf != null) lockRaf.close(); } catch (IOException ignored) {}
+        lockChannel = null;
+        lockRaf = null;
+    }
+
+    /**
+     * Writes a marker file inside a training temp directory to indicate it is
+     * actively in use.  The cleanup code skips directories containing this file.
+     */
+    static void writeActiveMarker(Path tempDir) {
+        try {
+            Files.writeString(tempDir.resolve(ACTIVE_MARKER),
+                    "Training in progress - do not delete\n"
+                    + "PID: " + ProcessHandle.current().pid() + "\n"
+                    + "Started: " + java.time.Instant.now() + "\n");
+        } catch (IOException e) {
+            logger.debug("Could not write active marker in {}", tempDir, e);
+        }
+    }
+
+    /**
+     * Removes the active marker file from a training temp directory.
+     */
+    static void removeActiveMarker(Path tempDir) {
+        if (tempDir == null) return;
+        try {
+            Files.deleteIfExists(tempDir.resolve(ACTIVE_MARKER));
+        } catch (IOException e) {
+            logger.debug("Could not remove active marker from {}", tempDir, e);
+        }
     }
 
     // ==================== Headless Result Record ====================
@@ -459,6 +569,16 @@ public class TrainingWorkflow {
             return;
         }
 
+        // Prevent concurrent training across QuPath instances
+        if (!acquireTrainingLock()) {
+            Dialogs.showErrorMessage("Training In Progress",
+                    "Another QuPath instance is already training a DL classifier.\n\n"
+                    + "Only one training session can run at a time.\n"
+                    + "Wait for the other training to finish, or close the other "
+                    + "QuPath instance before starting a new training run.");
+            return;
+        }
+
         // Warn user if training will run on CPU (very slow)
         try {
             ApposeService appose = ApposeService.getInstance();
@@ -692,6 +812,7 @@ public class TrainingWorkflow {
                 }
             } finally {
                 overlayService.resumeAfterTraining();
+                releaseTrainingLock();
             }
         });
 
@@ -699,6 +820,7 @@ public class TrainingWorkflow {
         progress.getStage().setOnHidden(e -> {
             Path dataPath = trainingDataPathHolder[0];
             if (dataPath != null) {
+                removeActiveMarker(dataPath);
                 cleanupTempDir(dataPath);
                 trainingDataPathHolder[0] = null;
                 logger.info("Cleaned up training data on dialog close");
@@ -860,6 +982,7 @@ public class TrainingWorkflow {
             } else {
                 tempDir = Files.createTempDirectory("dl-training");
             }
+            writeActiveMarker(tempDir);
             logger.info("Exporting training data to: {}", tempDir);
             if (progress != null) progress.log("Export directory: " + tempDir);
             if (trainingDataPathHolder != null && trainingDataPathHolder.length > 0) {
@@ -1280,6 +1403,7 @@ public class TrainingWorkflow {
         } finally {
             // Skip cleanup if caller wants to keep training data for post-training review
             if (trainingDataPathHolder == null) {
+                removeActiveMarker(tempDir);
                 cleanupTempDir(tempDir);
             }
         }
@@ -1617,7 +1741,9 @@ public class TrainingWorkflow {
             progress.complete(false, "Resume failed: " + e.getMessage());
         } finally {
             OverlayService.getInstance().resumeAfterTraining();
+            removeActiveMarker(tempDir);
             cleanupTempDir(tempDir);
+            releaseTrainingLock();
         }
     }
 
