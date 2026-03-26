@@ -2103,6 +2103,50 @@ public class TrainingDialog {
             grid.add(schedulerCombo, 1, row);
             row++;
 
+            // Scheduler behavior description -- updates when selection changes
+            Label schedulerDesc = new Label();
+            schedulerDesc.setWrapText(true);
+            schedulerDesc.setStyle("-fx-text-fill: #666666; -fx-font-size: 0.9em;");
+            schedulerDesc.setMaxWidth(Double.MAX_VALUE);
+            Runnable updateSchedulerDesc = () -> {
+                String sel = schedulerCombo.getValue();
+                if (sel == null) sel = "";
+                int epochs = epochsSpinner.getValue();
+                int peakEpoch = Math.max(1, (int) (epochs * 0.3));
+                switch (sel) {
+                    case "One Cycle" -> schedulerDesc.setText(String.format(
+                            "LR ramps up to a peak (auto-found) at ~epoch %d of %d, "
+                            + "then cosine-decays to near zero. Expect validation "
+                            + "volatility during ramp-up (epochs 1-%d). Best "
+                            + "results emerge during the decay phase (epochs %d-%d).",
+                            peakEpoch, epochs, peakEpoch, peakEpoch, epochs));
+                    case "Reduce on Plateau" -> schedulerDesc.setText(String.format(
+                            "Starts at your set learning rate and halves it when "
+                            + "validation stops improving. Stable from epoch 1 -- "
+                            + "no ramp-up volatility. May converge to a slightly "
+                            + "worse optimum than One Cycle. With %d epochs, "
+                            + "expect 3-5 LR reductions.",
+                            epochs));
+                    case "Cosine Annealing" -> schedulerDesc.setText(
+                            "Periodically decays LR to zero then warm-restarts. "
+                            + "Can help escape local minima but causes periodic "
+                            + "LR spikes that may destabilize minority classes.");
+                    case "Step Decay" -> schedulerDesc.setText(
+                            "Reduces LR by a fixed factor every N epochs. "
+                            + "Predictable but requires manual tuning of the "
+                            + "step schedule.");
+                    case "None" -> schedulerDesc.setText(
+                            "Constant learning rate throughout training. Only "
+                            + "useful for short experiments or debugging.");
+                    default -> schedulerDesc.setText("");
+                }
+            };
+            schedulerCombo.valueProperty().addListener((obs, old, val) -> updateSchedulerDesc.run());
+            epochsSpinner.valueProperty().addListener((obs, old, val) -> updateSchedulerDesc.run());
+            updateSchedulerDesc.run();
+            grid.add(schedulerDesc, 0, row, 2, 1);
+            row++;
+
             // Loss function
             lossFunctionCombo = new ComboBox<>(FXCollections.observableArrayList(
                     "Cross Entropy + Dice", "Cross Entropy",
