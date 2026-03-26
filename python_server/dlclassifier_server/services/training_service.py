@@ -12,6 +12,7 @@ Includes:
 
 import json
 import logging
+import math
 import os
 import threading
 import time
@@ -1399,9 +1400,20 @@ class TrainingService:
             try:
                 suggested_lr, finder_lrs, finder_losses = self.find_learning_rate(
                     model, train_loader, criterion)
-                # Floor: reject absurdly small suggestions (likely noise)
+                # Guard rails: reject suggestions that are too small or too large.
+                # A max_lr above ~0.01 with discriminative LRs almost always
+                # causes divergence.  Floor avoids noise; ceiling prevents the
+                # LR finder from proposing values that blow up training.
                 min_reasonable_lr = 1e-5
+                max_reasonable_lr = 0.01
                 if suggested_lr is not None and suggested_lr >= min_reasonable_lr:
+                    if suggested_lr > max_reasonable_lr:
+                        logger.warning(
+                            "LR Finder suggested lr=%.4f which exceeds "
+                            "safety ceiling (%.4f). Capping to %.4f to "
+                            "prevent divergence.",
+                            suggested_lr, max_reasonable_lr, max_reasonable_lr)
+                        suggested_lr = max_reasonable_lr
                     logger.info(f"LR Finder suggested lr={suggested_lr:.6f}")
                     scheduler_config["max_lr"] = suggested_lr
                 elif suggested_lr is not None:
@@ -2007,6 +2019,27 @@ class TrainingService:
                     break
 
             train_loss /= max(len(active_train_loader), 1)
+
+            # Abort early if loss has diverged to NaN. This typically means
+            # the learning rate is too high.  Continuing wastes GPU time on
+            # a model that will never recover.
+            if math.isnan(train_loss):
+                _nan_epoch_count = getattr(self, '_nan_epoch_count', 0) + 1
+                self._nan_epoch_count = _nan_epoch_count
+                if _nan_epoch_count >= 2:
+                    logger.error(
+                        "Training loss is NaN for %d consecutive epochs. "
+                        "Aborting -- the learning rate is likely too high. "
+                        "Try a lower learning rate or use ReduceOnPlateau "
+                        "scheduler instead of OneCycleLR.",
+                        _nan_epoch_count)
+                    raise RuntimeError(
+                        f"Training diverged: loss is NaN for "
+                        f"{_nan_epoch_count} consecutive epochs. "
+                        f"The learning rate (max_lr={scheduler_config.get('max_lr', '?')}) "
+                        f"is likely too high.")
+            else:
+                self._nan_epoch_count = 0
 
             # Validation
             model.eval()
