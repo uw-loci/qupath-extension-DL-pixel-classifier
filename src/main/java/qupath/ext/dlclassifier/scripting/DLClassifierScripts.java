@@ -425,7 +425,7 @@ public class DLClassifierScripts {
      */
     public static boolean hasClassificationMeasurements(Collection<PathObject> annotations) {
         return annotations.stream()
-                .anyMatch(ann -> ann.getMeasurementList().getNames().stream()
+                .anyMatch(ann -> ann.getMeasurements().keySet().stream()
                         .anyMatch(name -> name.startsWith("DL:")));
     }
 
@@ -440,14 +440,14 @@ public class DLClassifierScripts {
     public static int clearClassificationMeasurements(Collection<PathObject> annotations) {
         int cleared = 0;
         for (PathObject ann : annotations) {
-            var ml = ann.getMeasurementList();
-            List<String> toRemove = ml.getNames().stream()
+            var measurements = ann.getMeasurements();
+            List<String> toRemove = measurements.keySet().stream()
                     .filter(name -> name.startsWith("DL:"))
                     .toList();
 
             if (!toRemove.isEmpty()) {
                 for (String name : toRemove) {
-                    ml.remove(name);
+                    measurements.remove(name);
                 }
                 cleared++;
             }
@@ -492,10 +492,11 @@ public class DLClassifierScripts {
         var annotations = imageData.getHierarchy().getAnnotationObjects();
 
         for (PathObject ann : annotations) {
-            var ml = ann.getMeasurementList();
-            for (String name : ml.getNames()) {
+            var measurements = ann.getMeasurements();
+            for (var entry : measurements.entrySet()) {
+                String name = entry.getKey();
                 if (name.startsWith("DL:") && name.contains("area")) {
-                    double value = ml.get(name);
+                    double value = entry.getValue().doubleValue();
                     summary.merge(name, value, Double::sum);
                 }
             }

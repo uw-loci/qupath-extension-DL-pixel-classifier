@@ -89,10 +89,10 @@ if (hasResults) {
     annotations.take(3).each { ann ->
         def name = ann.getName() ?: ann.getPathClass()?.getName() ?: "Unnamed"
         println "\n  Annotation: " + name
-        ann.getMeasurements().getNames().findAll {
+        ann.measurements.keySet().findAll {
             it.startsWith("DL:")
         }.each { measName ->
-            def value = ann.getMeasurements().get(measName)
+            def value = ann.measurements.get(measName)
             println "    " + measName + ": " + String.format("%.4f", value)
         }
     }

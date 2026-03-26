@@ -79,10 +79,10 @@ try {
     if (outputType == "measurements") {
         println "\nResults:"
         annotations.each { annotation ->
-            def ml = annotation.getMeasurements()
+            def measurements = annotation.measurements
             println "  " + (annotation.getName() ?: "Unnamed") + ":"
-            ml.getNames().findAll { it.startsWith("DL:") }.each { name ->
-                println "    " + name + ": " + ml.get(name)
+            measurements.keySet().findAll { it.startsWith("DL:") }.each { name ->
+                println "    " + name + ": " + measurements.get(name)
             }
         }
     }
