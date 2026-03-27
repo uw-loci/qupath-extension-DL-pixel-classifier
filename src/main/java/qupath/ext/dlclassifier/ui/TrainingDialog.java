@@ -162,6 +162,7 @@ public class TrainingDialog {
         private Spinner<Integer> epochsSpinner;
         private Spinner<Integer> batchSizeSpinner;
         private Spinner<Double> learningRateSpinner;
+        private Label lrInfoLabel;
         private Spinner<Integer> validationSplitSpinner;
 
         // Tiling parameters
@@ -387,6 +388,9 @@ public class TrainingDialog {
 
             // Trigger initial layer load now that all UI components exist
             updateLayerFreezePanel();
+
+            // Show LR info based on initial scheduler selection
+            updateLrInfoLabel();
 
             // Apply architecture-specific section visibility
             updateSectionsForArchitecture(architectureCombo.getValue());
@@ -1631,6 +1635,38 @@ public class TrainingDialog {
             return multipliers;
         }
 
+        /**
+         * Updates the LR info label based on the selected scheduler.
+         * When OneCycleLR is selected, warns that the LR finder will
+         * override the user's learning rate.
+         */
+        private void updateLrInfoLabel() {
+            if (lrInfoLabel == null || schedulerCombo == null) return;
+            String sched = schedulerCombo.getValue();
+            if ("One Cycle".equals(sched)) {
+                lrInfoLabel.setText(
+                        "OneCycleLR: LR Finder will auto-adjust peak lr " +
+                        "(capped at 10x this value). This value sets the " +
+                        "base for discriminative LR ratios.");
+                lrInfoLabel.setStyle(
+                        "-fx-text-fill: #856404; -fx-font-size: 0.85em; " +
+                        "-fx-background-color: #FFF3CD; -fx-padding: 4 6; " +
+                        "-fx-background-radius: 3;");
+                lrInfoLabel.setVisible(true);
+                lrInfoLabel.setManaged(true);
+            } else if ("None".equals(sched)) {
+                lrInfoLabel.setText("Constant lr throughout training.");
+                lrInfoLabel.setStyle("-fx-text-fill: #666666; -fx-font-size: 0.85em;");
+                lrInfoLabel.setVisible(true);
+                lrInfoLabel.setManaged(true);
+            } else {
+                lrInfoLabel.setText("Starting lr -- scheduler adjusts during training.");
+                lrInfoLabel.setStyle("-fx-text-fill: #666666; -fx-font-size: 0.85em;");
+                lrInfoLabel.setVisible(true);
+                lrInfoLabel.setManaged(true);
+            }
+        }
+
         private void updateLayerFreezePanel() {
             if (layerFreezePanel == null
                     || getSelectedWeightInitStrategy() != ClassifierHandler.WeightInitStrategy.BACKBONE_PRETRAINED) {
@@ -1759,6 +1795,14 @@ public class TrainingDialog {
 
             grid.add(lrLabel, 0, row);
             grid.add(learningRateSpinner, 1, row);
+            row++;
+
+            // LR info label -- updates based on scheduler selection
+            lrInfoLabel = new Label();
+            lrInfoLabel.setWrapText(true);
+            lrInfoLabel.setMaxWidth(Double.MAX_VALUE);
+            lrInfoLabel.setStyle("-fx-text-fill: #666666; -fx-font-size: 0.85em;");
+            grid.add(lrInfoLabel, 0, row, 2, 1);
             row++;
 
             // Validation split
@@ -2153,7 +2197,10 @@ public class TrainingDialog {
                     default -> schedulerDesc.setText("");
                 }
             };
-            schedulerCombo.valueProperty().addListener((obs, old, val) -> updateSchedulerDesc.run());
+            schedulerCombo.valueProperty().addListener((obs, old, val) -> {
+                updateSchedulerDesc.run();
+                updateLrInfoLabel();
+            });
             epochsSpinner.valueProperty().addListener((obs, old, val) -> updateSchedulerDesc.run());
             updateSchedulerDesc.run();
             grid.add(schedulerDesc, 0, row, 2, 1);
