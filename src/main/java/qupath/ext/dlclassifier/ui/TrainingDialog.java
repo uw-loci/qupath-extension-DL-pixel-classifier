@@ -1653,8 +1653,10 @@ public class TrainingDialog {
                     // Load layers asynchronously to avoid blocking the FX thread on HTTP call
                     final int ch = numChannels;
                     final int cls = numClasses;
+                    final int ctxScale = contextScaleCombo != null
+                            ? parseContextScale(contextScaleCombo.getValue()) : 1;
                     CompletableFuture.runAsync(() -> {
-                        layerFreezePanel.loadLayers(architecture, encoder, ch, cls);
+                        layerFreezePanel.loadLayers(architecture, encoder, ch, cls, ctxScale);
                     });
                 } catch (Exception e) {
                     logger.warn("Could not update layer freeze panel: {}", e.getMessage());
@@ -2011,6 +2013,7 @@ public class TrainingDialog {
             contextScaleCombo.valueProperty().addListener((obs, old, newVal) -> {
                 updateSpatialInfoLabels();
                 updateContextPreview();
+                updateLayerFreezePanel();
             });
             // Initial update (will show pixel-only info until image is loaded)
             updateSpatialInfoLabels();

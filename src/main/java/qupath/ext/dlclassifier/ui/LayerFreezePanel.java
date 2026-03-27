@@ -40,9 +40,11 @@ public class LayerFreezePanel extends VBox {
     private final ListView<LayerItem> layerListView;
     private final ComboBox<String> presetCombo;
     private final Label statusLabel;
+    private final Label contextWarningLabel;
 
     private String currentArchitecture;
     private String currentEncoder;
+    private int currentContextScale = 1;
     private ClassifierBackend backend;
 
     /**
@@ -134,11 +136,21 @@ public class LayerFreezePanel extends VBox {
 
         actionBox.getChildren().addAll(freezeAllEncoderBtn, unfreezeAllBtn, recommendedBtn);
 
+        // Context scale warning (hidden by default)
+        contextWarningLabel = new Label();
+        contextWarningLabel.setWrapText(true);
+        contextWarningLabel.setStyle(
+                "-fx-background-color: #FFF3CD; -fx-border-color: #FFECB5; " +
+                "-fx-border-radius: 4; -fx-background-radius: 4; -fx-padding: 8;");
+        contextWarningLabel.setVisible(false);
+        contextWarningLabel.setManaged(false);
+
         // Status
         statusLabel = new Label("Select architecture and encoder to view layers");
         statusLabel.setStyle("-fx-text-fill: #888888;");
 
-        getChildren().addAll(headerLabel, infoLabel, presetBox, layerListView, actionBox, statusLabel);
+        getChildren().addAll(headerLabel, infoLabel, presetBox, contextWarningLabel,
+                layerListView, actionBox, statusLabel);
     }
 
     /**
@@ -160,12 +172,15 @@ public class LayerFreezePanel extends VBox {
      *
      * @param architecture model architecture (e.g., "unet")
      * @param encoder      encoder name (e.g., "resnet34")
-     * @param numChannels  number of input channels
+     * @param numChannels  number of input channels (base, before context)
      * @param numClasses   number of output classes
+     * @param contextScale context scale factor (1 = no context, >1 = multi-scale)
      */
-    public void loadLayers(String architecture, String encoder, int numChannels, int numClasses) {
+    public void loadLayers(String architecture, String encoder, int numChannels,
+                           int numClasses, int contextScale) {
         this.currentArchitecture = architecture;
         this.currentEncoder = encoder;
+        this.currentContextScale = contextScale;
 
         Platform.runLater(() -> {
             layers.clear();
@@ -193,6 +208,7 @@ public class LayerFreezePanel extends VBox {
                             item.setFrozen(info.recommendedFreeze());
                             layers.add(item);
                         }
+                        updateContextWarning();
                         updateStatus();
                     });
                     logger.info("Loaded {} layers from server for {}/{}",
@@ -210,6 +226,7 @@ public class LayerFreezePanel extends VBox {
         if (!localLayers.isEmpty()) {
             Platform.runLater(() -> {
                 layers.addAll(localLayers);
+                updateContextWarning();
                 updateStatus();
             });
             logger.info("Loaded {} layers from local fallback for {}/{}",
@@ -393,6 +410,7 @@ public class LayerFreezePanel extends VBox {
             layer.setFrozen(nameSet.contains(layer.getName()));
         }
         layerListView.refresh();
+        updateContextWarning();
         updateStatus();
         logger.info("Restored {} frozen layers from saved settings", frozenNames.size());
     }
@@ -440,11 +458,17 @@ public class LayerFreezePanel extends VBox {
         for (LayerItem layer : layers) {
             Boolean freeze = recommendations.get(layer.getDepth());
             if (freeze != null) {
-                layer.setFrozen(freeze);
+                // Never freeze depth-0 when context scale is active
+                if (layer.getDepth() == 0 && currentContextScale > 1) {
+                    layer.setFrozen(false);
+                } else {
+                    layer.setFrozen(freeze);
+                }
             }
         }
 
         layerListView.refresh();
+        updateContextWarning();
         updateStatus();
         logger.info("Applied {} preset for encoder {}: {} layers frozen",
                 datasetSize, currentEncoder, getFrozenLayerNames().size());
@@ -484,9 +508,15 @@ public class LayerFreezePanel extends VBox {
 
     private void applyRecommended() {
         for (LayerItem layer : layers) {
-            layer.setFrozen(layer.isRecommendedFreeze());
+            // Never freeze depth-0 when context scale is active
+            if (layer.getDepth() == 0 && currentContextScale > 1) {
+                layer.setFrozen(false);
+            } else {
+                layer.setFrozen(layer.isRecommendedFreeze());
+            }
         }
         layerListView.refresh();
+        updateContextWarning();
         updateStatus();
     }
 
@@ -497,6 +527,7 @@ public class LayerFreezePanel extends VBox {
             }
         }
         layerListView.refresh();
+        updateContextWarning();
         updateStatus();
     }
 
@@ -505,6 +536,7 @@ public class LayerFreezePanel extends VBox {
             layer.setFrozen(frozen);
         }
         layerListView.refresh();
+        updateContextWarning();
         updateStatus();
     }
 
@@ -531,6 +563,44 @@ public class LayerFreezePanel extends VBox {
     }
 
     /**
+     * Shows or hides a warning when context_scale > 1 and the first
+     * encoder layer (depth 0) is frozen.  SMP adapts conv1 for extra
+     * channels by repeating/scaling pretrained weights, so those weights
+     * are NOT truly pretrained.  Freezing them prevents the model from
+     * learning to distinguish detail tiles from context tiles.
+     */
+    private void updateContextWarning() {
+        if (currentContextScale <= 1) {
+            contextWarningLabel.setVisible(false);
+            contextWarningLabel.setManaged(false);
+            return;
+        }
+
+        // Check if depth-0 (first conv) layer is frozen
+        boolean firstLayerFrozen = layers.stream()
+                .anyMatch(l -> l.getDepth() == 0 && l.isEncoder() && l.isFrozen());
+
+        if (firstLayerFrozen) {
+            contextWarningLabel.setText(
+                    "Warning: Context scale is active (" + currentContextScale +
+                    "x) but the initial conv layer is frozen. This layer's weights " +
+                    "were adapted for the extra context channels and are NOT truly " +
+                    "pretrained -- freezing them prevents the model from learning " +
+                    "to use context information effectively. Consider unfreezing it.");
+        } else {
+            contextWarningLabel.setText(
+                    "Note: Context scale is active (" + currentContextScale +
+                    "x). The initial conv layer is correctly set to trainable so " +
+                    "it can learn to use the extra context channels.");
+            contextWarningLabel.setStyle(
+                    "-fx-background-color: #D4EDDA; -fx-border-color: #C3E6CB; " +
+                    "-fx-border-radius: 4; -fx-background-radius: 4; -fx-padding: 8;");
+        }
+        contextWarningLabel.setVisible(true);
+        contextWarningLabel.setManaged(true);
+    }
+
+    /**
      * Custom cell for displaying layers with freeze checkbox.
      */
     private class LayerCell extends ListCell<LayerItem> {
@@ -551,6 +621,7 @@ public class LayerFreezePanel extends VBox {
                 LayerItem item = getItem();
                 if (item != null) {
                     item.setFrozen(freezeCheck.isSelected());
+                    updateContextWarning();
                     updateStatus();
                 }
             });

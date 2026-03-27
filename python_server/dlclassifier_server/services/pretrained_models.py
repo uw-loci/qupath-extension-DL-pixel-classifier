@@ -516,15 +516,27 @@ class PretrainedModelsService:
             # Count parameters for each layer group
             for name, display_name, depth, freeze_default in layer_names:
                 param_count = self._count_params_for_layer(encoder, name)
+                # When input channels differ from pretrained (3), the
+                # depth-0 layer contains adapted (not truly pretrained)
+                # weights and should NOT be frozen by default.
+                rec_freeze = freeze_default
+                desc = self._get_layer_description(depth, True, encoder_name)
+                if depth == 0 and num_channels != 3:
+                    rec_freeze = False
+                    desc = (
+                        "Contains channel-adapted weights (input has "
+                        f"{num_channels}ch, pretrained on 3ch). "
+                        "Should be trainable so the model can learn "
+                        "scale-specific features."
+                    )
                 layers.append({
                     "name": name,
                     "display_name": f"Encoder: {display_name}",
                     "param_count": param_count,
                     "is_encoder": True,
                     "depth": depth,
-                    "recommended_freeze": freeze_default,
-                    "description": self._get_layer_description(depth, True,
-                                                               encoder_name)
+                    "recommended_freeze": rec_freeze,
+                    "description": desc
                 })
 
         return layers
@@ -724,8 +736,37 @@ class PretrainedModelsService:
         """
         model = self._create_model(architecture, encoder, num_channels, num_classes)
 
+        # Guard: skip freezing the first conv layer when input channels
+        # differ from the pretrained channel count (3).  SMP adapts conv1
+        # by repeating/scaling pretrained weights, so those weights are NOT
+        # truly pretrained for the extra channels (e.g. context_scale > 1
+        # doubles channels to 6).  Freezing them locks in a naive
+        # initialization that treats detail and context tiles identically.
+        pretrained_channels = 3
+        # Depth-0 layer group names across all encoder families:
+        #   ResNet/SE-ResNet: encoder.conv1
+        #   EfficientNet:     encoder._conv_stem
+        #   DenseNet:         encoder.features.conv0
+        #   VGG:              encoder.features[0:7]
+        #   MobileNet:        encoder.features[0:2]
+        first_conv_names = ("encoder.conv1", "encoder._conv_stem",
+                            "encoder.features.conv0", "encoder.features[0:7]",
+                            "encoder.features[0:2]")
+        skip_frozen = set()
+        if num_channels != pretrained_channels:
+            for layer_name in frozen_layers:
+                if layer_name in first_conv_names:
+                    skip_frozen.add(layer_name)
+                    logger.warning(
+                        "Auto-unfreezing '%s': model has %d input channels "
+                        "(pretrained on %d). The adapted weights are not truly "
+                        "pretrained and must be trainable.",
+                        layer_name, num_channels, pretrained_channels)
+
         # Freeze specified layers
         for layer_name in frozen_layers:
+            if layer_name in skip_frozen:
+                continue
             self._freeze_layer(model, layer_name)
 
         # Log freeze status
