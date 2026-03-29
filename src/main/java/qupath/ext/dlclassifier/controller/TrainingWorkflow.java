@@ -1878,6 +1878,11 @@ public class TrainingWorkflow {
                 }
             }
 
+            // Disable continue-training -- checkpoints were cleaned up above
+            // and there is nothing to resume from.
+            progress.setOnContinueTraining(null);
+            progress.setOnResume(null);
+
             progress.complete(true, String.format(
                     "Training completed early!\nBest model: epoch %d\n"
                     + "Loss: %.4f | Accuracy: %.2f%% | mIoU: %.4f",

@@ -438,7 +438,7 @@ try:
                                    stem, save_err)
 
                 results.append({
-                    "filename": manifest_filename,
+                    "filename": filename,
                     "split": split_name,
                     "loss": round(tile_loss, 4),
                     "disagreement_pct": round(disagreement_pct, 4),
