@@ -77,12 +77,15 @@ import numpy as _np
 # Fix: np.frombuffer returns read-only arrays; ensure _load_patch always
 # returns writable arrays so normalization can modify in-place.
 # This patches the installed package which may be stale (Appose pip cache).
-_orig_lp = _tsm.SegmentationDataset._load_patch
-@staticmethod
-def _writable_load_patch(img_path):
-    arr = _orig_lp(img_path)
-    return arr.copy() if not arr.flags.writeable else arr
-_tsm.SegmentationDataset._load_patch = _writable_load_patch
+# Guard: only patch once per worker process (Appose reuses the worker).
+if not getattr(_tsm.SegmentationDataset, '_patched_writable', False):
+    _orig_lp = _tsm.SegmentationDataset._load_patch
+    @staticmethod
+    def _writable_load_patch(img_path):
+        arr = _orig_lp(img_path)
+        return arr.copy() if not arr.flags.writeable else arr
+    _tsm.SegmentationDataset._load_patch = _writable_load_patch
+    _tsm.SegmentationDataset._patched_writable = True
 
 
 # Safety net: resize context tiles if they don't match detail tile dimensions.
@@ -90,62 +93,65 @@ _tsm.SegmentationDataset._load_patch = _writable_load_patch
 # have mismatched tiles from older exports. This patches the installed package.
 from PIL import Image as _PILImage
 
-_orig_getitem = _tsm.SegmentationDataset.__getitem__
-_ctx_resize_warned = [False]
+# Guard: only patch __getitem__ once per worker process.
+if not getattr(_tsm.SegmentationDataset, '_patched_getitem', False):
+    _orig_getitem = _tsm.SegmentationDataset.__getitem__
+    _ctx_resize_warned = [False]
 
-def _safe_getitem(self, idx):
-    """__getitem__ with context tile resize for edge-case size mismatch."""
-    img_path = self.image_files[idx]
-    img_array = self._load_patch(img_path)
-    if img_array.ndim == 2:
-        img_array = img_array[..., _np.newaxis]
+    def _safe_getitem(self, idx):
+        """__getitem__ with context tile resize for edge-case size mismatch."""
+        img_path = self.image_files[idx]
+        img_array = self._load_patch(img_path)
+        if img_array.ndim == 2:
+            img_array = img_array[..., _np.newaxis]
 
-    if self.context_dir is not None:
-        ctx_path = self.context_dir / img_path.name
-        if ctx_path.exists():
-            ctx_array = self._load_patch(ctx_path)
-            if ctx_array.ndim == 2:
-                ctx_array = ctx_array[..., _np.newaxis]
-            # Resize context tile if spatial dimensions don't match detail tile
-            if ctx_array.shape[0] != img_array.shape[0] or ctx_array.shape[1] != img_array.shape[1]:
-                if not _ctx_resize_warned[0]:
-                    logger.warning("Context tile %s has shape %s but detail is %s -- "
-                                   "resizing (edge tile from old export?)",
-                                   ctx_path.name, ctx_array.shape, img_array.shape)
-                    _ctx_resize_warned[0] = True
-                h, w = img_array.shape[:2]
-                resized_channels = []
-                for c in range(ctx_array.shape[2]):
-                    ch = _PILImage.fromarray(ctx_array[:, :, c])
-                    ch = ch.resize((w, h), _PILImage.BILINEAR)
-                    resized_channels.append(_np.array(ch))
-                ctx_array = _np.stack(resized_channels, axis=2)
-            img_array = _np.concatenate([img_array, ctx_array], axis=2)
+        if self.context_dir is not None:
+            ctx_path = self.context_dir / img_path.name
+            if ctx_path.exists():
+                ctx_array = self._load_patch(ctx_path)
+                if ctx_array.ndim == 2:
+                    ctx_array = ctx_array[..., _np.newaxis]
+                # Resize context tile if spatial dimensions don't match detail tile
+                if ctx_array.shape[0] != img_array.shape[0] or ctx_array.shape[1] != img_array.shape[1]:
+                    if not _ctx_resize_warned[0]:
+                        logger.warning("Context tile %s has shape %s but detail is %s -- "
+                                       "resizing (edge tile from old export?)",
+                                       ctx_path.name, ctx_array.shape, img_array.shape)
+                        _ctx_resize_warned[0] = True
+                    h, w = img_array.shape[:2]
+                    resized_channels = []
+                    for c in range(ctx_array.shape[2]):
+                        ch = _PILImage.fromarray(ctx_array[:, :, c])
+                        ch = ch.resize((w, h), _PILImage.BILINEAR)
+                        resized_channels.append(_np.array(ch))
+                    ctx_array = _np.stack(resized_channels, axis=2)
+                img_array = _np.concatenate([img_array, ctx_array], axis=2)
+            else:
+                img_array = _np.concatenate([img_array, img_array], axis=2)
+
+        img_array = self._normalize(img_array)
+
+        mask_name = img_path.stem + ".png"
+        mask_path = self.masks_dir / mask_name
+        if mask_path.exists():
+            mask = _PILImage.open(mask_path)
+            mask_array = _np.array(mask, dtype=_np.int64)
         else:
-            img_array = _np.concatenate([img_array, img_array], axis=2)
+            mask_array = _np.zeros(img_array.shape[:2], dtype=_np.int64)
 
-    img_array = self._normalize(img_array)
+        if self.transform is not None:
+            transformed = self.transform(image=img_array, mask=mask_array)
+            img_array = transformed["image"]
+            mask_array = transformed["mask"]
 
-    mask_name = img_path.stem + ".png"
-    mask_path = self.masks_dir / mask_name
-    if mask_path.exists():
-        mask = _PILImage.open(mask_path)
-        mask_array = _np.array(mask, dtype=_np.int64)
-    else:
-        mask_array = _np.zeros(img_array.shape[:2], dtype=_np.int64)
+        if img_array.ndim == 2:
+            img_array = img_array[..., _np.newaxis]
+        img_tensor = torch.from_numpy(img_array.transpose(2, 0, 1).astype(_np.float32))
+        mask_tensor = torch.from_numpy(mask_array.astype(_np.int64))
+        return img_tensor, mask_tensor
 
-    if self.transform is not None:
-        transformed = self.transform(image=img_array, mask=mask_array)
-        img_array = transformed["image"]
-        mask_array = transformed["mask"]
-
-    if img_array.ndim == 2:
-        img_array = img_array[..., _np.newaxis]
-    img_tensor = torch.from_numpy(img_array.transpose(2, 0, 1).astype(_np.float32))
-    mask_tensor = torch.from_numpy(mask_array.astype(_np.int64))
-    return img_tensor, mask_tensor
-
-_tsm.SegmentationDataset.__getitem__ = _safe_getitem
+    _tsm.SegmentationDataset.__getitem__ = _safe_getitem
+    _tsm.SegmentationDataset._patched_getitem = True
 
 training_service = TrainingService(gpu_manager=gpu_manager)
 
