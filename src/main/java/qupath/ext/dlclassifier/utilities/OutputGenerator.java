@@ -64,7 +64,10 @@ public class OutputGenerator {
         this.imageData = imageData;
         this.metadata = metadata;
         this.config = config;
-        this.pixelSizeMicrons = imageData.getServer().getPixelCalibration().getAveragedPixelSizeMicrons();
+        double ps = imageData.getServer().getPixelCalibration().getAveragedPixelSizeMicrons();
+        // Guard against uncalibrated images where pixel size is NaN.
+        // Use 1.0 as fallback so micron-based thresholds become pixel-based.
+        this.pixelSizeMicrons = Double.isNaN(ps) || ps <= 0 ? 1.0 : ps;
     }
 
     /**
