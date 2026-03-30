@@ -655,13 +655,19 @@ public class ApposeClassifierBackend implements ClassifierBackend {
             String checkpointPath = String.valueOf(task.outputs.getOrDefault("checkpoint_path", ""));
             int lastEpoch = ((Number) task.outputs.getOrDefault("last_epoch", 0)).intValue();
             int totalEpochs = ((Number) task.outputs.getOrDefault("total_epochs", 0)).intValue();
-            logger.info("Training paused at epoch {}/{}, checkpoint: {}", lastEpoch, totalEpochs, checkpointPath);
+            int bestEpoch = ((Number) task.outputs.getOrDefault("best_epoch", 0)).intValue();
+            double bestMeanIoU = ((Number) task.outputs.getOrDefault("best_mean_iou", 0.0)).doubleValue();
+            double finalLoss = ((Number) task.outputs.getOrDefault("final_loss", 0.0)).doubleValue();
+            double finalAccuracy = ((Number) task.outputs.getOrDefault("final_accuracy", 0.0)).doubleValue();
+            logger.info("Training paused at epoch {}/{}, best epoch {} (mIoU={}), checkpoint: {}",
+                    lastEpoch, totalEpochs, bestEpoch, bestMeanIoU, checkpointPath);
 
             // Store checkpoint info for resume/finalize
             storeCheckpointInfo(jobId, checkpointPath, lastEpoch, inputs);
 
             return new ClassifierClient.TrainingResult(
-                    jobId, null, 0, 0, 0, 0, true, lastEpoch, totalEpochs, checkpointPath,
+                    jobId, null, finalLoss, finalAccuracy, bestEpoch, bestMeanIoU,
+                    true, lastEpoch, totalEpochs, checkpointPath,
                     false, null, null, 0.0, true);
         }
 

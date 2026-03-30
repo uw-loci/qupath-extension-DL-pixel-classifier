@@ -2337,10 +2337,11 @@ class TrainingService:
                 self.gpu_manager.clear_cache()
                 self.gpu_manager.log_memory_status(prefix="Paused (GPU freed): ")
 
-                return {
+                pause_result = {
                     "status": "paused",
                     "checkpoint_path": checkpoint_save_path,
                     "epoch": epoch + 1,
+                    "last_epoch": epoch + 1,
                     "total_epochs": epochs,
                     "train_loss": train_loss,
                     "val_loss": val_loss,
@@ -2348,7 +2349,21 @@ class TrainingService:
                     "per_class_iou": per_class_iou,
                     "per_class_loss": per_class_loss,
                     "mean_iou": mean_iou,
+                    "best_epoch": best_epoch,
+                    "best_mean_iou": best_score if best_score_mode == "max" else 0.0,
+                    "epochs_trained": len(training_history),
+                    "final_loss": val_loss,
+                    "final_accuracy": accuracy,
                 }
+                if focus_class:
+                    pause_result["focus_class_name"] = focus_class
+                    pause_result["focus_class_iou"] = best_score
+                    pause_result["focus_class_target_met"] = (
+                        best_score >= focus_class_min_iou
+                        if focus_class_min_iou > 0 else True
+                    )
+                    pause_result["focus_class_min_iou"] = focus_class_min_iou
+                return pause_result
 
         # Handle cancellation: save both best-epoch and last-epoch models
         # so Java can let the user choose which to keep (or discard both).
@@ -2417,6 +2432,7 @@ class TrainingService:
                 "final_loss": best_loss,
                 "final_accuracy": best_accuracy,
                 "epoch": len(training_history),
+                "last_epoch": len(training_history),
                 "total_epochs": epochs,
                 "epochs_trained": len(training_history),
             }
@@ -2493,6 +2509,7 @@ class TrainingService:
             "early_stopped": early_stopping.should_stop if early_stopping else False,
             "checkpoint_path": completion_checkpoint_path,
             "epoch": len(training_history),
+            "last_epoch": len(training_history),
             "total_epochs": epochs,
         }
         if focus_class:

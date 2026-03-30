@@ -485,3 +485,10 @@ task.outputs["epochs_trained"] = result.get("epochs_trained", 0)
 task.outputs["checkpoint_path"] = result.get("checkpoint_path", "")
 task.outputs["last_epoch"] = result.get("epoch", 0)
 task.outputs["total_epochs"] = result.get("total_epochs", total_epochs)
+
+# Forward focus class info if present (from pause, cancel, or completion)
+if "focus_class_name" in result:
+    task.outputs["focus_class_name"] = result["focus_class_name"]
+    task.outputs["focus_class_iou"] = result.get("focus_class_iou", 0.0)
+    task.outputs["focus_class_target_met"] = result.get("focus_class_target_met", True)
+    task.outputs["focus_class_min_iou"] = result.get("focus_class_min_iou", 0.0)
