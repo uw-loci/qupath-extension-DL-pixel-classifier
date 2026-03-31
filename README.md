@@ -73,7 +73,7 @@ See [docs/INSTALLATION.md](docs/INSTALLATION.md) for detailed instructions and G
 
    > **After updating the extension:** If you install a new version of this extension, you **must** rebuild the Python environment to match. The extension enforces version matching and will block training/inference if the environment is out of date. An error notification will appear with instructions. Go to **Extensions > DL Pixel Classifier > Rebuild Python Environment** to update.
 
-2. **Train a classifier** -- create annotations, open **Extensions > DL Pixel Classifier > Train Classifier...**, and click Start Training
+2. **Train a classifier** -- create annotations, open **Extensions > DL Pixel Classifier > Train Classifier...**, select images, load classes, name your classifier, and click Start Training. The dialog starts in a simplified Basic mode; click "Show All Settings" for advanced options.
 3. **Apply the classifier** -- open **Extensions > DL Pixel Classifier > Apply Classifier...**, select a model, choose an output type, and click Apply
 
 See [QUICKSTART.md](QUICKSTART.md) for a complete walkthrough (zero to classifier in ~10 minutes).

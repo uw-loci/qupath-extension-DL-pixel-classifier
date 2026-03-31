@@ -38,17 +38,19 @@ Training a classifier involves:
 
 Go to **Extensions > DL Pixel Classifier > Train Classifier...**
 
-The dialog has collapsible titled pane sections. Sections appear in this order:
+The dialog opens in **Basic mode** by default, showing only the essentials: Training Data Source, Annotation Classes, and Classifier Name. Click **"Show All Settings"** in the header to reveal all configuration options. The mode is remembered across sessions.
+
+In advanced mode, the dialog has collapsible titled pane sections:
 
 1. **TRAINING DATA SOURCE** -- select images and load classes
-2. **CLASSIFIER INFO** -- name and description
-3. **MODEL ARCHITECTURE** -- architecture and encoder selection
-4. **WEIGHT INITIALIZATION** -- how to initialize model weights
-5. **TRAINING PARAMETERS** -- epochs, batch size, tile size, etc.
-6. **TRAINING STRATEGY** -- scheduler, loss, early stopping (collapsed)
-7. **CHANNEL CONFIGURATION** -- input channel selection and normalization
-8. **ANNOTATION CLASSES** -- class selection and weight balancing
-9. **DATA AUGMENTATION** -- flip, rotation, intensity augmentation (collapsed)
+2. **MODEL ARCHITECTURE** -- architecture and encoder selection
+3. **WEIGHT INITIALIZATION** -- how to initialize model weights
+4. **TRAINING PARAMETERS** -- epochs, batch size, tile size, etc.
+5. **TRAINING STRATEGY** -- scheduler, loss, early stopping (collapsed)
+6. **CHANNEL CONFIGURATION** -- input channel selection and normalization
+7. **ANNOTATION CLASSES** -- class selection and weight balancing
+8. **DATA AUGMENTATION** -- flip, rotation, intensity augmentation (collapsed)
+9. **NAME YOUR CLASSIFIER** -- name and description
 
 ## Loading Settings from a Previous Model
 

@@ -73,19 +73,13 @@ The training and inference menu items now appear automatically. On subsequent la
 
 ### 3c. Configure training
 
-The dialog has collapsible sections. For a quick first test:
+The dialog opens in **Basic mode** by default, showing only what you need:
 
-| Setting | Recommended first-run value |
-|---------|-----------------------------|
-| **Classifier Name** | `test_classifier_v1` |
-| **Training Data Source** | Current image only (default) |
-| **Architecture** | `unet` |
-| **Backbone** | `resnet34` (or a histology backbone -- see below) |
-| **Epochs** | `3` (just to verify it works) |
-| **Tile Size** | `256` or `512` |
-| **Weight Initialization** | Use pretrained backbone weights |
+1. **Select your images** and click **Load Classes from Selected Images**
+2. **Check the annotation classes** you want to train on
+3. **Name your classifier** (e.g., `test_classifier_v1`)
 
-Leave everything else at defaults.
+That's it -- all other settings (architecture, epochs, learning rate, etc.) use sensible defaults (UNet + ResNet34, 50 epochs, pretrained weights). Click **"Show All Settings"** in the header to access the full configuration if needed.
 
 ### 3d. Start training
 
