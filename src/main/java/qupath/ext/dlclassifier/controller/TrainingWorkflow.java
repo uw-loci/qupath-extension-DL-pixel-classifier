@@ -727,7 +727,8 @@ public class TrainingWorkflow {
                     currentJobId[0], classifierName, description, handler,
                     trainingConfig, channelConfig, classNames,
                     selectedImages, progress, currentJobId,
-                    finalClassifierId, finalModelOutputDir));
+                    finalClassifierId, finalModelOutputDir,
+                    trainingDataPathHolder, modelPathHolder));
         });
 
         // Wire complete-early callback -- uses the SAME classifierId/modelOutputDir
@@ -745,7 +746,8 @@ public class TrainingWorkflow {
                     currentJobId[0], classifierName, description, handler,
                     trainingConfig, channelConfig, classNames,
                     selectedImages, progress, currentJobId,
-                    finalClassifierId, finalModelOutputDir));
+                    finalClassifierId, finalModelOutputDir,
+                    trainingDataPathHolder, modelPathHolder));
         });
 
         // Suspend overlay during training to prevent Appose "thread death" races
@@ -1448,7 +1450,9 @@ public class TrainingWorkflow {
                               ProgressMonitorController progress,
                               String[] currentJobId,
                               String classifierId,
-                              Path modelOutputDir) {
+                              Path modelOutputDir,
+                              Path[] trainingDataPathHolder,
+                              String[] modelPathHolder) {
         Path tempDir = null;
         try {
             // 1. Check for unsaved changes (on FX thread)
@@ -1502,6 +1506,16 @@ public class TrainingWorkflow {
                 tempDir = Files.createTempDirectory(exportBase, "dl-training-resume");
             } else {
                 tempDir = Files.createTempDirectory("dl-training-resume");
+            }
+            // Update the outer holder so the dialog close handler can clean up
+            // and Review Training Areas can find the data
+            if (trainingDataPathHolder != null && trainingDataPathHolder.length > 0) {
+                // Clean up old temp dir from previous run
+                Path oldTempDir = trainingDataPathHolder[0];
+                if (oldTempDir != null && !oldTempDir.equals(tempDir)) {
+                    cleanupTempDir(oldTempDir);
+                }
+                trainingDataPathHolder[0] = tempDir;
             }
             // Compute effective tile size for resume (same logic as trainCore)
             // Cap at handler's max supported tile size for ViT models
@@ -1746,9 +1760,16 @@ public class TrainingWorkflow {
             progress.complete(false, "Resume failed: " + e.getMessage());
         } finally {
             OverlayService.getInstance().resumeAfterTraining();
-            removeActiveMarker(tempDir);
-            cleanupTempDir(tempDir);
             releaseTrainingLock();
+            // Only clean up if the outer holder isn't managing this temp dir.
+            // When the holder IS set, the dialog close handler cleans up
+            // (allowing Review Training Areas to access the data first).
+            if (trainingDataPathHolder == null
+                    || trainingDataPathHolder.length == 0
+                    || trainingDataPathHolder[0] != tempDir) {
+                removeActiveMarker(tempDir);
+                cleanupTempDir(tempDir);
+            }
         }
     }
 
