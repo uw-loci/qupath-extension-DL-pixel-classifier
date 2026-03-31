@@ -200,7 +200,12 @@ if model_output_dir:
         src = _Path(orig_path)
         dst = dst_dir / src.name
         _shutil.copy2(str(src), str(dst))
-        logger.info("Copied best-in-progress to project: %s", dst)
+        # Remove source to avoid accumulation in ~/.dlclassifier/checkpoints/
+        try:
+            src.unlink(missing_ok=True)
+        except Exception:
+            pass
+        logger.info("Moved best-in-progress to project: %s", dst)
         return str(dst)
 
     training_service._save_best_in_progress = _redirected_save_best

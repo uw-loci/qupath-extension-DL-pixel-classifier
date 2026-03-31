@@ -511,10 +511,18 @@ public class SetupDLClassifier implements QuPathExtension, GitHubProject {
                         "Includes disk usage and links to open each folder.");
         whereFilesOption.setOnAction(e -> showWhereAreMyFiles());
 
+        // Clean Up Storage
+        MenuItem cleanUpOption = new MenuItem("Clean Up Storage...");
+        TooltipHelper.installOnMenuItem(cleanUpOption,
+                "Remove orphaned files from previous training sessions:\n" +
+                        "temp directories, old checkpoints, and model leftovers.\n" +
+                        "Shows what will be deleted before proceeding.");
+        cleanUpOption.setOnAction(e -> cleanUpStorage());
+
         utilitiesMenu.getItems().addAll(pythonConsoleOption, whereFilesOption,
                 systemInfoOption, new SeparatorMenuItem(),
                 freeGpuOption, maePretrainOption, recoverCheckpointOption,
-                overlaySettingsOption,
+                overlaySettingsOption, cleanUpOption,
                 new SeparatorMenuItem(), rebuildItem);
 
         // === BUILD FINAL MENU ===
@@ -871,6 +879,181 @@ public class SetupDLClassifier implements QuPathExtension, GitHubProject {
             return (int) stream.filter(Files::isDirectory).count();
         } catch (IOException e) {
             return 0;
+        }
+    }
+
+    /**
+     * Interactive cleanup utility: scans for orphaned files and shows the
+     * user what will be deleted before proceeding.
+     */
+    private void cleanUpStorage() {
+        try {
+            String userHome = System.getProperty("user.home");
+            Path modelsDir = Path.of(userHome, ".dlclassifier", "models");
+            Path checkpointsDir = Path.of(userHome, ".dlclassifier", "checkpoints");
+            Path tempDir = Path.of(System.getProperty("java.io.tmpdir"));
+
+            StringBuilder report = new StringBuilder();
+            long totalBytes = 0;
+            int totalItems = 0;
+
+            // 1. Orphaned models in ~/.dlclassifier/models/
+            if (Files.isDirectory(modelsDir)) {
+                try (var entries = Files.list(modelsDir)) {
+                    var orphans = entries.filter(Files::isDirectory).toList();
+                    if (!orphans.isEmpty()) {
+                        long size = orphans.stream().mapToLong(this::dirSize).sum();
+                        report.append(String.format(
+                                "Orphaned model directories: %d (%.1f MB)\n  %s\n\n",
+                                orphans.size(), size / (1024.0 * 1024.0), modelsDir));
+                        totalBytes += size;
+                        totalItems += orphans.size();
+                    }
+                }
+            }
+
+            // 2. Old checkpoints in ~/.dlclassifier/checkpoints/
+            if (Files.isDirectory(checkpointsDir)) {
+                try (var entries = Files.list(checkpointsDir)) {
+                    var files = entries.filter(p -> {
+                        String name = p.getFileName().toString();
+                        return name.endsWith(".pt") || name.endsWith(".json");
+                    }).toList();
+                    if (!files.isEmpty()) {
+                        long size = files.stream().mapToLong(p -> {
+                            try { return Files.size(p); }
+                            catch (IOException e) { return 0; }
+                        }).sum();
+                        report.append(String.format(
+                                "Old checkpoint files: %d (%.1f MB)\n  %s\n\n",
+                                files.size(), size / (1024.0 * 1024.0), checkpointsDir));
+                        totalBytes += size;
+                        totalItems += files.size();
+                    }
+                }
+            }
+
+            // 3. Orphaned temp directories (not active, any age)
+            if (Files.isDirectory(tempDir)) {
+                try (var entries = Files.list(tempDir)) {
+                    var orphans = entries.filter(p -> {
+                        String name = p.getFileName().toString();
+                        return (name.startsWith("dl-training")
+                                || name.startsWith("dl-pause")
+                                || name.startsWith("dl-overlay")
+                                || name.startsWith("dl-pixel-inference")
+                                || name.startsWith("dl-rendered-overlay")
+                                || name.startsWith("dl-classifier-import"))
+                                && !Files.exists(p.resolve(
+                                    qupath.ext.dlclassifier.controller.TrainingWorkflow.ACTIVE_MARKER));
+                    }).toList();
+                    if (!orphans.isEmpty()) {
+                        long size = orphans.stream().mapToLong(this::dirSize).sum();
+                        report.append(String.format(
+                                "Orphaned temp directories: %d (%.1f GB)\n  %s\n\n",
+                                orphans.size(), size / (1024.0 * 1024.0 * 1024.0), tempDir));
+                        totalBytes += size;
+                        totalItems += orphans.size();
+                    }
+                }
+            }
+
+            if (totalItems == 0) {
+                Dialogs.showInfoNotification(EXTENSION_NAME, "No orphaned files found. Storage is clean.");
+                return;
+            }
+
+            report.insert(0, String.format(
+                    "Found %d items totaling %.1f GB that can be cleaned up:\n\n",
+                    totalItems, totalBytes / (1024.0 * 1024.0 * 1024.0)));
+            report.append("Delete all of the above?");
+
+            boolean proceed = Dialogs.showConfirmDialog("Clean Up Storage", report.toString());
+            if (!proceed) return;
+
+            long deletedBytes = 0;
+            int deletedItems = 0;
+
+            // Delete orphaned models
+            if (Files.isDirectory(modelsDir)) {
+                try (var entries = Files.list(modelsDir)) {
+                    for (Path orphan : entries.filter(Files::isDirectory).toList()) {
+                        long size = dirSize(orphan);
+                        deleteDirectory(orphan);
+                        deletedBytes += size;
+                        deletedItems++;
+                    }
+                }
+            }
+
+            // Delete old checkpoints
+            if (Files.isDirectory(checkpointsDir)) {
+                try (var entries = Files.list(checkpointsDir)) {
+                    for (Path file : entries.toList()) {
+                        long size = Files.size(file);
+                        Files.deleteIfExists(file);
+                        deletedBytes += size;
+                        deletedItems++;
+                    }
+                }
+            }
+
+            // Delete orphaned temp dirs
+            if (Files.isDirectory(tempDir)) {
+                try (var entries = Files.list(tempDir)) {
+                    for (Path orphan : entries.filter(p -> {
+                        String name = p.getFileName().toString();
+                        return (name.startsWith("dl-training")
+                                || name.startsWith("dl-pause")
+                                || name.startsWith("dl-overlay")
+                                || name.startsWith("dl-pixel-inference")
+                                || name.startsWith("dl-rendered-overlay")
+                                || name.startsWith("dl-classifier-import"))
+                                && !Files.exists(p.resolve(
+                                    qupath.ext.dlclassifier.controller.TrainingWorkflow.ACTIVE_MARKER));
+                    }).toList()) {
+                        long size = dirSize(orphan);
+                        deleteDirectory(orphan);
+                        deletedBytes += size;
+                        deletedItems++;
+                    }
+                }
+            }
+
+            Dialogs.showInfoNotification(EXTENSION_NAME,
+                    String.format("Cleaned up %d items, freed %.1f GB",
+                            deletedItems, deletedBytes / (1024.0 * 1024.0 * 1024.0)));
+            logger.info("Storage cleanup: deleted {} items, freed {:.0f} MB",
+                    deletedItems, deletedBytes / (1024.0 * 1024.0));
+
+        } catch (Exception e) {
+            logger.error("Storage cleanup failed", e);
+            Dialogs.showErrorMessage("Clean Up Storage", "Cleanup failed: " + e.getMessage());
+        }
+    }
+
+    private long dirSize(Path dir) {
+        try (var walk = Files.walk(dir)) {
+            return walk.filter(Files::isRegularFile)
+                    .mapToLong(p -> {
+                        try { return Files.size(p); }
+                        catch (IOException e) { return 0; }
+                    })
+                    .sum();
+        } catch (IOException e) {
+            return 0;
+        }
+    }
+
+    private void deleteDirectory(Path dir) {
+        try (var walk = Files.walk(dir)) {
+            walk.sorted(java.util.Comparator.reverseOrder())
+                    .forEach(p -> {
+                        try { Files.deleteIfExists(p); }
+                        catch (IOException ignored) {}
+                    });
+        } catch (IOException e) {
+            logger.debug("Could not delete directory: {}", dir, e);
         }
     }
 
