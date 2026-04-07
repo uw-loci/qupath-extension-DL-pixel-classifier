@@ -77,8 +77,16 @@ public class DLPixelClassifier implements PixelClassifier {
     /** Set to true when the overlay is being removed, to suppress error counting on interrupted threads. */
     private volatile boolean shuttingDown = false;
 
-    /** The inputPadding value used by QuPath for tile overlap, cached for blending calculations. */
+    /** The inputPadding value used by QuPath for tile overlap. */
     private final int inputPadding;
+
+    /**
+     * Extra padding added beyond tileSize for context-scale models.
+     * The model processes a tile larger than tileSize, and we crop the center.
+     * This pushes context tile edge effects away from the displayed region.
+     * Zero for single-scale models.
+     */
+    private final int contextInferencePad;
 
     /** Probability map cache and tile boundary blending. */
     private final TileBlendCache blendCache;
@@ -109,6 +117,20 @@ public class DLPixelClassifier implements PixelClassifier {
         this.contextScale = metadata.getContextScale();
         this.inputPadding = InferenceConfig.computeEffectivePadding(
                 inferenceConfig.getTileSize(), inferenceConfig.getOverlap());
+
+        // For context-scale models, add extra padding so the model processes
+        // a tile larger than tileSize. This pushes context tile edge effects
+        // away from the displayed stride region. The UNet architecture is
+        // fully convolutional and handles larger input (must be divisible by 32).
+        // For 4x context with 512px tile: extra 128px/side -> 768px model input.
+        if (contextScale > 1) {
+            int extra = inferenceConfig.getTileSize() / 4;  // 128px for 512px tile
+            // Round to multiple of 32 for encoder compatibility
+            extra = (extra / 32) * 32;
+            this.contextInferencePad = extra;
+        } else {
+            this.contextInferencePad = 0;
+        }
 
         // CENTER_CROP: no blending at tile boundaries. Each pixel's
         // classification comes solely from the tile where it was closest to
@@ -154,10 +176,13 @@ public class DLPixelClassifier implements PixelClassifier {
         int stride = tileSize - 2 * inputPadding;
         long estTiles = (long) Math.ceil((imgW / downsample) / (double) stride)
                 * (long) Math.ceil((imgH / downsample) / (double) stride);
+        int modelInputSize = tileSize + 2 * contextInferencePad;
         logger.info("DL overlay created: model={}, image={}x{}, downsample={}, "
-                + "tileSize={}, padding={}, blendMode={}, est. tiles={}",
+                + "tileSize={}, padding={}, contextPad={}, modelInput={}px, "
+                + "blendMode={}, est. tiles={}",
                 metadata.getName(), imgW, imgH, downsample,
-                tileSize, inputPadding, inferenceConfig.getBlendMode(), estTiles);
+                tileSize, inputPadding, contextInferencePad, modelInputSize,
+                inferenceConfig.getBlendMode(), estTiles);
         if (estTiles > 500) {
             logger.warn("Large tile count ({}) -- overlay will take a long time to fill. "
                     + "Zoom into a smaller region for faster results.", estTiles);
@@ -200,7 +225,7 @@ public class DLPixelClassifier implements PixelClassifier {
         // or hang indefinitely. Return empty and warn once.
         int requestPixelsW = (int) (request.getWidth() / request.getDownsample());
         int requestPixelsH = (int) (request.getHeight() / request.getDownsample());
-        int maxTilePixels = inferenceConfig.getTileSize() + 2 * inputPadding;
+        int maxTilePixels = inferenceConfig.getTileSize() + 2 * (inputPadding + contextInferencePad);
         if (requestPixelsW > maxTilePixels * 2 || requestPixelsH > maxTilePixels * 2) {
             if (oversizedWarned.compareAndSet(false, true)) {
                 logger.warn("Rejecting oversized tile request: {}x{} pixels "
@@ -743,14 +768,15 @@ public class DLPixelClassifier implements PixelClassifier {
     }
 
     /**
-     * Expands a stride-sized RegionRequest by inputPadding on each side,
-     * clipped to image bounds. QuPath sends stride-sized tiles without
-     * surrounding context; this provides the model with the full receptive
-     * field it was trained with.
+     * Expands a stride-sized RegionRequest by inputPadding + contextInferencePad
+     * on each side, clipped to image bounds. QuPath sends stride-sized tiles
+     * without surrounding context; this provides the model with the full
+     * receptive field plus extra margin for context-scale edge stability.
      */
     private RegionRequest expandRequest(RegionRequest request, ImageServer<?> server) {
         double ds = request.getDownsample();
-        int padFullRes = (int) (inputPadding * ds);
+        int totalPad = inputPadding + contextInferencePad;
+        int padFullRes = (int) (totalPad * ds);
         int expX = Math.max(0, request.getX() - padFullRes);
         int expY = Math.max(0, request.getY() - padFullRes);
         int expRight = Math.min(server.getWidth(),
@@ -781,9 +807,11 @@ public class DLPixelClassifier implements PixelClassifier {
         }
 
         // Compute how much padding was actually added on the left/top
-        // (less at image edges due to clipping)
+        // (less at image edges due to clipping). Includes both inputPadding
+        // and contextInferencePad.
         double ds = request.getDownsample();
-        int padFullRes = (int) (inputPadding * ds);
+        int totalPad = inputPadding + contextInferencePad;
+        int padFullRes = (int) (totalPad * ds);
         int expandedX = Math.max(0, request.getX() - padFullRes);
         int expandedY = Math.max(0, request.getY() - padFullRes);
         int offsetX = (int) ((request.getX() - expandedX) / ds);
