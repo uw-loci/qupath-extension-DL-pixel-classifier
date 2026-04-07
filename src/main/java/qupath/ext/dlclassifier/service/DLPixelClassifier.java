@@ -110,12 +110,12 @@ public class DLPixelClassifier implements PixelClassifier {
         this.inputPadding = InferenceConfig.computeEffectivePadding(
                 inferenceConfig.getTileSize(), inferenceConfig.getOverlap());
 
-        // GAUSSIAN blending: smooth cosine-bell weighted average at tile
-        // boundaries. Adjacent tiles' probability maps are averaged with
-        // weights that taper from 1.0 at center to 0.0 at edge, producing
-        // smooth transitions. This eliminates hard tile boundary artifacts.
-        InferenceConfig.BlendMode overlayBlendMode = InferenceConfig.BlendMode.GAUSSIAN;
-        int overlayMaxBlendDist = -1;  // Use full inputPadding for blend zone
+        // CENTER_CROP: no blending at tile boundaries. Each pixel's
+        // classification comes solely from the tile where it was closest to
+        // center. Combined with large overlap (padding), this ensures each
+        // pixel is far from any tile edge where predictions degrade.
+        InferenceConfig.BlendMode overlayBlendMode = InferenceConfig.BlendMode.CENTER_CROP;
+        int overlayMaxBlendDist = -1;
 
         this.blendCache = new TileBlendCache(100, inputPadding,
                 overlayBlendMode, overlayMaxBlendDist,
@@ -250,12 +250,8 @@ public class DLPixelClassifier implements PixelClassifier {
             int cachedW = cachedProbMap[0].length;
             logger.debug("Cache hit at ({}, {}), dims={}x{}, cache size={}",
                     request.getX(), request.getY(), cachedW, cachedH, blendCache.size());
-            // Blend full-tile prob map with neighbors, then crop to stride for display
-            float[][][] blended = blendCache.blendWithNeighbors(
-                    cachedProbMap, request.getX(), request.getY(), cachedW, cachedH);
-            float[][][] strideCrop = cropToStride(blended, request);
             consecutiveErrors.set(0);
-            return createClassIndexImage(strideCrop, strideCrop[0].length, strideCrop.length);
+            return createClassIndexImage(cachedProbMap, cachedW, cachedH);
         }
 
         ImageServer<BufferedImage> server = imageData.getServer();
@@ -402,21 +398,14 @@ public class DLPixelClassifier implements PixelClassifier {
             }
 
             // ProbMap matches expanded image dimensions (Python crops any
-            // reflection padding back to the expanded size).
-            // Cache the FULL expanded prob map (not cropped to stride) so
-            // adjacent tiles have overlapping regions for blending.
-            blendCache.cache(request.getX(), request.getY(), probMap);
-
-            // Blend full-tile prob map with cached neighbors, then crop to
-            // stride for display. On first render, some neighbors won't be
-            // cached yet -- the scheduled refresh re-renders with full blending.
-            int fullW = probMap[0].length;
-            int fullH = probMap.length;
-            float[][][] blended = blendCache.blendWithNeighbors(
-                    probMap, request.getX(), request.getY(), fullW, fullH);
-            float[][][] strideProbMap = cropToStride(blended, request);
+            // reflection padding back to the expanded size). Crop to the
+            // stride region (center of expanded tile) for display.
+            float[][][] strideProbMap = cropToStride(probMap, request);
             int strideW = strideProbMap[0].length;
             int strideH = strideProbMap.length;
+
+            // Cache stride-sized probMap for fast path on repaint
+            blendCache.cache(request.getX(), request.getY(), strideProbMap);
 
             // Success -- reset error counter and log progress
             consecutiveErrors.set(0);
