@@ -329,10 +329,22 @@ public class DLPixelClassifier implements PixelClassifier {
         byte[] rawBytes;
         int numChannels;
         if (contextScale > 1) {
-            // Context tile must be sized from the EXPANDED request (= model input),
-            // not the stride request. The context area = expanded.getWidth() * contextScale.
-            // Using the stride request would under-size the context when padding > 0.
-            BufferedImage contextImage = readContextTile(server, expanded,
+            // Context tile must cover tileSize * downsample * contextScale full-res
+            // pixels -- matching training exactly. Using the stride request (too small)
+            // or the expanded request (too big with overscan) gives wrong context area.
+            // Create a synthetic request centered on the expanded tile with dimensions
+            // = tileSize * downsample.
+            double ds = expanded.getDownsample();
+            int tileSizeFullRes = (int) (inferenceConfig.getTileSize() * ds);
+            int centerX = expanded.getX() + expanded.getWidth() / 2;
+            int centerY = expanded.getY() + expanded.getHeight() / 2;
+            RegionRequest contextSizingRequest = RegionRequest.createInstance(
+                    server.getPath(), ds,
+                    centerX - tileSizeFullRes / 2,
+                    centerY - tileSizeFullRes / 2,
+                    tileSizeFullRes, tileSizeFullRes,
+                    expanded.getZ(), expanded.getT());
+            BufferedImage contextImage = readContextTile(server, contextSizingRequest,
                     tileImage.getWidth(), tileImage.getHeight());
             byte[] contextBytes;
             if ("uint8".equals(dtype)) {
@@ -561,19 +573,9 @@ public class DLPixelClassifier implements PixelClassifier {
         int cx, cy, readW, readH;
 
         if (imgW >= contextW && imgH >= contextH) {
-            // Tier 1/2: Image large enough -- clamp position to keep context within bounds.
-            // Snap context center to a coarse grid so adjacent detail tiles share
-            // identical (or nearly identical) context views. This eliminates tile
-            // boundary artifacts caused by small context shifts between tiles.
-            // Grid spacing = detailW (one training tile width in full-res coords).
-            // Groups of (detailW / stride) tiles share the same context center.
+            // Tier 1/2: Image large enough -- clamp position to keep context within bounds
             int centerX = detailX + detailW / 2;
             int centerY = detailY + detailH / 2;
-            int gridSpacing = detailW;  // snap to training-tile-sized grid
-            if (gridSpacing > 0) {
-                centerX = Math.round((float) centerX / gridSpacing) * gridSpacing;
-                centerY = Math.round((float) centerY / gridSpacing) * gridSpacing;
-            }
             cx = centerX - contextW / 2;
             cy = centerY - contextH / 2;
             cx = Math.max(0, Math.min(cx, imgW - contextW));

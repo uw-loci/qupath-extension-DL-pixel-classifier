@@ -235,14 +235,12 @@ public class InferenceConfig {
      * @return effective padding per side
      */
     public static int computeEffectivePadding(int tileSize, int configOverlap) {
-        // Minimum 37.5% padding ensures each displayed pixel is at most 12.5%
-        // of tile size from the center, where model predictions are most reliable.
-        // For 512px tile: padding=192, stride=128, each pixel within 64px of center.
-        int minPadding = tileSize * 3 / 8;
+        // Minimum 25% padding ensures reasonable context at tile boundaries.
+        // For 512px tile: padding=128, stride=256.
+        int minPadding = tileSize / 4;
         int padding = Math.max(configOverlap, minPadding);
-        // No upper cap: allow users to set even higher overlap if needed.
-        // Stride = tileSize - 2*padding must remain > 0.
-        int maxPadding = (tileSize / 2) - 16;  // ensure stride >= 32
+        // Cap at 37.5% to keep stride reasonable (stride = tileSize - 2*padding).
+        int maxPadding = Math.max(64, tileSize * 3 / 8);
         return Math.max(64, Math.min(padding, maxPadding));
     }
 
