@@ -110,14 +110,12 @@ public class DLPixelClassifier implements PixelClassifier {
         this.inputPadding = InferenceConfig.computeEffectivePadding(
                 inferenceConfig.getTileSize(), inferenceConfig.getOverlap());
 
-        // Use CENTER_CROP for overlays: each pixel's classification comes from the
-        // tile where it was closest to center, with no averaging at boundaries.
-        // This avoids artifacts where adjacent tiles disagree at their edges
-        // (e.g., context-scale models seeing different surrounding tissue).
-        // GAUSSIAN blending averages predictions but can produce visible seams
-        // when edge predictions fundamentally differ from center predictions.
-        InferenceConfig.BlendMode overlayBlendMode = InferenceConfig.BlendMode.CENTER_CROP;
-        int overlayMaxBlendDist = -1;
+        // GAUSSIAN blending: smooth cosine-bell weighted average at tile
+        // boundaries. Adjacent tiles' probability maps are averaged with
+        // weights that taper from 1.0 at center to 0.0 at edge, producing
+        // smooth transitions. This eliminates hard tile boundary artifacts.
+        InferenceConfig.BlendMode overlayBlendMode = InferenceConfig.BlendMode.GAUSSIAN;
+        int overlayMaxBlendDist = -1;  // Use full inputPadding for blend zone
 
         this.blendCache = new TileBlendCache(100, inputPadding,
                 overlayBlendMode, overlayMaxBlendDist,
@@ -244,17 +242,20 @@ public class DLPixelClassifier implements PixelClassifier {
         currentServerPath = serverPath;
 
         // Cache-hit fast path: if this tile's prob map is already cached,
-        // skip inference entirely and just argmax from cache.
-        // ProbMaps are stride-sized (reflection padding is cropped on Python side),
-        // so there is no overlap between adjacent tiles and no blending is possible.
+        // skip inference entirely. Blend with neighbors (on repaint, more
+        // neighbors may be cached than on first render, improving boundaries).
         float[][][] cachedProbMap = blendCache.getIfCached(request.getX(), request.getY());
         if (cachedProbMap != null) {
             int cachedH = cachedProbMap.length;
             int cachedW = cachedProbMap[0].length;
             logger.debug("Cache hit at ({}, {}), dims={}x{}, cache size={}",
                     request.getX(), request.getY(), cachedW, cachedH, blendCache.size());
+            // Blend full-tile prob map with neighbors, then crop to stride for display
+            float[][][] blended = blendCache.blendWithNeighbors(
+                    cachedProbMap, request.getX(), request.getY(), cachedW, cachedH);
+            float[][][] strideCrop = cropToStride(blended, request);
             consecutiveErrors.set(0);
-            return createClassIndexImage(cachedProbMap, cachedW, cachedH);
+            return createClassIndexImage(strideCrop, strideCrop[0].length, strideCrop.length);
         }
 
         ImageServer<BufferedImage> server = imageData.getServer();
@@ -401,14 +402,21 @@ public class DLPixelClassifier implements PixelClassifier {
             }
 
             // ProbMap matches expanded image dimensions (Python crops any
-            // reflection padding back to the expanded size). Crop to the
-            // stride region that QuPath expects.
-            float[][][] strideProbMap = cropToStride(probMap, request);
+            // reflection padding back to the expanded size).
+            // Cache the FULL expanded prob map (not cropped to stride) so
+            // adjacent tiles have overlapping regions for blending.
+            blendCache.cache(request.getX(), request.getY(), probMap);
+
+            // Blend full-tile prob map with cached neighbors, then crop to
+            // stride for display. On first render, some neighbors won't be
+            // cached yet -- the scheduled refresh re-renders with full blending.
+            int fullW = probMap[0].length;
+            int fullH = probMap.length;
+            float[][][] blended = blendCache.blendWithNeighbors(
+                    probMap, request.getX(), request.getY(), fullW, fullH);
+            float[][][] strideProbMap = cropToStride(blended, request);
             int strideW = strideProbMap[0].length;
             int strideH = strideProbMap.length;
-
-            // Cache stride-sized probMap for fast path on repaint
-            blendCache.cache(request.getX(), request.getY(), strideProbMap);
 
             // Success -- reset error counter and log progress
             consecutiveErrors.set(0);
