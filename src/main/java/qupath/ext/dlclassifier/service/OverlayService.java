@@ -190,11 +190,13 @@ public class OverlayService {
         int tileSize = selectedMetadata.getInputWidth();
         double smoothingSigma = DLClassifierPreferences.getOverlaySmoothing();
         double overlapPercent = DLClassifierPreferences.getTileOverlapPercent();
+        boolean multiPass = DLClassifierPreferences.isMultiPassAveraging();
         InferenceConfig config = InferenceConfig.builder()
                 .tileSize(tileSize)
                 .overlapPercent(overlapPercent)
                 .blendMode(InferenceConfig.BlendMode.GAUSSIAN)
                 .overlaySmoothingSigma(smoothingSigma)
+                .multiPassAveraging(multiPass)
                 .outputType(InferenceConfig.OutputType.OVERLAY)
                 .build();
 
@@ -224,11 +226,13 @@ public class OverlayService {
         int tileSize = currentMetadata.getInputWidth();
         double smoothingSigma = DLClassifierPreferences.getOverlaySmoothing();
         double overlapPercent = DLClassifierPreferences.getTileOverlapPercent();
+        boolean multiPass = DLClassifierPreferences.isMultiPassAveraging();
         InferenceConfig newConfig = InferenceConfig.builder()
                 .tileSize(tileSize)
                 .overlapPercent(overlapPercent)
                 .blendMode(InferenceConfig.BlendMode.GAUSSIAN)
                 .overlaySmoothingSigma(smoothingSigma)
+                .multiPassAveraging(multiPass)
                 .outputType(InferenceConfig.OutputType.OVERLAY)
                 .build();
 

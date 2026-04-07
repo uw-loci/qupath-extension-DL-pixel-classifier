@@ -902,6 +902,7 @@ public class InferenceDialog {
                     .smoothing(smoothingSpinner.getValue())
                     .useGPU(useGPUCheck.isSelected())
                     .useTTA(useTTACheck.isSelected())
+                    .multiPassAveraging(DLClassifierPreferences.isMultiPassAveraging())
                     .overlaySmoothingSigma(DLClassifierPreferences.getOverlaySmoothing())
                     .build();
 

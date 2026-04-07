@@ -444,6 +444,49 @@ public class DLPixelClassifier implements PixelClassifier {
             int strideW = strideProbMap[0].length;
             int strideH = strideProbMap.length;
 
+            // Multi-pass averaging: run inference at additional offsets and
+            // average the probability maps to eliminate tile boundary artifacts.
+            if (inferenceConfig.isMultiPassAveraging() && strideW > 0 && strideH > 0) {
+                int halfStride = Math.max(32, strideW / 2);
+                int numClasses = strideProbMap[0][0].length;
+                // Offsets: shift by half-stride in X, Y, and both (2x2 grid = 4 passes total)
+                int[][] offsets = { {halfStride, 0}, {0, halfStride}, {halfStride, halfStride} };
+                int passCount = 1;  // already have the primary pass
+                for (int[] off : offsets) {
+                    try {
+                        float[][][] extraPass = runInferenceAtOffset(
+                                request, server, channelCfg, off[0], off[1]);
+                        if (extraPass != null
+                                && extraPass.length == strideH
+                                && extraPass[0].length == strideW) {
+                            // Accumulate into strideProbMap
+                            for (int y = 0; y < strideH; y++) {
+                                for (int x = 0; x < strideW; x++) {
+                                    for (int c = 0; c < numClasses; c++) {
+                                        strideProbMap[y][x][c] += extraPass[y][x][c];
+                                    }
+                                }
+                            }
+                            passCount++;
+                        }
+                    } catch (IOException ex) {
+                        logger.debug("Multi-pass offset ({},{}) failed: {}",
+                                off[0], off[1], ex.getMessage());
+                    }
+                }
+                // Average
+                if (passCount > 1) {
+                    float invCount = 1.0f / passCount;
+                    for (int y = 0; y < strideH; y++) {
+                        for (int x = 0; x < strideW; x++) {
+                            for (int c = 0; c < numClasses; c++) {
+                                strideProbMap[y][x][c] *= invCount;
+                            }
+                        }
+                    }
+                }
+            }
+
             // Cache stride-sized probMap for fast path on repaint
             blendCache.cache(request.getX(), request.getY(), strideProbMap);
 
@@ -452,9 +495,10 @@ public class DLPixelClassifier implements PixelClassifier {
             int completed = tilesCompleted.incrementAndGet();
             if (completed <= 10 || completed % 50 == 0) {
                 logger.info("Overlay tile {} completed at ({}, {}), dims={}x{}, "
-                        + "expanded={}x{}, reflPad={}",
+                        + "expanded={}x{}, reflPad={}, passes={}",
                         completed, request.getX(), request.getY(),
-                        strideW, strideH, expandedW, expandedH, reflectionPadding);
+                        strideW, strideH, expandedW, expandedH, reflectionPadding,
+                        inferenceConfig.isMultiPassAveraging() ? 4 : 1);
             }
             return createClassIndexImage(strideProbMap, strideW, strideH);
 
@@ -777,6 +821,147 @@ public class DLPixelClassifier implements PixelClassifier {
                 .classificationLabels(labels)
                 .outputChannels(channels)
                 .build();
+    }
+
+    /**
+     * Runs a single inference pass at a shifted position and extracts the
+     * probability map for the original stride region. Used by multi-pass
+     * averaging to get predictions from different tile centers.
+     *
+     * @param originalRequest the original stride request from QuPath
+     * @param server          image server
+     * @param channelCfg      channel config with normalization stats
+     * @param offsetX         pixel offset in X (at model resolution)
+     * @param offsetY         pixel offset in Y (at model resolution)
+     * @return stride-sized probability map for the original request's region, or null on failure
+     */
+    private float[][][] runInferenceAtOffset(RegionRequest originalRequest,
+                                              ImageServer<BufferedImage> server,
+                                              ChannelConfiguration channelCfg,
+                                              int offsetX, int offsetY) throws IOException {
+        double ds = originalRequest.getDownsample();
+        int offXFullRes = (int) (offsetX * ds);
+        int offYFullRes = (int) (offsetY * ds);
+
+        // Create a shifted request
+        RegionRequest shifted = RegionRequest.createInstance(
+                server.getPath(), ds,
+                originalRequest.getX() - offXFullRes,
+                originalRequest.getY() - offYFullRes,
+                originalRequest.getWidth(), originalRequest.getHeight(),
+                originalRequest.getZ(), originalRequest.getT());
+
+        // Expand and read
+        RegionRequest expanded = expandRequest(shifted, server);
+        BufferedImage tileImage = server.readRegion(expanded);
+        if (tileImage == null) return null;
+
+        // Encode (same logic as main path)
+        String dtype;
+        byte[] detailBytes;
+        int detailChannels;
+        if (TileEncoder.isSimpleRgb(tileImage)) {
+            dtype = "uint8";
+            detailBytes = TileEncoder.encodeTileRaw(tileImage);
+            detailChannels = 3;
+        } else {
+            dtype = "float32";
+            detailBytes = TileEncoder.encodeTileRawFloat(tileImage,
+                    channelConfig.getSelectedChannels());
+            detailChannels = channelConfig.getSelectedChannels().isEmpty()
+                    ? tileImage.getRaster().getNumBands()
+                    : channelConfig.getSelectedChannels().size();
+        }
+
+        byte[] rawBytes;
+        int numChannels;
+        if (contextScale > 1) {
+            int tileSizeFullRes = (int) (inferenceConfig.getTileSize() * ds);
+            int centerX = expanded.getX() + expanded.getWidth() / 2;
+            int centerY = expanded.getY() + expanded.getHeight() / 2;
+            RegionRequest ctxReq = RegionRequest.createInstance(
+                    server.getPath(), ds,
+                    centerX - tileSizeFullRes / 2,
+                    centerY - tileSizeFullRes / 2,
+                    tileSizeFullRes, tileSizeFullRes,
+                    expanded.getZ(), expanded.getT());
+            BufferedImage contextImage = readContextTile(server, ctxReq,
+                    tileImage.getWidth(), tileImage.getHeight());
+            byte[] contextBytes;
+            if ("uint8".equals(dtype)) {
+                contextBytes = TileEncoder.encodeTileRaw(contextImage);
+            } else {
+                contextBytes = TileEncoder.encodeTileRawFloat(contextImage,
+                        channelConfig.getSelectedChannels());
+            }
+            int numPixels = tileImage.getWidth() * tileImage.getHeight();
+            int bytesPerChannel = "uint8".equals(dtype) ? 1 : Float.BYTES;
+            if (contextBytes.length != detailBytes.length) {
+                rawBytes = detailBytes;
+                numChannels = detailChannels;
+            } else {
+                rawBytes = TileEncoder.interleaveContextChannels(
+                        detailBytes, contextBytes, numPixels, detailChannels, bytesPerChannel);
+                numChannels = detailChannels * 2;
+            }
+        } else {
+            rawBytes = detailBytes;
+            numChannels = detailChannels;
+        }
+
+        String tileId = String.format("mp_%d_%d_%d_%d",
+                shifted.getX(), shifted.getY(), offsetX, offsetY);
+
+        int expandedW = tileImage.getWidth();
+        int expandedH = tileImage.getHeight();
+        int tileSize = inferenceConfig.getTileSize();
+        int reflectionPadding = (expandedW >= tileSize && expandedH >= tileSize)
+                ? 0 : inputPadding;
+
+        PixelInferenceResult result = backend.runPixelInferenceBinary(
+                modelDirPath, rawBytes, List.of(tileId),
+                tileImage.getHeight(), tileImage.getWidth(), numChannels,
+                dtype, channelCfg, inferenceConfig, sharedTempDir,
+                reflectionPadding);
+        if (result == null || result.outputPaths() == null) return null;
+
+        String outputPath = result.outputPaths().get(tileId);
+        if (outputPath == null) return null;
+
+        float[][][] probMap = ClassifierClient.readProbabilityMap(
+                Path.of(outputPath), result.numClasses(), tileImage.getHeight(), tileImage.getWidth());
+        try { Files.deleteIfExists(Path.of(outputPath)); } catch (IOException ignored) {}
+
+        // The shifted inference covers a different region than the original.
+        // Extract the pixels that correspond to the original request's stride area.
+        // The offset in the shifted prob map = original offset + shift offset.
+        int totalPad = inputPadding + contextInferencePad;
+        int padFullRes = (int) (totalPad * ds);
+        int shiftedExpX = Math.max(0, shifted.getX() - padFullRes);
+        int shiftedExpY = Math.max(0, shifted.getY() - padFullRes);
+
+        // Position of the original request within the shifted expanded tile
+        int origInShiftedX = (int) ((originalRequest.getX() - shiftedExpX) / ds);
+        int origInShiftedY = (int) ((originalRequest.getY() - shiftedExpY) / ds);
+        int strideW = (int) (originalRequest.getWidth() / ds);
+        int strideH = (int) (originalRequest.getHeight() / ds);
+
+        // Bounds check
+        if (origInShiftedX < 0 || origInShiftedY < 0
+                || origInShiftedX + strideW > probMap[0].length
+                || origInShiftedY + strideH > probMap.length) {
+            return null;  // Original region not fully covered
+        }
+
+        int nClasses = probMap[0][0].length;
+        float[][][] cropped = new float[strideH][strideW][nClasses];
+        for (int y = 0; y < strideH; y++) {
+            for (int x = 0; x < strideW; x++) {
+                System.arraycopy(probMap[y + origInShiftedY][x + origInShiftedX], 0,
+                        cropped[y][x], 0, nClasses);
+            }
+        }
+        return cropped;
     }
 
     /**

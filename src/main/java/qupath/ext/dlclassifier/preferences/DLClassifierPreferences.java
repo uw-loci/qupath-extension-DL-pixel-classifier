@@ -173,6 +173,10 @@ public final class DLClassifierPreferences {
     private static final BooleanProperty createBackup = PathPrefs.createPersistentPreference(
             "dlclassifier.createBackup", false);
 
+    // Multi-pass tile averaging for seamless inference
+    private static final BooleanProperty multiPassAveraging = PathPrefs.createPersistentPreference(
+            "dlclassifier.multiPassAveraging", false);
+
     // One-time overlay notice dismissed
     private static final BooleanProperty overlayNoticeDismissed = PathPrefs.createPersistentPreference(
             "dlclassifier.overlayNoticeDismissed", false);
@@ -848,6 +852,20 @@ public final class DLClassifierPreferences {
 
     public static IntegerProperty menuDotColorProperty() {
         return menuDotColor;
+    }
+
+    // ==================== Multi-Pass Averaging ====================
+
+    public static boolean isMultiPassAveraging() {
+        return multiPassAveraging.get();
+    }
+
+    public static void setMultiPassAveraging(boolean enabled) {
+        multiPassAveraging.set(enabled);
+    }
+
+    public static BooleanProperty multiPassAveragingProperty() {
+        return multiPassAveraging;
     }
 
     // ==================== Overlay Notice ====================

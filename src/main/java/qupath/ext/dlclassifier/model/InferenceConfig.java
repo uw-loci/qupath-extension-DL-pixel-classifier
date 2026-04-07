@@ -77,6 +77,7 @@ public class InferenceConfig {
     private final int maxTilesInMemory;
     private final boolean useGPU;
     private final boolean useTTA;
+    private final boolean multiPassAveraging;
 
     // Overlay probability smoothing
     private final double overlaySmoothingSigma;
@@ -94,6 +95,7 @@ public class InferenceConfig {
         this.maxTilesInMemory = builder.maxTilesInMemory;
         this.useGPU = builder.useGPU;
         this.useTTA = builder.useTTA;
+        this.multiPassAveraging = builder.multiPassAveraging;
         this.overlaySmoothingSigma = builder.overlaySmoothingSigma;
     }
 
@@ -157,6 +159,22 @@ public class InferenceConfig {
     }
 
     /**
+     * Checks whether multi-pass tile averaging is enabled.
+     * <p>
+     * When enabled, each tile is inferred at 4 spatial offsets (2x2 grid)
+     * and the probability maps are averaged before classification. This
+     * eliminates tile boundary artifacts by ensuring each pixel's prediction
+     * comes from multiple independent model evaluations with different context.
+     * <p>
+     * Approximately 4x slower but produces seamless results.
+     *
+     * @return true if multi-pass averaging is enabled
+     */
+    public boolean isMultiPassAveraging() {
+        return multiPassAveraging;
+    }
+
+    /**
      * Returns the Gaussian sigma for overlay probability smoothing.
      * <p>
      * When > 0, a Gaussian blur is applied to probability maps before argmax
@@ -196,6 +214,7 @@ public class InferenceConfig {
                 maxTilesInMemory == that.maxTilesInMemory &&
                 useGPU == that.useGPU &&
                 useTTA == that.useTTA &&
+                multiPassAveraging == that.multiPassAveraging &&
                 Double.compare(that.overlaySmoothingSigma, overlaySmoothingSigma) == 0 &&
                 blendMode == that.blendMode &&
                 outputType == that.outputType &&
@@ -206,13 +225,14 @@ public class InferenceConfig {
     public int hashCode() {
         return Objects.hash(tileSize, overlap, overlapPercent, blendMode, outputType, objectType,
                 minObjectSizeMicrons, holeFillingMicrons, boundarySmoothing,
-                maxTilesInMemory, useGPU, useTTA, overlaySmoothingSigma);
+                maxTilesInMemory, useGPU, useTTA, multiPassAveraging, overlaySmoothingSigma);
     }
 
     @Override
     public String toString() {
-        return String.format("InferenceConfig{tile=%d, overlap=%d (%.1f%%), output=%s, objectType=%s, blend=%s, tta=%b}",
-                tileSize, overlap, overlapPercent, outputType, objectType, blendMode, useTTA);
+        return String.format("InferenceConfig{tile=%d, overlap=%d (%.1f%%), output=%s, objectType=%s, blend=%s, tta=%b%s}",
+                tileSize, overlap, overlapPercent, outputType, objectType, blendMode, useTTA,
+                multiPassAveraging ? ", multiPass" : "");
     }
 
     /**
@@ -264,6 +284,7 @@ public class InferenceConfig {
         private int maxTilesInMemory = 50;
         private boolean useGPU = true;
         private boolean useTTA = false;
+        private boolean multiPassAveraging = false;
         private double overlaySmoothingSigma = 2.0;
 
         public Builder tileSize(int tileSize) {
@@ -383,6 +404,21 @@ public class InferenceConfig {
          */
         public Builder useTTA(boolean useTTA) {
             this.useTTA = useTTA;
+            return this;
+        }
+
+        /**
+         * Enables multi-pass tile averaging for seamless tile boundaries.
+         * <p>
+         * When enabled, each tile is inferred at 4 spatial offsets (2x2 grid)
+         * and the probability maps are averaged. This eliminates boundary
+         * artifacts at ~4x inference cost.
+         *
+         * @param enabled true to enable multi-pass averaging
+         * @return this builder
+         */
+        public Builder multiPassAveraging(boolean enabled) {
+            this.multiPassAveraging = enabled;
             return this;
         }
 

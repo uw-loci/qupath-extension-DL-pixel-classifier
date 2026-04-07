@@ -4,6 +4,7 @@ import javafx.geometry.Insets;
 import javafx.scene.control.Button;
 import javafx.scene.control.ButtonBar;
 import javafx.scene.control.ButtonType;
+import javafx.scene.control.CheckBox;
 import javafx.scene.control.Dialog;
 import javafx.scene.control.Label;
 import javafx.scene.control.Spinner;
@@ -82,10 +83,24 @@ public class OverlaySettingsDialog {
 
         row++;
 
+        // Multi-pass averaging
+        CheckBox multiPassCheck = new CheckBox("High-quality tile averaging (4x slower)");
+        multiPassCheck.setSelected(DLClassifierPreferences.isMultiPassAveraging());
+        TooltipHelper.install(multiPassCheck,
+                "Run each tile at 4 spatial offsets and average the predictions.\n" +
+                "Eliminates tile boundary artifacts by ensuring each pixel's\n" +
+                "classification comes from multiple independent model evaluations.\n\n" +
+                "Recommended for context-scale models where tile boundaries\n" +
+                "are visible. ~4x slower but produces seamless results.\n\n" +
+                "Applies to both overlay rendering and Apply Classifier.");
+        grid.add(multiPassCheck, 0, row, 2, 1);
+
+        row++;
+
         // Tile handling note
         Label tileNote = new Label(
-                "Tile boundaries use GAUSSIAN blending (cosine-bell S-curve)\n" +
-                "for artifact-free results at all zoom levels.");
+                "Tile boundaries: center-crop (each pixel from tile center).\n" +
+                "Enable multi-pass averaging for seamless results.");
         tileNote.setStyle("-fx-font-size: 11px; -fx-text-fill: #666666;");
         tileNote.setWrapText(true);
         tileNote.setMaxWidth(300);
@@ -101,15 +116,18 @@ public class OverlaySettingsDialog {
         Button applyButton = (Button) dialog.getDialogPane().lookupButton(applyType);
         applyButton.setOnAction(event -> {
             double selectedSmoothing = smoothingSpinner.getValue();
+            boolean selectedMultiPass = multiPassCheck.isSelected();
 
             // Save to preferences
             DLClassifierPreferences.setOverlaySmoothing(selectedSmoothing);
+            DLClassifierPreferences.setMultiPassAveraging(selectedMultiPass);
 
             // Rebuild overlay if one is active
             if (overlayService.hasOverlay()) {
                 boolean ok = overlayService.recreateOverlay();
                 if (ok) {
-                    logger.info("Overlay recreated: smoothing={}", selectedSmoothing);
+                    logger.info("Overlay recreated: smoothing={}, multiPass={}",
+                            selectedSmoothing, selectedMultiPass);
                 } else {
                     logger.warn("Could not recreate overlay -- " +
                             "settings saved but will apply on next overlay creation");
