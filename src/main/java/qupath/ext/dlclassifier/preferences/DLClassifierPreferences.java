@@ -97,6 +97,35 @@ public final class DLClassifierPreferences {
     private static final BooleanProperty augElasticDeform = PathPrefs.createPersistentPreference(
             "dlclassifier.augElasticDeform", false);
 
+    // ==================== Advanced augmentation strength/probability ====================
+    // Defaults match the hardcoded values in training_service.get_training_augmentation()
+    private static final DoubleProperty augPFlip = PathPrefs.createPersistentPreference(
+            "dlclassifier.augPFlip", 0.5);
+    private static final DoubleProperty augPRotate = PathPrefs.createPersistentPreference(
+            "dlclassifier.augPRotate", 0.5);
+    private static final DoubleProperty augPElastic = PathPrefs.createPersistentPreference(
+            "dlclassifier.augPElastic", 0.3);
+    private static final DoubleProperty augPColor = PathPrefs.createPersistentPreference(
+            "dlclassifier.augPColor", 0.3);
+    private static final DoubleProperty augBrightnessLimit = PathPrefs.createPersistentPreference(
+            "dlclassifier.augBrightnessLimit", 0.2);
+    private static final DoubleProperty augContrastLimit = PathPrefs.createPersistentPreference(
+            "dlclassifier.augContrastLimit", 0.2);
+    private static final IntegerProperty augGammaMin = PathPrefs.createPersistentPreference(
+            "dlclassifier.augGammaMin", 80);
+    private static final IntegerProperty augGammaMax = PathPrefs.createPersistentPreference(
+            "dlclassifier.augGammaMax", 120);
+    private static final DoubleProperty augElasticAlpha = PathPrefs.createPersistentPreference(
+            "dlclassifier.augElasticAlpha", 120.0);
+    private static final DoubleProperty augElasticSigmaRatio = PathPrefs.createPersistentPreference(
+            "dlclassifier.augElasticSigmaRatio", 0.05);
+    private static final DoubleProperty augPNoise = PathPrefs.createPersistentPreference(
+            "dlclassifier.augPNoise", 0.2);
+    private static final DoubleProperty augNoiseStdMin = PathPrefs.createPersistentPreference(
+            "dlclassifier.augNoiseStdMin", 0.04);
+    private static final DoubleProperty augNoiseStdMax = PathPrefs.createPersistentPreference(
+            "dlclassifier.augNoiseStdMax", 0.2);
+
     // Tiling/resolution settings persisted from training dialog
     private static final DoubleProperty defaultDownsample = PathPrefs.createPersistentPreference(
             "dlclassifier.defaultDownsample", 1.0);
@@ -570,6 +599,60 @@ public final class DLClassifierPreferences {
     public static BooleanProperty augElasticDeformProperty() {
         return augElasticDeform;
     }
+
+    // ==================== Advanced augmentation strength/probability ====================
+
+    public static double getAugPFlip() { return augPFlip.get(); }
+    public static void setAugPFlip(double v) { augPFlip.set(v); }
+    public static DoubleProperty augPFlipProperty() { return augPFlip; }
+
+    public static double getAugPRotate() { return augPRotate.get(); }
+    public static void setAugPRotate(double v) { augPRotate.set(v); }
+    public static DoubleProperty augPRotateProperty() { return augPRotate; }
+
+    public static double getAugPElastic() { return augPElastic.get(); }
+    public static void setAugPElastic(double v) { augPElastic.set(v); }
+    public static DoubleProperty augPElasticProperty() { return augPElastic; }
+
+    public static double getAugPColor() { return augPColor.get(); }
+    public static void setAugPColor(double v) { augPColor.set(v); }
+    public static DoubleProperty augPColorProperty() { return augPColor; }
+
+    public static double getAugBrightnessLimit() { return augBrightnessLimit.get(); }
+    public static void setAugBrightnessLimit(double v) { augBrightnessLimit.set(v); }
+    public static DoubleProperty augBrightnessLimitProperty() { return augBrightnessLimit; }
+
+    public static double getAugContrastLimit() { return augContrastLimit.get(); }
+    public static void setAugContrastLimit(double v) { augContrastLimit.set(v); }
+    public static DoubleProperty augContrastLimitProperty() { return augContrastLimit; }
+
+    public static int getAugGammaMin() { return augGammaMin.get(); }
+    public static void setAugGammaMin(int v) { augGammaMin.set(v); }
+    public static IntegerProperty augGammaMinProperty() { return augGammaMin; }
+
+    public static int getAugGammaMax() { return augGammaMax.get(); }
+    public static void setAugGammaMax(int v) { augGammaMax.set(v); }
+    public static IntegerProperty augGammaMaxProperty() { return augGammaMax; }
+
+    public static double getAugElasticAlpha() { return augElasticAlpha.get(); }
+    public static void setAugElasticAlpha(double v) { augElasticAlpha.set(v); }
+    public static DoubleProperty augElasticAlphaProperty() { return augElasticAlpha; }
+
+    public static double getAugElasticSigmaRatio() { return augElasticSigmaRatio.get(); }
+    public static void setAugElasticSigmaRatio(double v) { augElasticSigmaRatio.set(v); }
+    public static DoubleProperty augElasticSigmaRatioProperty() { return augElasticSigmaRatio; }
+
+    public static double getAugPNoise() { return augPNoise.get(); }
+    public static void setAugPNoise(double v) { augPNoise.set(v); }
+    public static DoubleProperty augPNoiseProperty() { return augPNoise; }
+
+    public static double getAugNoiseStdMin() { return augNoiseStdMin.get(); }
+    public static void setAugNoiseStdMin(double v) { augNoiseStdMin.set(v); }
+    public static DoubleProperty augNoiseStdMinProperty() { return augNoiseStdMin; }
+
+    public static double getAugNoiseStdMax() { return augNoiseStdMax.get(); }
+    public static void setAugNoiseStdMax(double v) { augNoiseStdMax.set(v); }
+    public static DoubleProperty augNoiseStdMaxProperty() { return augNoiseStdMax; }
 
     // ==================== Tiling/Resolution Settings ====================
 

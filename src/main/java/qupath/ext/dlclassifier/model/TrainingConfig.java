@@ -34,6 +34,12 @@ public class TrainingConfig {
     private final double validationSplit;
     private final Map<String, Boolean> augmentationConfig;
 
+    // Advanced augmentation strength/probability parameters (optional; Python fills defaults)
+    // Keys: p_flip, p_rotate, p_elastic, p_color, brightness_limit, contrast_limit,
+    // gamma_min, gamma_max, elastic_alpha, elastic_sigma_ratio,
+    // p_noise, noise_std_min, noise_std_max
+    private final Map<String, Object> augmentationParams;
+
     // Transfer learning
     private final boolean usePretrainedWeights;
     private final int freezeEncoderLayers;
@@ -110,6 +116,7 @@ public class TrainingConfig {
         this.downsample = builder.downsample;
         this.validationSplit = builder.validationSplit;
         this.augmentationConfig = Collections.unmodifiableMap(new LinkedHashMap<>(builder.augmentationConfig));
+        this.augmentationParams = Collections.unmodifiableMap(new LinkedHashMap<>(builder.augmentationParams));
         this.usePretrainedWeights = builder.usePretrainedWeights;
         this.freezeEncoderLayers = builder.freezeEncoderLayers;
         this.frozenLayers = Collections.unmodifiableList(new ArrayList<>(builder.frozenLayers));
@@ -192,6 +199,18 @@ public class TrainingConfig {
      */
     public Map<String, Boolean> getAugmentationConfig() {
         return augmentationConfig;
+    }
+
+    /**
+     * Gets the advanced augmentation strength/probability parameters.
+     * <p>
+     * Values are set from the AdvancedAugmentationDialog. Missing keys
+     * fall back to hardcoded defaults in the Python training_service.
+     *
+     * @return map of parameter name to value (never null, may be empty)
+     */
+    public Map<String, Object> getAugmentationParams() {
+        return augmentationParams;
     }
 
     /**
@@ -596,6 +615,7 @@ public class TrainingConfig {
                 Objects.equals(modelType, that.modelType) &&
                 Objects.equals(backbone, that.backbone) &&
                 Objects.equals(augmentationConfig, that.augmentationConfig) &&
+                Objects.equals(augmentationParams, that.augmentationParams) &&
                 Objects.equals(frozenLayers, that.frozenLayers) &&
                 Objects.equals(classWeightMultipliers, that.classWeightMultipliers) &&
                 Objects.equals(schedulerType, that.schedulerType) &&
@@ -615,6 +635,7 @@ public class TrainingConfig {
     public int hashCode() {
         return Objects.hash(modelType, backbone, epochs, batchSize, learningRate,
                 weightDecay, tileSize, overlap, downsample, validationSplit, augmentationConfig,
+                augmentationParams,
                 usePretrainedWeights, freezeEncoderLayers, frozenLayers, lineStrokeWidth,
                 classWeightMultipliers, contextScale, schedulerType, lossFunction,
                 focalGamma, ohemHardRatio,
@@ -651,6 +672,7 @@ public class TrainingConfig {
         private double downsample = 1.0;
         private double validationSplit = 0.2;
         private Map<String, Boolean> augmentationConfig = new LinkedHashMap<>();
+        private Map<String, Object> augmentationParams = new LinkedHashMap<>();
         private boolean usePretrainedWeights = true;
         private int freezeEncoderLayers = 0;
         private List<String> frozenLayers = new ArrayList<>();
@@ -702,6 +724,7 @@ public class TrainingConfig {
             this.downsample = config.downsample;
             this.validationSplit = config.validationSplit;
             this.augmentationConfig = new LinkedHashMap<>(config.augmentationConfig);
+            this.augmentationParams = new LinkedHashMap<>(config.augmentationParams);
             this.usePretrainedWeights = config.usePretrainedWeights;
             this.freezeEncoderLayers = config.freezeEncoderLayers;
             this.frozenLayers = new ArrayList<>(config.frozenLayers);
@@ -799,6 +822,21 @@ public class TrainingConfig {
          */
         public Builder augmentation(Map<String, Boolean> augmentationConfig) {
             this.augmentationConfig = new LinkedHashMap<>(augmentationConfig);
+            return this;
+        }
+
+        /**
+         * Sets advanced augmentation strength/probability parameters.
+         * <p>
+         * Keys: p_flip, p_rotate, p_elastic, p_color, brightness_limit,
+         * contrast_limit, gamma_min, gamma_max, elastic_alpha,
+         * elastic_sigma_ratio, p_noise, noise_std_min, noise_std_max.
+         * Missing keys fall back to Python-side defaults.
+         *
+         * @param params map of parameter name to value
+         */
+        public Builder augmentationParams(Map<String, Object> params) {
+            this.augmentationParams = new LinkedHashMap<>(params);
             return this;
         }
 

@@ -203,6 +203,21 @@ public class ScriptGenerator {
             appendLine(sb, "        ])");
         }
 
+        // Advanced augmentation strength/probability parameters
+        Map<String, Object> augParams = config.getAugmentationParams();
+        if (augParams != null && !augParams.isEmpty()) {
+            appendLine(sb, "        .augmentationParams([");
+            int i = 0;
+            for (Map.Entry<String, Object> entry : augParams.entrySet()) {
+                String comma = (i < augParams.size() - 1) ? "," : "";
+                Object v = entry.getValue();
+                String rendered = (v instanceof Number) ? v.toString() : quote(String.valueOf(v));
+                appendLine(sb, "            " + quote(entry.getKey()) + ": " + rendered + comma);
+                i++;
+            }
+            appendLine(sb, "        ])");
+        }
+
         // Frozen layers
         List<String> frozenLayers = config.getFrozenLayers();
         if (frozenLayers != null && !frozenLayers.isEmpty()) {

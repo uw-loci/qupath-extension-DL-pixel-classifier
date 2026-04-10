@@ -230,13 +230,49 @@ public class ApposeClassifierBackend implements ClassifierBackend {
         trainingParams.put("weight_decay", trainingConfig.getWeightDecay());
         trainingParams.put("validation_split", trainingConfig.getValidationSplit());
         trainingParams.put("augmentation", trainingConfig.isAugmentation());
-        // Send full augmentation config dict to Python (not just a boolean)
+        // Send full augmentation config dict to Python (not just a boolean).
+        // Advanced strength/probability values come from trainingConfig.getAugmentationParams()
+        // (populated from preferences via AdvancedAugmentationDialog). Toggles zero out the
+        // corresponding probability when a whole category is disabled.
         Map<String, Object> augConfig = new HashMap<>();
         Map<String, Boolean> toggles = trainingConfig.getAugmentationConfig();
-        augConfig.put("p_flip", toggles.getOrDefault("flip_horizontal", false)
-                || toggles.getOrDefault("flip_vertical", false) ? 0.5 : 0.0);
-        augConfig.put("p_rotate", toggles.getOrDefault("rotation_90", false) ? 0.5 : 0.0);
-        augConfig.put("p_elastic", toggles.getOrDefault("elastic_deformation", false) ? 0.3 : 0.0);
+        Map<String, Object> params = trainingConfig.getAugmentationParams();
+
+        // Defaults match training_service.get_training_augmentation() hardcoded values
+        double userPFlip = toDouble(params.get("p_flip"), 0.5);
+        double userPRotate = toDouble(params.get("p_rotate"), 0.5);
+        double userPElastic = toDouble(params.get("p_elastic"), 0.3);
+
+        boolean flipOn = toggles.getOrDefault("flip_horizontal", false)
+                || toggles.getOrDefault("flip_vertical", false);
+        boolean rotateOn = toggles.getOrDefault("rotation_90", false);
+        boolean elasticOn = toggles.getOrDefault("elastic_deformation", false);
+
+        augConfig.put("p_flip", flipOn ? userPFlip : 0.0);
+        augConfig.put("p_rotate", rotateOn ? userPRotate : 0.0);
+        augConfig.put("p_elastic", elasticOn ? userPElastic : 0.0);
+
+        // Forward all remaining strength/probability params verbatim; Python fills any missing
+        if (params.containsKey("p_color")) augConfig.put("p_color", toDouble(params.get("p_color"), 0.3));
+        if (params.containsKey("brightness_limit"))
+            augConfig.put("brightness_limit", toDouble(params.get("brightness_limit"), 0.2));
+        if (params.containsKey("contrast_limit"))
+            augConfig.put("contrast_limit", toDouble(params.get("contrast_limit"), 0.2));
+        if (params.containsKey("gamma_min"))
+            augConfig.put("gamma_min", toInt(params.get("gamma_min"), 80));
+        if (params.containsKey("gamma_max"))
+            augConfig.put("gamma_max", toInt(params.get("gamma_max"), 120));
+        if (params.containsKey("elastic_alpha"))
+            augConfig.put("elastic_alpha", toDouble(params.get("elastic_alpha"), 120.0));
+        if (params.containsKey("elastic_sigma_ratio"))
+            augConfig.put("elastic_sigma_ratio", toDouble(params.get("elastic_sigma_ratio"), 0.05));
+        if (params.containsKey("p_noise"))
+            augConfig.put("p_noise", toDouble(params.get("p_noise"), 0.2));
+        if (params.containsKey("noise_std_min"))
+            augConfig.put("noise_std_min", toDouble(params.get("noise_std_min"), 0.04));
+        if (params.containsKey("noise_std_max"))
+            augConfig.put("noise_std_max", toDouble(params.get("noise_std_max"), 0.2));
+
         augConfig.put("intensity_mode", trainingConfig.getIntensityAugMode());
         trainingParams.put("augmentation_config", augConfig);
         trainingParams.put("scheduler", trainingConfig.getSchedulerType());
@@ -1394,5 +1430,23 @@ public class ApposeClassifierBackend implements ClassifierBackend {
             }
         }
         return result;
+    }
+
+    /** Coerces an Object (Number, String, or null) to a double with fallback. */
+    private static double toDouble(Object value, double fallback) {
+        if (value instanceof Number n) return n.doubleValue();
+        if (value instanceof String s) {
+            try { return Double.parseDouble(s); } catch (NumberFormatException ignored) {}
+        }
+        return fallback;
+    }
+
+    /** Coerces an Object (Number, String, or null) to an int with fallback. */
+    private static int toInt(Object value, int fallback) {
+        if (value instanceof Number n) return n.intValue();
+        if (value instanceof String s) {
+            try { return Integer.parseInt(s); } catch (NumberFormatException ignored) {}
+        }
+        return fallback;
     }
 }

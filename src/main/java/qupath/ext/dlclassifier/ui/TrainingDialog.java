@@ -1733,6 +1733,7 @@ public class TrainingDialog {
                     .downsample(parseDownsample(downsampleCombo.getValue()))
                     .contextScale(parseContextScale(contextScaleCombo.getValue()))
                     .augmentation(buildAugmentationConfig())
+                    .augmentationParams(AdvancedAugmentationDialog.buildParamsFromPreferences())
                     .intensityAugMode(mapIntensityModeFromDisplay(intensityAugCombo.getValue()))
                     .usePretrainedWeights(usePretrained)
                     .frozenLayers(frozenLayers)
@@ -2840,12 +2841,32 @@ public class TrainingDialog {
                     "model needs to handle shape variations in the tissue.",
                     "https://albumentations.ai/docs/");
 
+            // Advanced augmentation button -- opens a popup for strength/probability tuning.
+            // Visible only in advanced mode; bound below via advancedMode binding.
+            Button advancedAugButton = new Button("Advanced augmentation settings...");
+            TooltipHelper.install(advancedAugButton,
+                    "Fine-tune augmentation strengths and probabilities:\n" +
+                    "brightness/contrast/gamma limits, elastic alpha/sigma,\n" +
+                    "noise std, and per-augmentation probabilities.\n\n" +
+                    "Defaults match the built-in augmentation pipeline --\n" +
+                    "changes here override those defaults for all future training runs.");
+            advancedAugButton.setOnAction(e -> {
+                AdvancedAugmentationDialog dialog = new AdvancedAugmentationDialog(
+                        advancedAugButton.getScene() != null
+                                ? advancedAugButton.getScene().getWindow()
+                                : null);
+                dialog.showAndWait();
+            });
+            advancedAugButton.visibleProperty().bind(advancedMode);
+            advancedAugButton.managedProperty().bind(advancedMode);
+
             content.getChildren().addAll(
                     flipHorizontalCheck,
                     flipVerticalCheck,
                     rotationCheck,
                     intensityRow,
-                    elasticCheck
+                    elasticCheck,
+                    advancedAugButton
             );
 
             TitledPane pane = new TitledPane("DATA AUGMENTATION", content);

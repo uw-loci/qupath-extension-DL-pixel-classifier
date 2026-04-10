@@ -92,7 +92,16 @@ def get_training_augmentation(
     p_elastic: float = 0.3,
     p_color: float = 0.3,
     p_noise: float = 0.2,
-    intensity_mode: str = "none"
+    intensity_mode: str = "none",
+    # Advanced strength parameters (defaults preserve legacy behavior)
+    brightness_limit: float = 0.2,
+    contrast_limit: float = 0.2,
+    gamma_min: int = 80,
+    gamma_max: int = 120,
+    elastic_alpha: float = 120.0,
+    elastic_sigma_ratio: float = 0.05,
+    noise_std_min: float = 0.04,
+    noise_std_max: float = 0.2,
 ) -> Optional[A.Compose]:
     """Create training augmentation pipeline.
 
@@ -104,12 +113,28 @@ def get_training_augmentation(
         p_color: Probability of color jitter (used when intensity_mode != "none")
         p_noise: Probability of noise addition
         intensity_mode: "none", "brightfield", or "fluorescence"
+        brightness_limit: Max brightness adjustment as fraction (0.0 - 0.5)
+        contrast_limit: Max contrast adjustment as fraction (0.0 - 0.5)
+        gamma_min: Minimum gamma percent for brightfield mode
+        gamma_max: Maximum gamma percent for brightfield mode
+        elastic_alpha: Elastic deformation magnitude
+        elastic_sigma_ratio: Smoothness of elastic deformation as fraction of alpha
+        noise_std_min: Minimum Gaussian noise std (fraction of image max)
+        noise_std_max: Maximum Gaussian noise std (fraction of image max)
 
     Returns:
         Albumentations Compose object or None if not available
     """
     if not ALBUMENTATIONS_AVAILABLE:
         return None
+
+    # Ensure noise std range is valid (min <= max, both in [0, 1])
+    noise_lo = max(0.0, min(noise_std_min, noise_std_max))
+    noise_hi = max(noise_lo, noise_std_max)
+
+    # Ensure gamma range is valid (min <= max)
+    gamma_lo = min(gamma_min, gamma_max)
+    gamma_hi = max(gamma_min, gamma_max)
 
     transforms = [
         # Spatial transforms (applied to both image and mask)
@@ -127,8 +152,8 @@ def get_training_augmentation(
 
         # Elastic deformation - good for biological tissue
         A.ElasticTransform(
-            alpha=120,
-            sigma=120 * 0.05,
+            alpha=elastic_alpha,
+            sigma=elastic_alpha * elastic_sigma_ratio,
             p=p_elastic
         ),
 
@@ -145,16 +170,18 @@ def get_training_augmentation(
         # RGB-correlated brightness/contrast/gamma (standard for H&E)
         transforms.append(A.OneOf([
             A.RandomBrightnessContrast(
-                brightness_limit=0.2,
-                contrast_limit=0.2,
+                brightness_limit=brightness_limit,
+                contrast_limit=contrast_limit,
                 p=1.0
             ),
-            A.RandomGamma(gamma_limit=(80, 120), p=1.0),
+            A.RandomGamma(gamma_limit=(gamma_lo, gamma_hi), p=1.0),
         ], p=p_color))
     elif intensity_mode == "fluorescence":
         # Per-channel independent intensity jitter (for fluorescence/multi-spectral)
         transforms.append(PerChannelIntensityJitter(
-            brightness_limit=0.2, contrast_limit=0.2, p=p_color))
+            brightness_limit=brightness_limit,
+            contrast_limit=contrast_limit,
+            p=p_color))
 
     transforms.extend([
         # Blur - simulates slight defocus
@@ -164,7 +191,7 @@ def get_training_augmentation(
         ], p=0.1),
 
         # Noise - std_range is fraction of image max value
-        A.GaussNoise(std_range=(0.04, 0.2), p=p_noise),
+        A.GaussNoise(std_range=(noise_lo, noise_hi), p=p_noise),
     ])
 
     return A.Compose(transforms, additional_targets={})
@@ -584,9 +611,24 @@ class SegmentationDataset(Dataset):
                 p_elastic=aug_config.get("p_elastic", 0.3),
                 p_color=aug_config.get("p_color", p_color),
                 p_noise=aug_config.get("p_noise", 0.2),
-                intensity_mode=intensity_mode
+                intensity_mode=intensity_mode,
+                brightness_limit=aug_config.get("brightness_limit", 0.2),
+                contrast_limit=aug_config.get("contrast_limit", 0.2),
+                gamma_min=aug_config.get("gamma_min", 80),
+                gamma_max=aug_config.get("gamma_max", 120),
+                elastic_alpha=aug_config.get("elastic_alpha", 120.0),
+                elastic_sigma_ratio=aug_config.get("elastic_sigma_ratio", 0.05),
+                noise_std_min=aug_config.get("noise_std_min", 0.04),
+                noise_std_max=aug_config.get("noise_std_max", 0.2),
             )
-            logger.info(f"Augmentation enabled (intensity_mode={intensity_mode})")
+            logger.info(
+                f"Augmentation enabled (intensity_mode={intensity_mode}, "
+                f"p_flip={aug_config.get('p_flip', 0.5)}, "
+                f"p_rotate={aug_config.get('p_rotate', 0.5)}, "
+                f"p_elastic={aug_config.get('p_elastic', 0.3)}, "
+                f"p_color={aug_config.get('p_color', p_color)}, "
+                f"p_noise={aug_config.get('p_noise', 0.2)})"
+            )
         else:
             self.transform = None
             if augment and not ALBUMENTATIONS_AVAILABLE:
