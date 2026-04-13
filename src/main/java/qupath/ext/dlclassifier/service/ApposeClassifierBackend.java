@@ -228,6 +228,10 @@ public class ApposeClassifierBackend implements ClassifierBackend {
         trainingParams.put("batch_size", trainingConfig.getBatchSize());
         trainingParams.put("learning_rate", trainingConfig.getLearningRate());
         trainingParams.put("weight_decay", trainingConfig.getWeightDecay());
+        trainingParams.put("discriminative_lr_ratio", trainingConfig.getDiscriminativeLrRatio());
+        if (trainingConfig.getSeed() != null) {
+            trainingParams.put("seed", trainingConfig.getSeed());
+        }
         trainingParams.put("validation_split", trainingConfig.getValidationSplit());
         trainingParams.put("augmentation", trainingConfig.isAugmentation());
         // Send full augmentation config dict to Python (not just a boolean).

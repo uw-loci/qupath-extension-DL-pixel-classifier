@@ -948,6 +948,19 @@ class TrainingService:
     ) -> Dict[str, Any]:
         """Internal training implementation. Called by train() with cleanup guarantee."""
 
+        # Reproducibility seed
+        seed = training_params.get("seed", None)
+        if seed is not None:
+            import random
+            random.seed(seed)
+            np.random.seed(seed)
+            torch.manual_seed(seed)
+            if torch.cuda.is_available():
+                torch.cuda.manual_seed_all(seed)
+            torch.backends.cudnn.deterministic = True
+            torch.backends.cudnn.benchmark = False
+            logger.info(f"Reproducibility seed set: {seed}")
+
         def _report_setup(phase, data=None):
             if setup_callback:
                 try:
@@ -1299,8 +1312,9 @@ class TrainingService:
         # Discriminative learning rates for pretrained encoders (fast.ai style)
         use_pretrained = architecture.get("use_pretrained", False)
         has_frozen = frozen_layers is not None and len(frozen_layers) > 0
+        discriminative_lr_ratio = training_params.get("discriminative_lr_ratio", 0.1)
         param_groups = self._create_param_groups(
-            model, learning_rate
+            model, learning_rate, discriminative_lr_ratio
         ) if (use_pretrained or has_frozen) else None
 
         if param_groups and len(param_groups) > 1:
@@ -1312,7 +1326,7 @@ class TrainingService:
             lr_parts = " ".join(
                 f"{g.get('group_name', '?')}={g['lr']:.6f}" for g in param_groups
             )
-            logger.info(f"Using AdamW with discriminative LRs: {lr_parts}")
+            logger.info(f"Using AdamW with discriminative LRs (ratio={discriminative_lr_ratio}): {lr_parts}")
         else:
             optimizer = torch.optim.AdamW(
                 trainable_params,
@@ -2691,16 +2705,17 @@ class TrainingService:
             logger.warning(f"Unknown scheduler type: {scheduler_type}, using none")
             return None
 
-    def _create_param_groups(self, model, learning_rate):
+    def _create_param_groups(self, model, learning_rate, discriminative_lr_ratio=0.1):
         """Create parameter groups with discriminative LRs for transfer learning.
 
-        Fast.ai-style: encoder gets 1/10th the LR, decoder and head get full LR.
+        Fast.ai-style: encoder gets a fraction of the LR, decoder and head get full LR.
         This prevents catastrophic forgetting of pretrained features while allowing
         the decoder to adapt quickly.
 
         Args:
             model: The segmentation model
             learning_rate: Base learning rate for decoder/head
+            discriminative_lr_ratio: Ratio applied to encoder LR (default 0.1 = 1/10th)
 
         Returns:
             List of param group dicts if multiple groups, else flat param list
@@ -2723,7 +2738,7 @@ class TrainingService:
         if encoder_params:
             groups.append({
                 "params": encoder_params,
-                "lr": learning_rate / 10,
+                "lr": learning_rate * discriminative_lr_ratio,
                 "group_name": "encoder"
             })
         if decoder_params:

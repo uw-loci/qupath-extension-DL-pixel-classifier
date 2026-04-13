@@ -176,6 +176,12 @@ public class ScriptGenerator {
         if (config.getWeightDecay() > 0) {
             appendLine(sb, "        .weightDecay(" + config.getWeightDecay() + ")");
         }
+        if (config.getDiscriminativeLrRatio() != 0.1) {
+            appendLine(sb, "        .discriminativeLrRatio(" + config.getDiscriminativeLrRatio() + ")");
+        }
+        if (config.getSeed() != null) {
+            appendLine(sb, "        .seed(" + config.getSeed() + ")");
+        }
         if (config.getFocusClass() != null) {
             appendLine(sb, "        .focusClass(" + quote(config.getFocusClass()) + ")");
             if (config.getFocusClassMinIoU() > 0) {

@@ -182,6 +182,17 @@ public final class DLClassifierPreferences {
     private static final DoubleProperty defaultFocusClassMinIoU = PathPrefs.createPersistentPreference(
             "dlclassifier.defaultFocusClassMinIoU", 0.0);
 
+    // ==================== Advanced Training Parameters ====================
+
+    private static final DoubleProperty defaultWeightDecay = PathPrefs.createPersistentPreference(
+            "dlclassifier.defaultWeightDecay", 0.01);
+
+    private static final DoubleProperty defaultDiscriminativeLrRatio = PathPrefs.createPersistentPreference(
+            "dlclassifier.defaultDiscriminativeLrRatio", 0.1);
+
+    private static final IntegerProperty lastSeed = PathPrefs.createPersistentPreference(
+            "dlclassifier.lastSeed", 0);
+
     // ==================== Inference Dialog Preferences ====================
 
     private static final StringProperty lastOutputType = PathPrefs.createPersistentPreference(
@@ -822,6 +833,17 @@ public final class DLClassifierPreferences {
     public static void setDefaultFocusClassMinIoU(double minIoU) {
         defaultFocusClassMinIoU.set(minIoU);
     }
+
+    // ==================== Advanced Training Parameters ====================
+
+    public static double getDefaultWeightDecay() { return defaultWeightDecay.get(); }
+    public static void setDefaultWeightDecay(double v) { defaultWeightDecay.set(v); }
+
+    public static double getDefaultDiscriminativeLrRatio() { return defaultDiscriminativeLrRatio.get(); }
+    public static void setDefaultDiscriminativeLrRatio(double v) { defaultDiscriminativeLrRatio.set(v); }
+
+    public static int getLastSeed() { return lastSeed.get(); }
+    public static void setLastSeed(int v) { lastSeed.set(v); }
 
     // ==================== Inference Dialog Preferences ====================
 

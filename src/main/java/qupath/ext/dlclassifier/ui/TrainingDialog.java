@@ -272,6 +272,13 @@ public class TrainingDialog {
         // Live VRAM estimation
         private Label vramEstimateLabel;
         private Label earlyStoppingStatusLabel;
+        private Spinner<Double> discriminativeLrSpinner;
+        private Label effectiveLrLabel;
+        private Spinner<Double> weightDecaySpinner;
+        private Spinner<Integer> seedSpinner;
+        private Label advancedSettingsWarning;
+        private Label backboneCompatWarning;
+        private boolean lastImageIsBrightfield = true;
         private int gpuTotalMb = 0;  // cached GPU memory (0 = unknown/CPU)
 
         // Error display
@@ -482,13 +489,31 @@ public class TrainingDialog {
             basicHint.visibleProperty().bind(advancedMode.not());
             basicHint.managedProperty().bind(advancedMode.not());
 
+            // Warning label when advanced settings differ from defaults (shown in basic mode)
+            advancedSettingsWarning = new Label("Note: Some advanced settings are still active. Switch to All Settings to review.");
+            advancedSettingsWarning.setWrapText(true);
+            advancedSettingsWarning.setStyle("-fx-text-fill: #856404; -fx-background-color: #fff3cd; " +
+                    "-fx-padding: 4 8; -fx-background-radius: 3; -fx-font-size: 11px;");
+            advancedSettingsWarning.setVisible(false);
+            advancedSettingsWarning.setManaged(false);
+
             // Persist mode preference and refresh conditional visibility
             advancedMode.addListener((obs, old, newVal) -> {
                     DLClassifierPreferences.setAdvancedMode(newVal);
                     updateLineStrokeVisibility();
+                    if (!newVal) {
+                        // Switching to basic -- check if advanced settings differ from defaults
+                        boolean hasNonDefaults = checkAdvancedSettingsDiffer();
+                        advancedSettingsWarning.setVisible(hasNonDefaults);
+                        advancedSettingsWarning.setManaged(hasNonDefaults);
+                    } else {
+                        advancedSettingsWarning.setVisible(false);
+                        advancedSettingsWarning.setManaged(false);
+                    }
             });
 
-            headerBox.getChildren().addAll(titleRow, subtitleLabel, basicHint, new Separator());
+            headerBox.getChildren().addAll(titleRow, subtitleLabel, basicHint,
+                    advancedSettingsWarning, new Separator());
             return headerBox;
         }
 
@@ -532,6 +557,7 @@ public class TrainingDialog {
             // Update info text when backbone or mode changes (ImageNet vs histology vs foundation)
             backboneCombo.valueProperty().addListener((obs, old, newVal) -> {
                 updateBackboneInfoText(newVal, backboneInfo);
+                checkBackboneImageCompatibility();
             });
             advancedMode.addListener((obs, old, isAdv) -> {
                 updateBackboneInfoText(backboneCombo.getValue(), backboneInfo);
@@ -540,7 +566,15 @@ public class TrainingDialog {
             layerFreezePanel = new LayerFreezePanel();
             layerFreezePanel.setBackend(backend);
 
-            backbonePretrainedContent = new VBox(5, backboneInfo, layerFreezePanel);
+            // Backbone-image type compatibility warning (non-blocking)
+            backboneCompatWarning = new Label();
+            backboneCompatWarning.setWrapText(true);
+            backboneCompatWarning.setStyle("-fx-text-fill: #856404; -fx-background-color: #fff3cd; " +
+                    "-fx-padding: 4 8; -fx-background-radius: 3; -fx-font-size: 11px;");
+            backboneCompatWarning.setVisible(false);
+            backboneCompatWarning.setManaged(false);
+
+            backbonePretrainedContent = new VBox(5, backboneInfo, backboneCompatWarning, layerFreezePanel);
             backbonePretrainedContent.setPadding(new Insets(0, 0, 0, 20));
 
             // --- MAE pretrained encoder (MuViT) ---
@@ -1718,6 +1752,9 @@ public class TrainingDialog {
                     .epochs(epochsSpinner.getValue())
                     .batchSize(batchSizeSpinner.getValue())
                     .learningRate(learningRateSpinner.getValue())
+                    .weightDecay(weightDecaySpinner.getValue())
+                    .discriminativeLrRatio(discriminativeLrSpinner.getValue())
+                    .seed(seedSpinner.getValue() == 0 ? null : seedSpinner.getValue())
                     .validationSplit(validationSplitSpinner.getValue() / 100.0)
                     .tileSize(tileSizeSpinner.getValue())
                     .overlap(overlapSpinner.getValue())
@@ -1790,6 +1827,33 @@ public class TrainingDialog {
                 lrInfoLabel.setStyle("-fx-text-fill: #666666; -fx-font-size: 0.85em;");
             }
             // Visibility controlled by advancedMode binding -- do not set here
+        }
+
+        private void updateEffectiveLrLabel() {
+            if (effectiveLrLabel == null || learningRateSpinner == null
+                    || discriminativeLrSpinner == null) return;
+
+            ClassifierHandler.WeightInitStrategy strategy = getSelectedWeightInitStrategy();
+            boolean isPretrained = strategy != null
+                    && strategy != ClassifierHandler.WeightInitStrategy.SCRATCH;
+
+            if (!isPretrained) {
+                effectiveLrLabel.setText("");
+                return;
+            }
+
+            double lr = learningRateSpinner.getValue();
+            double ratio = discriminativeLrSpinner.getValue();
+            double encoderLr = lr * ratio;
+
+            String text = String.format("Encoder: %.6f | Decoder: %.6f | Head: %.6f",
+                    encoderLr, lr, lr);
+
+            if (schedulerCombo != null && "One Cycle".equals(schedulerCombo.getValue())) {
+                text += " (peak LRs auto-found by LR finder)";
+            }
+
+            effectiveLrLabel.setText(text);
         }
 
         private void updateBackboneInfoText(String backbone, Label backboneInfo) {
@@ -2010,6 +2074,109 @@ public class TrainingDialog {
             lrInfoLabel.visibleProperty().bind(advancedMode);
             lrInfoLabel.managedProperty().bind(advancedMode);
             grid.add(lrInfoLabel, 0, row, 2, 1);
+            row++;
+
+            // Discriminative LR ratio (advanced only)
+            discriminativeLrSpinner = new Spinner<>(0.01, 1.0,
+                    DLClassifierPreferences.getDefaultDiscriminativeLrRatio(), 0.05);
+            discriminativeLrSpinner.setEditable(true);
+            discriminativeLrSpinner.setPrefWidth(100);
+            var discLrFactory = (SpinnerValueFactory.DoubleSpinnerValueFactory)
+                    discriminativeLrSpinner.getValueFactory();
+            discLrFactory.setConverter(new javafx.util.StringConverter<Double>() {
+                @Override public String toString(Double value) {
+                    return value == null ? "" : String.format("%.2f", value);
+                }
+                @Override public Double fromString(String string) {
+                    try { return Double.parseDouble(string.trim()); }
+                    catch (NumberFormatException e) { return discLrFactory.getValue(); }
+                }
+            });
+            Label discLrLabel = new Label("Encoder LR Factor:");
+            TooltipHelper.install(
+                    "Ratio applied to the base learning rate for encoder layers.\n\n" +
+                    "0.1 (default): Encoder trains at 1/10th the decoder LR.\n" +
+                    "  Good for ImageNet-pretrained backbones on new domains.\n\n" +
+                    "0.3 - 0.5: For histology-pretrained backbones on histology data.\n" +
+                    "  The pretrained features are already domain-relevant.\n\n" +
+                    "1.0: Same LR for all layers (no discriminative LRs).\n\n" +
+                    "Lower values preserve pretrained features more aggressively.\n" +
+                    "Only applies when using pretrained weights (not from scratch).",
+                    discLrLabel, discriminativeLrSpinner);
+            discLrLabel.visibleProperty().bind(advancedMode);
+            discLrLabel.managedProperty().bind(advancedMode);
+            discriminativeLrSpinner.visibleProperty().bind(advancedMode);
+            discriminativeLrSpinner.managedProperty().bind(advancedMode);
+            grid.add(discLrLabel, 0, row);
+            grid.add(discriminativeLrSpinner, 1, row);
+            row++;
+
+            // Effective per-group LR display (advanced only)
+            effectiveLrLabel = new Label();
+            effectiveLrLabel.setWrapText(true);
+            effectiveLrLabel.setStyle("-fx-text-fill: #666; -fx-font-size: 11px;");
+            effectiveLrLabel.visibleProperty().bind(advancedMode);
+            effectiveLrLabel.managedProperty().bind(advancedMode);
+            grid.add(effectiveLrLabel, 0, row, 2, 1);
+            row++;
+
+            // Update effective LR display when inputs change
+            learningRateSpinner.valueProperty().addListener((obs, o, n) -> updateEffectiveLrLabel());
+            discriminativeLrSpinner.valueProperty().addListener((obs, o, n) -> updateEffectiveLrLabel());
+            updateEffectiveLrLabel();
+
+            // Weight decay (advanced only)
+            weightDecaySpinner = new Spinner<>(0.0, 0.5,
+                    DLClassifierPreferences.getDefaultWeightDecay(), 0.005);
+            weightDecaySpinner.setEditable(true);
+            weightDecaySpinner.setPrefWidth(100);
+            var wdFactory = (SpinnerValueFactory.DoubleSpinnerValueFactory)
+                    weightDecaySpinner.getValueFactory();
+            wdFactory.setConverter(new javafx.util.StringConverter<Double>() {
+                @Override public String toString(Double value) {
+                    return value == null ? "" : String.format("%.3f", value);
+                }
+                @Override public Double fromString(String string) {
+                    try { return Double.parseDouble(string.trim()); }
+                    catch (NumberFormatException e) { return wdFactory.getValue(); }
+                }
+            });
+            Label wdLabel = new Label("Weight Decay:");
+            TooltipHelper.install(
+                    "L2 regularization strength (AdamW). Penalizes large weights\n" +
+                    "to prevent overfitting.\n\n" +
+                    "0.01 (default): Good for most training runs.\n" +
+                    "0.05 - 0.1: Increase for very small datasets.\n" +
+                    "0.001: Decrease for large datasets or from-scratch training.\n" +
+                    "0: Disable weight decay entirely.",
+                    wdLabel, weightDecaySpinner);
+            wdLabel.visibleProperty().bind(advancedMode);
+            wdLabel.managedProperty().bind(advancedMode);
+            weightDecaySpinner.visibleProperty().bind(advancedMode);
+            weightDecaySpinner.managedProperty().bind(advancedMode);
+            grid.add(wdLabel, 0, row);
+            grid.add(weightDecaySpinner, 1, row);
+            row++;
+
+            // Reproducibility seed (advanced only)
+            seedSpinner = new Spinner<>(0, 999999, DLClassifierPreferences.getLastSeed(), 1);
+            seedSpinner.setEditable(true);
+            seedSpinner.setPrefWidth(100);
+            Label seedLabel = new Label("Random Seed:");
+            TooltipHelper.install(
+                    "Set a fixed seed for reproducible training results.\n\n" +
+                    "0 (default): Non-deterministic -- results vary between runs.\n" +
+                    "Any positive value: Deterministic -- same results given same\n" +
+                    "  data and settings. Useful for ablation studies.\n\n" +
+                    "Note: Deterministic mode may reduce training speed by 10-20%\n" +
+                    "due to cuDNN deterministic algorithms.",
+                    seedLabel, seedSpinner);
+            seedLabel.visibleProperty().bind(advancedMode);
+            seedLabel.managedProperty().bind(advancedMode);
+            seedSpinner.visibleProperty().bind(advancedMode);
+            seedSpinner.managedProperty().bind(advancedMode);
+            grid.add(seedLabel, 0, row);
+            grid.add(seedSpinner, 1, row);
             row++;
 
             // Validation split (advanced only)
@@ -3112,6 +3279,9 @@ public class TrainingDialog {
                             // Reset flag so programmatic change isn't treated as manual
                             intensityAugUserModified = false;
                         }
+                        // Store image type for backbone compatibility check
+                        lastImageIsBrightfield = isBrightfield(channelImageData);
+                        checkBackboneImageCompatibility();
                     }
 
                     // Populate class list with union of all classes
@@ -3665,6 +3835,47 @@ public class TrainingDialog {
             }
         }
 
+        /** Checks backbone-image type compatibility and shows/hides a non-blocking warning. */
+        private void checkBackboneImageCompatibility() {
+            if (backboneCompatWarning == null) return;
+            String backbone = backboneCombo.getValue();
+            if (backbone == null) {
+                backboneCompatWarning.setVisible(false);
+                backboneCompatWarning.setManaged(false);
+                return;
+            }
+            boolean isHistologyBackbone = backbone.contains("_lunit")
+                    || backbone.contains("_kather") || backbone.contains("_tcga")
+                    || backbone.contains("_pathology");
+            if (isHistologyBackbone && !lastImageIsBrightfield) {
+                backboneCompatWarning.setText(
+                        "Histology backbone selected but images appear to be fluorescence. " +
+                        "Consider a standard backbone (resnet34, resnet50) for best results.");
+                backboneCompatWarning.setVisible(true);
+                backboneCompatWarning.setManaged(true);
+            } else {
+                backboneCompatWarning.setVisible(false);
+                backboneCompatWarning.setManaged(false);
+            }
+        }
+
+        /** Checks if any Training Strategy or Augmentation settings differ from defaults. */
+        private boolean checkAdvancedSettingsDiffer() {
+            // Training strategy
+            if (schedulerCombo != null && !"One Cycle".equals(schedulerCombo.getValue())) return true;
+            if (lossFunctionCombo != null && !"Cross-Entropy + Dice".equals(lossFunctionCombo.getValue())) return true;
+            if (earlyStoppingPatienceSpinner != null && earlyStoppingPatienceSpinner.getValue() != 15) return true;
+            if (mixedPrecisionCheck != null && !mixedPrecisionCheck.isSelected()) return true;
+            if (gradientAccumulationSpinner != null && gradientAccumulationSpinner.getValue() != 1) return true;
+            if (progressiveResizeCheck != null && progressiveResizeCheck.isSelected()) return true;
+            // Augmentation
+            if (flipHorizontalCheck != null && !flipHorizontalCheck.isSelected()) return true;
+            if (flipVerticalCheck != null && !flipVerticalCheck.isSelected()) return true;
+            if (rotationCheck != null && !rotationCheck.isSelected()) return true;
+            if (elasticCheck != null && elasticCheck.isSelected()) return true;
+            return false;
+        }
+
         /** Shows a temporary amber notification that auto-dismisses after 5 seconds. */
         private void showTemporaryNotification(String message) {
             Label note = new Label(message);
@@ -3912,6 +4123,9 @@ public class TrainingDialog {
             DLClassifierPreferences.setDefaultEpochs(epochsSpinner.getValue());
             DLClassifierPreferences.setDefaultBatchSize(batchSizeSpinner.getValue());
             DLClassifierPreferences.setDefaultLearningRate(learningRateSpinner.getValue());
+            DLClassifierPreferences.setDefaultWeightDecay(weightDecaySpinner.getValue());
+            DLClassifierPreferences.setDefaultDiscriminativeLrRatio(discriminativeLrSpinner.getValue());
+            DLClassifierPreferences.setLastSeed(seedSpinner.getValue());
             DLClassifierPreferences.setValidationSplit(validationSplitSpinner.getValue());
             DLClassifierPreferences.setTileSize(tileSizeSpinner.getValue());
             DLClassifierPreferences.setTileOverlap(overlapSpinner.getValue());

@@ -24,6 +24,10 @@ public class TrainingConfig {
     private final int batchSize;
     private final double learningRate;
     private final double weightDecay;
+    private final double discriminativeLrRatio;
+
+    // Reproducibility (null = non-deterministic)
+    private final Integer seed;
 
     // Tile parameters
     private final int tileSize;
@@ -111,6 +115,8 @@ public class TrainingConfig {
         this.batchSize = builder.batchSize;
         this.learningRate = builder.learningRate;
         this.weightDecay = builder.weightDecay;
+        this.discriminativeLrRatio = builder.discriminativeLrRatio;
+        this.seed = builder.seed;
         this.tileSize = builder.tileSize;
         this.overlap = builder.overlap;
         this.downsample = builder.downsample;
@@ -165,6 +171,14 @@ public class TrainingConfig {
 
     public double getWeightDecay() {
         return weightDecay;
+    }
+
+    public double getDiscriminativeLrRatio() {
+        return discriminativeLrRatio;
+    }
+
+    public Integer getSeed() {
+        return seed;
     }
 
     public int getTileSize() {
@@ -601,6 +615,8 @@ public class TrainingConfig {
                 batchSize == that.batchSize &&
                 Double.compare(that.learningRate, learningRate) == 0 &&
                 Double.compare(that.weightDecay, weightDecay) == 0 &&
+                Double.compare(that.discriminativeLrRatio, discriminativeLrRatio) == 0 &&
+                Objects.equals(seed, that.seed) &&
                 tileSize == that.tileSize &&
                 overlap == that.overlap &&
                 Double.compare(that.downsample, downsample) == 0 &&
@@ -634,7 +650,8 @@ public class TrainingConfig {
     @Override
     public int hashCode() {
         return Objects.hash(modelType, backbone, epochs, batchSize, learningRate,
-                weightDecay, tileSize, overlap, downsample, validationSplit, augmentationConfig,
+                weightDecay, discriminativeLrRatio, seed,
+                tileSize, overlap, downsample, validationSplit, augmentationConfig,
                 augmentationParams,
                 usePretrainedWeights, freezeEncoderLayers, frozenLayers, lineStrokeWidth,
                 classWeightMultipliers, contextScale, schedulerType, lossFunction,
@@ -667,6 +684,8 @@ public class TrainingConfig {
         private int batchSize = 8;
         private double learningRate = 0.001;
         private double weightDecay = 0.01;
+        private double discriminativeLrRatio = 0.1;
+        private Integer seed = null;
         private int tileSize = 512;
         private int overlap = 64;
         private double downsample = 1.0;
@@ -719,6 +738,8 @@ public class TrainingConfig {
             this.batchSize = config.batchSize;
             this.learningRate = config.learningRate;
             this.weightDecay = config.weightDecay;
+            this.discriminativeLrRatio = config.discriminativeLrRatio;
+            this.seed = config.seed;
             this.tileSize = config.tileSize;
             this.overlap = config.overlap;
             this.downsample = config.downsample;
@@ -784,6 +805,16 @@ public class TrainingConfig {
 
         public Builder weightDecay(double weightDecay) {
             this.weightDecay = weightDecay;
+            return this;
+        }
+
+        public Builder discriminativeLrRatio(double ratio) {
+            this.discriminativeLrRatio = ratio;
+            return this;
+        }
+
+        public Builder seed(Integer seed) {
+            this.seed = seed;
             return this;
         }
 
