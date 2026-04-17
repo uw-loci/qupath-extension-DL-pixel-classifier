@@ -226,6 +226,13 @@ public final class DLClassifierPreferences {
     private static final BooleanProperty multiPassAveraging = PathPrefs.createPersistentPreference(
             "dlclassifier.multiPassAveraging", false);
 
+    // Preload training patches into RAM to skip per-batch disk I/O and
+    // TIFF decode. "auto" = enable when the dataset fits in ~25% of free
+    // RAM; "on" = always enable (may exhaust memory on huge datasets);
+    // "off" = always stream from disk (the legacy behavior).
+    private static final StringProperty defaultInMemoryDataset = PathPrefs.createPersistentPreference(
+            "dlclassifier.defaultInMemoryDataset", "auto");
+
     // One-time overlay notice dismissed
     private static final BooleanProperty overlayNoticeDismissed = PathPrefs.createPersistentPreference(
             "dlclassifier.overlayNoticeDismissed", false);
@@ -318,6 +325,21 @@ public final class DLClassifierPreferences {
                         "Recommended for context-scale models where seams are visible. " +
                         "Applies to both the overlay and Apply Classifier. " +
                         "~4x slower but produces seamless results.")
+                .build());
+
+        items.add(new PropertyItemBuilder<>(defaultInMemoryDataset, String.class)
+                .propertyType(PropertyItemBuilder.PropertyType.CHOICE)
+                .choices(javafx.collections.FXCollections.observableArrayList(
+                        "auto", "on", "off"))
+                .name("Training: Pre-Load Patches Into RAM")
+                .category(CATEGORY)
+                .description("Cache all training patches in RAM at startup to skip " +
+                        "per-batch disk I/O and TIFF decode. " +
+                        "auto = enable when the dataset fits in about 25% of free RAM " +
+                        "(safe default); " +
+                        "on = always enable (may run out of memory on large datasets); " +
+                        "off = always stream from disk. " +
+                        "Typically cuts per-epoch time by 30-70% on GPU-bound setups.")
                 .build());
 
         items.add(new PropertyItemBuilder<>(showMenuDot, Boolean.class)
@@ -1021,6 +1043,27 @@ public final class DLClassifierPreferences {
 
     public static BooleanProperty multiPassAveragingProperty() {
         return multiPassAveraging;
+    }
+
+    /**
+     * @return the in-memory dataset mode: "auto", "on", or "off".
+     */
+    public static String getDefaultInMemoryDataset() {
+        String v = defaultInMemoryDataset.get();
+        if ("auto".equals(v) || "on".equals(v) || "off".equals(v)) {
+            return v;
+        }
+        return "auto";
+    }
+
+    public static void setDefaultInMemoryDataset(String mode) {
+        if ("auto".equals(mode) || "on".equals(mode) || "off".equals(mode)) {
+            defaultInMemoryDataset.set(mode);
+        }
+    }
+
+    public static StringProperty defaultInMemoryDatasetProperty() {
+        return defaultInMemoryDataset;
     }
 
     // ==================== Overlay Notice ====================

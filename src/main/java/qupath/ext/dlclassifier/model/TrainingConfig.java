@@ -67,6 +67,7 @@ public class TrainingConfig {
     private final String ohemSchedule; // "fixed" or "anneal" -- derived from start vs end
     private final boolean ohemAdaptiveFloor;
     private final int dataLoaderWorkers;
+    private final String inMemoryDataset; // "auto", "on", or "off"
     private final String earlyStoppingMetric;
     private final int earlyStoppingPatience;
     private final boolean mixedPrecision;
@@ -140,6 +141,7 @@ public class TrainingConfig {
         this.ohemSchedule = builder.ohemSchedule;
         this.ohemAdaptiveFloor = builder.ohemAdaptiveFloor;
         this.dataLoaderWorkers = builder.dataLoaderWorkers;
+        this.inMemoryDataset = builder.inMemoryDataset;
         this.earlyStoppingMetric = builder.earlyStoppingMetric;
         this.earlyStoppingPatience = builder.earlyStoppingPatience;
         this.mixedPrecision = builder.mixedPrecision;
@@ -378,6 +380,14 @@ public class TrainingConfig {
      */
     public int getDataLoaderWorkers() {
         return dataLoaderWorkers;
+    }
+
+    /**
+     * @return in-memory dataset mode: "auto" (enable when fits), "on" (force),
+     *         or "off" (stream from disk).
+     */
+    public String getInMemoryDataset() {
+        return inMemoryDataset;
     }
 
     /**
@@ -681,6 +691,7 @@ public class TrainingConfig {
                 Double.compare(that.ohemHardRatioStart, ohemHardRatioStart) == 0 &&
                 ohemAdaptiveFloor == that.ohemAdaptiveFloor &&
                 dataLoaderWorkers == that.dataLoaderWorkers &&
+                Objects.equals(inMemoryDataset, that.inMemoryDataset) &&
                 Objects.equals(earlyStoppingMetric, that.earlyStoppingMetric) &&
                 Objects.equals(focusClass, that.focusClass) &&
                 Objects.equals(intensityAugMode, that.intensityAugMode) &&
@@ -699,7 +710,7 @@ public class TrainingConfig {
                 usePretrainedWeights, freezeEncoderLayers, frozenLayers, lineStrokeWidth,
                 classWeightMultipliers, contextScale, schedulerType, lossFunction,
                 focalGamma, ohemHardRatio, ohemHardRatioStart, ohemAdaptiveFloor,
-                dataLoaderWorkers,
+                dataLoaderWorkers, inMemoryDataset,
                 earlyStoppingMetric, earlyStoppingPatience, mixedPrecision,
                 focusClass, focusClassMinIoU, intensityAugMode,
                 gradientAccumulationSteps, progressiveResize, wholeImage, pretrainedModelPath);
@@ -750,6 +761,7 @@ public class TrainingConfig {
         private String ohemSchedule = "fixed";
         private boolean ohemAdaptiveFloor = false;
         private int dataLoaderWorkers = 0;
+        private String inMemoryDataset = "auto";
         private String earlyStoppingMetric = "mean_iou";
         private int earlyStoppingPatience = 15;
         private boolean mixedPrecision = true;
@@ -807,6 +819,7 @@ public class TrainingConfig {
             this.ohemSchedule = config.ohemSchedule;
             this.ohemAdaptiveFloor = config.ohemAdaptiveFloor;
             this.dataLoaderWorkers = config.dataLoaderWorkers;
+            this.inMemoryDataset = config.inMemoryDataset;
             this.earlyStoppingMetric = config.earlyStoppingMetric;
             this.earlyStoppingPatience = config.earlyStoppingPatience;
             this.mixedPrecision = config.mixedPrecision;
@@ -1080,6 +1093,20 @@ public class TrainingConfig {
          */
         public Builder dataLoaderWorkers(int n) {
             this.dataLoaderWorkers = Math.max(0, Math.min(8, n));
+            return this;
+        }
+
+        /**
+         * Sets the in-memory dataset mode. "auto" = enable when the dataset
+         * fits in ~25% of free RAM; "on" = force; "off" = stream from disk.
+         * Invalid values fall back to "auto".
+         */
+        public Builder inMemoryDataset(String mode) {
+            if ("auto".equals(mode) || "on".equals(mode) || "off".equals(mode)) {
+                this.inMemoryDataset = mode;
+            } else {
+                this.inMemoryDataset = "auto";
+            }
             return this;
         }
 

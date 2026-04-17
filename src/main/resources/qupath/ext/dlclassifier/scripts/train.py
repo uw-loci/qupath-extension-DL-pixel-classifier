@@ -100,44 +100,57 @@ if not getattr(_tsm.SegmentationDataset, '_patched_getitem', False):
 
     def _safe_getitem(self, idx):
         """__getitem__ with context tile resize for edge-case size mismatch."""
-        img_path = self.image_files[idx]
-        img_array = self._load_patch(img_path)
-        if img_array.ndim == 2:
-            img_array = img_array[..., _np.newaxis]
+        # Use the in-memory cache if the preload patch populated it.
+        # Cache holds the pre-context-concatenated image and the raw mask so
+        # normalize + augmentation still run per-batch.
+        _cached_imgs = getattr(self, '_cached_images', None)
+        _cached_masks = getattr(self, '_cached_masks', None)
+        if _cached_imgs is not None and _cached_imgs[idx] is not None:
+            # .copy() so the augmentation pipeline can mutate freely without
+            # corrupting the cached source.
+            img_array = _cached_imgs[idx].copy()
+            mask_array = (_cached_masks[idx].astype(_np.int64)
+                          if _cached_masks is not None and _cached_masks[idx] is not None
+                          else _np.zeros(img_array.shape[:2], dtype=_np.int64))
+        else:
+            img_path = self.image_files[idx]
+            img_array = self._load_patch(img_path)
+            if img_array.ndim == 2:
+                img_array = img_array[..., _np.newaxis]
 
-        if self.context_dir is not None:
-            ctx_path = self.context_dir / img_path.name
-            if ctx_path.exists():
-                ctx_array = self._load_patch(ctx_path)
-                if ctx_array.ndim == 2:
-                    ctx_array = ctx_array[..., _np.newaxis]
-                # Resize context tile if spatial dimensions don't match detail tile
-                if ctx_array.shape[0] != img_array.shape[0] or ctx_array.shape[1] != img_array.shape[1]:
-                    if not _ctx_resize_warned[0]:
-                        logger.warning("Context tile %s has shape %s but detail is %s -- "
-                                       "resizing (edge tile from old export?)",
-                                       ctx_path.name, ctx_array.shape, img_array.shape)
-                        _ctx_resize_warned[0] = True
-                    h, w = img_array.shape[:2]
-                    resized_channels = []
-                    for c in range(ctx_array.shape[2]):
-                        ch = _PILImage.fromarray(ctx_array[:, :, c])
-                        ch = ch.resize((w, h), _PILImage.BILINEAR)
-                        resized_channels.append(_np.array(ch))
-                    ctx_array = _np.stack(resized_channels, axis=2)
-                img_array = _np.concatenate([img_array, ctx_array], axis=2)
+            if self.context_dir is not None:
+                ctx_path = self.context_dir / img_path.name
+                if ctx_path.exists():
+                    ctx_array = self._load_patch(ctx_path)
+                    if ctx_array.ndim == 2:
+                        ctx_array = ctx_array[..., _np.newaxis]
+                    # Resize context tile if spatial dimensions don't match detail tile
+                    if ctx_array.shape[0] != img_array.shape[0] or ctx_array.shape[1] != img_array.shape[1]:
+                        if not _ctx_resize_warned[0]:
+                            logger.warning("Context tile %s has shape %s but detail is %s -- "
+                                           "resizing (edge tile from old export?)",
+                                           ctx_path.name, ctx_array.shape, img_array.shape)
+                            _ctx_resize_warned[0] = True
+                        h, w = img_array.shape[:2]
+                        resized_channels = []
+                        for c in range(ctx_array.shape[2]):
+                            ch = _PILImage.fromarray(ctx_array[:, :, c])
+                            ch = ch.resize((w, h), _PILImage.BILINEAR)
+                            resized_channels.append(_np.array(ch))
+                        ctx_array = _np.stack(resized_channels, axis=2)
+                    img_array = _np.concatenate([img_array, ctx_array], axis=2)
+                else:
+                    img_array = _np.concatenate([img_array, img_array], axis=2)
+
+            mask_name = img_path.stem + ".png"
+            mask_path = self.masks_dir / mask_name
+            if mask_path.exists():
+                mask = _PILImage.open(mask_path)
+                mask_array = _np.array(mask, dtype=_np.int64)
             else:
-                img_array = _np.concatenate([img_array, img_array], axis=2)
+                mask_array = _np.zeros(img_array.shape[:2], dtype=_np.int64)
 
         img_array = self._normalize(img_array)
-
-        mask_name = img_path.stem + ".png"
-        mask_path = self.masks_dir / mask_name
-        if mask_path.exists():
-            mask = _PILImage.open(mask_path)
-            mask_array = _np.array(mask, dtype=_np.int64)
-        else:
-            mask_array = _np.zeros(img_array.shape[:2], dtype=_np.int64)
 
         if self.transform is not None:
             transformed = self.transform(image=img_array, mask=mask_array)
@@ -152,6 +165,144 @@ if not getattr(_tsm.SegmentationDataset, '_patched_getitem', False):
 
     _tsm.SegmentationDataset.__getitem__ = _safe_getitem
     _tsm.SegmentationDataset._patched_getitem = True
+
+# In-memory dataset preload. Sidesteps the num_workers hang (Appose
+# limitation) by eliminating per-batch disk I/O + TIFF decode entirely:
+# every patch is loaded once at dataset construction and served from a
+# numpy cache. Normalization and augmentation still run per-batch.
+#
+# Activation:
+#   "auto" -> enable when the dataset fits in ~25% of psutil.available;
+#   "on"   -> force (may OOM on huge datasets);
+#   "off"  -> leave the disk-streaming path alone.
+#
+# The patch wraps SegmentationDataset.__init__ so every dataset (train,
+# val, and progressive-resize small loaders) picks it up automatically.
+# Patched once per worker process (Appose reuses workers across tasks).
+_in_memory_mode = training_params.get("in_memory_dataset", "auto")
+if _in_memory_mode in ("auto", "on") and not getattr(
+        _tsm.SegmentationDataset, "_patched_preload", False):
+    _orig_sd_init = _tsm.SegmentationDataset.__init__
+    try:
+        import psutil as _psutil
+        _psutil_ok = True
+    except ImportError:
+        _psutil_ok = False
+        if _in_memory_mode == "auto":
+            logger.warning("In-memory cache: psutil not available -- "
+                           "'auto' mode cannot check RAM; skipping preload. "
+                           "Install psutil or set preference to 'on' to force.")
+
+    def _init_with_cache(self, *args, **kwargs):
+        _orig_sd_init(self, *args, **kwargs)
+        self._cached_images = None
+        self._cached_masks = None
+
+        n = len(self.image_files)
+        if n == 0:
+            return
+
+        # Estimate bytes by loading one tile. Cache stores native dtype +
+        # uint8 masks; normalize happens per-batch.
+        try:
+            first_img = _tsm.SegmentationDataset._load_patch(self.image_files[0])
+            if first_img.ndim == 2:
+                first_img = first_img[..., _np.newaxis]
+            per_img_bytes = first_img.nbytes
+            # context doubles the stored channels
+            if self.context_dir is not None:
+                per_img_bytes *= 2
+            # masks stored as uint8 (classes < 256), promoted to int64 per batch
+            per_mask_bytes = first_img.shape[0] * first_img.shape[1]
+            total_bytes = n * (per_img_bytes + per_mask_bytes)
+        except Exception as _e:
+            logger.warning("In-memory cache: byte estimate failed (%s); skipping preload", _e)
+            return
+
+        if _in_memory_mode == "auto":
+            if not _psutil_ok:
+                return
+            available = _psutil.virtual_memory().available
+            if total_bytes >= 0.25 * available:
+                logger.info(
+                    "In-memory cache: 'auto' declined for %s -- "
+                    "estimate %.2f GB >= 25%% of %.2f GB available",
+                    self.images_dir.name if hasattr(self.images_dir, 'name')
+                    else str(self.images_dir),
+                    total_bytes / 1e9, available / 1e9)
+                return
+        elif _in_memory_mode == "on":
+            if _psutil_ok:
+                available = _psutil.virtual_memory().available
+                if total_bytes > available:
+                    logger.warning(
+                        "In-memory cache: 'on' forced but estimate %.2f GB "
+                        "exceeds %.2f GB available -- preload may fail "
+                        "with MemoryError",
+                        total_bytes / 1e9, available / 1e9)
+
+        logger.info("In-memory cache: preloading %d patches (~%.2f GB) from %s...",
+                    n, total_bytes / 1e9,
+                    self.images_dir.name if hasattr(self.images_dir, 'name')
+                    else str(self.images_dir))
+
+        cached_imgs = [None] * n
+        cached_masks = [None] * n
+        _log_every = max(1, n // 10)
+        try:
+            for i in range(n):
+                img_path = self.image_files[i]
+                img_arr = _tsm.SegmentationDataset._load_patch(img_path)
+                if img_arr.ndim == 2:
+                    img_arr = img_arr[..., _np.newaxis]
+                if self.context_dir is not None:
+                    ctx_path = self.context_dir / img_path.name
+                    if ctx_path.exists():
+                        ctx_arr = _tsm.SegmentationDataset._load_patch(ctx_path)
+                        if ctx_arr.ndim == 2:
+                            ctx_arr = ctx_arr[..., _np.newaxis]
+                        if (ctx_arr.shape[0] != img_arr.shape[0]
+                                or ctx_arr.shape[1] != img_arr.shape[1]):
+                            h, w = img_arr.shape[:2]
+                            resized_ch = []
+                            for c in range(ctx_arr.shape[2]):
+                                ch = _PILImage.fromarray(ctx_arr[:, :, c])
+                                ch = ch.resize((w, h), _PILImage.BILINEAR)
+                                resized_ch.append(_np.array(ch))
+                            ctx_arr = _np.stack(resized_ch, axis=2)
+                        img_arr = _np.concatenate([img_arr, ctx_arr], axis=2)
+                    else:
+                        img_arr = _np.concatenate([img_arr, img_arr], axis=2)
+                cached_imgs[i] = img_arr
+
+                mask_path = self.masks_dir / (img_path.stem + ".png")
+                if mask_path.exists():
+                    mask = _PILImage.open(mask_path)
+                    cached_masks[i] = _np.array(mask, dtype=_np.uint8)
+                else:
+                    cached_masks[i] = _np.zeros(img_arr.shape[:2], dtype=_np.uint8)
+
+                if (i + 1) % _log_every == 0 or (i + 1) == n:
+                    logger.info("  cache %d/%d", i + 1, n)
+        except MemoryError:
+            logger.error("In-memory cache: MemoryError during preload at %d/%d "
+                         "-- falling back to disk streaming", i, n)
+            self._cached_images = None
+            self._cached_masks = None
+            return
+        except Exception as _e:
+            logger.error("In-memory cache: preload failed (%s) -- "
+                         "falling back to disk streaming", _e)
+            self._cached_images = None
+            self._cached_masks = None
+            return
+
+        self._cached_images = cached_imgs
+        self._cached_masks = cached_masks
+        logger.info("In-memory cache: preload complete (%d patches)", n)
+
+    _tsm.SegmentationDataset.__init__ = _init_with_cache
+    _tsm.SegmentationDataset._patched_preload = True
 
 # DataLoader num_workers bootstrap: the installed pip package may still
 # hardcode num_workers=0 in training_service._run_training (prior to
