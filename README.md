@@ -45,7 +45,7 @@ A QuPath extension for deep learning-based pixel classification, supporting both
 - **Groovy scripting API** for batch processing
 - **Headless builder API** for running workflows without GUI
 - **"Copy as Script" buttons** in dialogs for reproducible workflows
-- **Post-training tile evaluation** identifies annotation errors and hard cases by running the model over all training tiles and ranking by loss
+- **Post-training tile evaluation** identifies annotation errors and hard cases by running the model over all training tiles and ranking by loss. Per-tile loss heatmap and disagreement maps render as viewer overlays, and sessions can be saved per classifier version and reloaded later without re-running evaluation
 - **Hierarchical geometry union** for efficient ROI merging
 
 ## Installation

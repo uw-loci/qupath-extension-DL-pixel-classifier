@@ -299,7 +299,7 @@ See [Troubleshooting: What can I do if training is interrupted?](TROUBLESHOOTING
 
 When training completes successfully, a **"Review Training Areas..."** button appears in the progress dialog. This runs the trained model over all training tiles and ranks them by loss to help you identify annotation errors, hard cases, and model failures.
 
-> **Important:** Training tiles are cleaned up when you close the progress dialog. Review your training areas *before* closing.
+> **Important:** Training tiles are cleaned up when you close the progress dialog. Review your training areas *before* closing -- or save the session (see below) to reopen later without re-running evaluation.
 
 ### How it works
 
@@ -322,8 +322,28 @@ When training completes successfully, a **"Review Training Areas..."** button ap
 
 - **Filter by split**: Use the dropdown to show only train or val tiles
 - **Loss threshold**: Use the slider to show only tiles above a minimum loss
-- **Double-click a row** to navigate the QuPath viewer to that tile's location
-- For multi-image projects, double-clicking automatically switches to the correct image
+- **Click a row** to navigate the QuPath viewer to that tile's location. The selected tile's loss heatmap or disagreement map appears as an overlay directly in the viewer, aligned to the tile bounds. Clicking does **not** create any annotations in your project.
+- For multi-image projects, clicking automatically switches to the correct image.
+
+### Viewer overlay
+
+While a row is selected, the tile's diagnostic image is overlaid in the QuPath viewer:
+
+- **Loss Heatmap** (default): per-pixel loss intensity, colored blue (low) -> yellow -> red (high)
+- **Disagreement**: pixels where the prediction differs from the ground truth, colored by the predicted class
+- Switch modes with the **Overlay** dropdown in the preview panel
+- The overlay respects QuPath's **View > Overlay opacity** slider. If opacity drops below 10%, or if **View > Show pixel classification** is off, a yellow warning banner appears at the top of the dialog explaining why the overlay may be invisible.
+- Closing the dialog removes the overlay. If the production prediction overlay was running when you opened the dialog, it is restored.
+
+### Saving and reloading sessions
+
+The **Save Session...** and **Load Session...** buttons persist a Training Area Issues session so you can revisit it later without re-running evaluation.
+
+- **Save Session...** -- confirms the classifier identity, tile count, estimated disk usage, and on-disk location before writing. Sessions are stored under `<classifier_dir>/training_issues_sessions/<yyyyMMdd_HHmmss>/` alongside the model files, so they travel with the classifier.
+- **Load Session...** -- lists saved sessions for the current classifier and reopens the one you pick. If the classifier has been retrained since the session was saved (different model file size or modification time), a warning confirms whether to open the (now-stale) results.
+- Sessions duplicate the PNG assets into the session folder, so they survive even after the transient `disagreement/` folder is cleared.
+
+You can also reopen saved sessions from outside the training workflow via **Extensions > DL Pixel Classifier > Utilities > Load Saved Training Area Issues...** -- useful after restarting QuPath or opening a different project that shares the same classifier.
 
 ### What to look for
 

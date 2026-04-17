@@ -390,13 +390,42 @@ The evaluation progress bar shows which tile is being processed. You can cancel 
 
 This is expected behavior. Training tiles are stored in a temporary directory and are deleted when you close the progress dialog. To review training areas, click the button **before** closing the dialog.
 
-If you need to re-evaluate, retrain the model -- the evaluation can only run while the training tiles still exist.
+If you need to re-evaluate without retraining, **Save Session...** from the Training Area Issues dialog before closing. The saved session copies the PNG assets under `<classifier_dir>/training_issues_sessions/`, and you can reopen it at any time via **Extensions > DL Pixel Classifier > Utilities > Load Saved Training Area Issues...**. Otherwise, to re-evaluate you must retrain.
 
-### Double-click navigation doesn't work
+### Row navigation doesn't switch the image
 
 - Verify the image is still in the project
 - For multi-image training, the dialog attempts to switch to the correct image automatically. If the image was renamed or removed from the project, navigation will fail.
 - Check the QuPath log (**View > Show log**) for error messages
+
+### Viewer overlay is invisible when a row is selected
+
+The Training Area Issues dialog shows a yellow warning banner at the top when either of these conditions would hide the overlay:
+
+- **Overlay opacity is below 10%** -- raise **View > Overlay opacity** slider in QuPath
+- **Pixel classification display is off** -- toggle **View > Show pixel classification** in QuPath
+
+If the warning banner is not shown but the overlay still isn't visible, also check:
+
+- The QuPath viewer is centered on the selected tile (it should be, automatically)
+- The tile's PNG file exists -- look for `<model_dir>/disagreement/train/<stem>_loss.png` or `.../val/<stem>_loss.png`; if it is missing, the Python log may show a `save_loss_heatmap failed` warning for that tile/split
+- The production DL prediction overlay is not silently holding the slot -- the Training Area Issues dialog normally removes it on entry and restores it on close
+
+### No saved sessions listed for a classifier
+
+**Extensions > ... > Load Saved Training Area Issues...** only lists sessions that exist on disk at `<classifier_dir>/training_issues_sessions/`. If none appear:
+
+- Confirm a session was actually saved (the Save button shows a notification on success)
+- Confirm the classifier picker selected the right classifier -- sessions live under a specific model directory and do not transfer to other classifiers, even if renamed to match
+- If you moved the model, the sessions should have moved with it -- check that the `training_issues_sessions/` folder is still next to `model.pt`
+
+### "This session was saved against a different build" warning
+
+Retraining a model in place does not change its `ClassifierMetadata.id`, so a saved session still nominally matches the classifier. The dialog detects that the model file's size or modification time has changed since the session was saved and flags the session as stale. You can still open the session -- the PNGs were rendered against the earlier model -- but the visuals no longer reflect current model behavior. Re-run **Review Training Areas** to get a current session.
+
+### Validation-split tiles show metrics but no overlay images
+
+This was a bug prior to 2026-04-17 caused by train/val tile stems colliding in a flat `disagreement/` directory. The evaluation script now writes PNGs into `disagreement/train/` and `disagreement/val/` subdirectories, so there is no collision. If you see this with a model trained on an older version of the extension, retrain or re-run evaluation to regenerate the per-split directories.
 
 ### High loss on most tiles
 
