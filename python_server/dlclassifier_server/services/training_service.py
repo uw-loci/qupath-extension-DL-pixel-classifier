@@ -1301,18 +1301,25 @@ class TrainingService:
 
         # Create data loaders
         batch_size = training_params.get("batch_size", 8)
+        # DataLoader workers: 0 = main thread (safe). >0 = spawn worker
+        # processes to overlap I/O/augmentation with GPU compute. Exposed
+        # via the "Training: DataLoader Workers" preference; older Appose
+        # releases hang when >0, which is why the default is 0.
+        dl_workers = int(training_params.get("data_loader_workers", 0))
         train_loader = DataLoader(
             train_dataset,
             batch_size=batch_size,
             shuffle=True,
-            num_workers=0  # Avoid multiprocessing issues
+            num_workers=dl_workers,
+            persistent_workers=dl_workers > 0,
         )
 
         val_loader = DataLoader(
             val_dataset,
             batch_size=batch_size,
             shuffle=False,
-            num_workers=0
+            num_workers=dl_workers,
+            persistent_workers=dl_workers > 0,
         )
 
         # Compute class distribution from training masks for diagnostic logging.
@@ -1728,10 +1735,12 @@ class TrainingService:
             small_val_dataset = ResizedDataset(val_dataset, small_size)
             small_train_loader = DataLoader(
                 small_train_dataset, batch_size=batch_size,
-                shuffle=True, num_workers=0)
+                shuffle=True, num_workers=dl_workers,
+                persistent_workers=dl_workers > 0)
             small_val_loader = DataLoader(
                 small_val_dataset, batch_size=batch_size,
-                shuffle=False, num_workers=0)
+                shuffle=False, num_workers=dl_workers,
+                persistent_workers=dl_workers > 0)
 
             # Start with small loaders
             active_train_loader = small_train_loader

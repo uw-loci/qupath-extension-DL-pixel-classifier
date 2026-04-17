@@ -153,6 +153,37 @@ if not getattr(_tsm.SegmentationDataset, '_patched_getitem', False):
     _tsm.SegmentationDataset.__getitem__ = _safe_getitem
     _tsm.SegmentationDataset._patched_getitem = True
 
+# DataLoader num_workers bootstrap: the installed pip package may still
+# hardcode num_workers=0 in training_service._run_training (prior to
+# 0.5.5-dev). When the user has set the "Training: DataLoader Workers"
+# preference > 0, monkey-patch torch.utils.data.DataLoader.__init__ so
+# every DataLoader instantiated after this point uses the requested count,
+# regardless of the installed server version. Bootstraps cleanly off once
+# dlclassifier-server >= 0.5.5-dev honors training_params natively.
+_dl_workers_pref = int(training_params.get("data_loader_workers", 0))
+if _dl_workers_pref > 0:
+    from torch.utils.data import DataLoader as _DataLoader
+    if not getattr(_DataLoader, "_patched_num_workers", False):
+        _orig_dl_init = _DataLoader.__init__
+
+        def _patched_dl_init(self, *args, **kwargs):
+            # Only upgrade when the caller explicitly passed num_workers=0
+            # (or omitted it so it defaults to 0). This lets future
+            # call-sites that opt out of worker processes stay at 0.
+            if kwargs.get("num_workers", 0) == 0:
+                kwargs["num_workers"] = _dl_workers_pref
+                # persistent_workers reduces per-epoch worker startup cost
+                # for small datasets; only meaningful when num_workers > 0.
+                kwargs.setdefault("persistent_workers", True)
+            return _orig_dl_init(self, *args, **kwargs)
+
+        _DataLoader.__init__ = _patched_dl_init
+        _DataLoader._patched_num_workers = True
+        logger.info(
+            "DataLoader bootstrap: forcing num_workers=%d, persistent_workers=True "
+            "(installed pip package may still hardcode num_workers=0)",
+            _dl_workers_pref)
+
 training_service = TrainingService(gpu_manager=gpu_manager)
 
 # Redirect model and checkpoint saving to project directory when specified.
