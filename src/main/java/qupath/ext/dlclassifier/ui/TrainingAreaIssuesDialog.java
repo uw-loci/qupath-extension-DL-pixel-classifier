@@ -759,29 +759,9 @@ public class TrainingAreaIssuesDialog {
     // ==================== Preview Pane ====================
 
     private void updatePreview(TileRow row) {
-        String tilePath = row.getTileImagePath();
-
-        if (tilePath != null && !tilePath.isEmpty()) {
-            try {
-                File tileFile = new File(tilePath);
-                if (tileFile.exists()) {
-                    Image tileImage = new Image(tileFile.toURI().toString());
-                    tileImageView.setImage(tileImage);
-                } else {
-                    logger.warn("Preview tile PNG not found: {} (tile={})",
-                            tilePath, row.getFilename());
-                    tileImageView.setImage(null);
-                }
-            } catch (Exception e) {
-                logger.warn("Failed to load tile image {}: {}", tilePath, e.getMessage());
-                tileImageView.setImage(null);
-            }
-        } else {
-            logger.warn("No tile PNG path for row (tile={}, split={})",
-                    row.getFilename(), row.getSplit());
-            tileImageView.setImage(null);
-        }
-
+        tileImageView.setImage(
+                loadPreviewImage(row.getTileImagePath(), "tile", row.getFilename(),
+                        row.getSplit()));
         updateOverlayImage(row);
     }
 
@@ -795,27 +775,55 @@ public class TrainingAreaIssuesDialog {
             overlayPath = row.getDisagreementImagePath();
             overlayKind = "disagreement";
         }
+        disagreeImageView.setImage(
+                loadPreviewImage(overlayPath, overlayKind, row.getFilename(), row.getSplit()));
+    }
 
-        if (overlayPath != null && !overlayPath.isEmpty()) {
-            try {
-                File overlayFile = new File(overlayPath);
-                if (overlayFile.exists()) {
-                    Image overlayImage = new Image(overlayFile.toURI().toString());
-                    disagreeImageView.setImage(overlayImage);
-                } else {
-                    logger.warn("Preview {} PNG not found: {} (tile={})",
-                            overlayKind, overlayPath, row.getFilename());
-                    disagreeImageView.setImage(null);
-                }
-            } catch (Exception e) {
-                logger.warn("Failed to load {} overlay {}: {}",
-                        overlayKind, overlayPath, e.getMessage());
-                disagreeImageView.setImage(null);
-            }
-        } else {
+    /**
+     * Loads a PNG into a JavaFX {@link Image}, surfacing every failure mode
+     * that would otherwise leave the preview pane silently empty:
+     *   - null/empty path
+     *   - file does not exist on disk
+     *   - zero-byte file (Python saved nothing)
+     *   - JavaFX cannot decode the PNG (captured in image.getException())
+     *   - any Exception during the setup itself
+     * Returns null if the image could not be loaded; callers should treat
+     * null as "no overlay for this tile".
+     */
+    private Image loadPreviewImage(String path, String kind, String filename, String split) {
+        if (path == null || path.isEmpty()) {
             logger.warn("No {} PNG path for row (tile={}, split={})",
-                    overlayKind, row.getFilename(), row.getSplit());
-            disagreeImageView.setImage(null);
+                    kind, filename, split);
+            return null;
+        }
+        try {
+            File file = new File(path);
+            if (!file.exists()) {
+                logger.warn("Preview {} PNG not found: {} (tile={})",
+                        kind, path, filename);
+                return null;
+            }
+            long size = file.length();
+            if (size == 0) {
+                logger.warn("Preview {} PNG is zero bytes: {} (tile={})",
+                        kind, path, filename);
+                return null;
+            }
+            Image image = new Image(file.toURI().toString());
+            // JavaFX captures decode exceptions into the Image rather than
+            // throwing them; surface that here so the user sees something
+            // in the log instead of a blank preview pane.
+            if (image.isError()) {
+                Throwable cause = image.getException();
+                logger.warn("JavaFX failed to decode {} PNG {} (size={} bytes, tile={}): {}",
+                        kind, path, size, filename,
+                        cause != null ? cause.getMessage() : "unknown");
+                return null;
+            }
+            return image;
+        } catch (Exception e) {
+            logger.warn("Failed to load {} overlay {}: {}", kind, path, e.getMessage());
+            return null;
         }
     }
 
