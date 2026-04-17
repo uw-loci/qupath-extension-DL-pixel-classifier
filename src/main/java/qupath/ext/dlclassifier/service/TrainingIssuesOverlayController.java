@@ -73,7 +73,8 @@ public class TrainingIssuesOverlayController {
                 ? row.disagreementImagePath()
                 : row.lossHeatmapPath();
         if (overlayPath == null || overlayPath.isEmpty()) {
-            logger.debug("No overlay PNG available for tile {} in mode {}",
+            logger.warn("No overlay PNG path for tile {} in mode {} "
+                    + "-- evaluate_tiles did not save one for this row",
                     row.filename(), mode);
             clear();
             return;
@@ -81,7 +82,8 @@ public class TrainingIssuesOverlayController {
 
         Path path = Paths.get(overlayPath);
         if (!Files.exists(path)) {
-            logger.debug("Overlay PNG does not exist on disk: {}", overlayPath);
+            logger.warn("Overlay PNG does not exist on disk: {} "
+                    + "(tile={}, mode={})", overlayPath, row.filename(), mode);
             clear();
             return;
         }

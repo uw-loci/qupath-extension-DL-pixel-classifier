@@ -768,13 +768,17 @@ public class TrainingAreaIssuesDialog {
                     Image tileImage = new Image(tileFile.toURI().toString());
                     tileImageView.setImage(tileImage);
                 } else {
+                    logger.warn("Preview tile PNG not found: {} (tile={})",
+                            tilePath, row.getFilename());
                     tileImageView.setImage(null);
                 }
             } catch (Exception e) {
-                logger.debug("Failed to load tile image: {}", e.getMessage());
+                logger.warn("Failed to load tile image {}: {}", tilePath, e.getMessage());
                 tileImageView.setImage(null);
             }
         } else {
+            logger.warn("No tile PNG path for row (tile={}, split={})",
+                    row.getFilename(), row.getSplit());
             tileImageView.setImage(null);
         }
 
@@ -783,10 +787,13 @@ public class TrainingAreaIssuesDialog {
 
     private void updateOverlayImage(TileRow row) {
         String overlayPath;
+        String overlayKind;
         if (OVERLAY_LOSS_HEATMAP.equals(overlaySelector.getValue())) {
             overlayPath = row.getLossHeatmapPath();
+            overlayKind = "loss heatmap";
         } else {
             overlayPath = row.getDisagreementImagePath();
+            overlayKind = "disagreement";
         }
 
         if (overlayPath != null && !overlayPath.isEmpty()) {
@@ -796,13 +803,18 @@ public class TrainingAreaIssuesDialog {
                     Image overlayImage = new Image(overlayFile.toURI().toString());
                     disagreeImageView.setImage(overlayImage);
                 } else {
+                    logger.warn("Preview {} PNG not found: {} (tile={})",
+                            overlayKind, overlayPath, row.getFilename());
                     disagreeImageView.setImage(null);
                 }
             } catch (Exception e) {
-                logger.debug("Failed to load overlay image: {}", e.getMessage());
+                logger.warn("Failed to load {} overlay {}: {}",
+                        overlayKind, overlayPath, e.getMessage());
                 disagreeImageView.setImage(null);
             }
         } else {
+            logger.warn("No {} PNG path for row (tile={}, split={})",
+                    overlayKind, row.getFilename(), row.getSplit());
             disagreeImageView.setImage(null);
         }
     }

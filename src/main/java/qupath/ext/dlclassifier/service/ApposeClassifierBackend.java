@@ -880,6 +880,9 @@ public class ApposeClassifierBackend implements ClassifierBackend {
         }
 
         var jsonArray = JsonParser.parseString(json).getAsJsonArray();
+        int missingDisagree = 0;
+        int missingLoss = 0;
+        int missingTile = 0;
         for (var element : jsonArray) {
             var obj = element.getAsJsonObject();
 
@@ -899,6 +902,9 @@ public class ApposeClassifierBackend implements ClassifierBackend {
                     ? obj.get("loss_heatmap").getAsString() : null;
             String tileImagePath = obj.has("tile_image") && !obj.get("tile_image").isJsonNull()
                     ? obj.get("tile_image").getAsString() : null;
+            if (disagreementImagePath == null) missingDisagree++;
+            if (lossHeatmapPath == null) missingLoss++;
+            if (tileImagePath == null) missingTile++;
 
             results.add(new ClassifierClient.TileEvaluationResult(
                     obj.has("filename") ? obj.get("filename").getAsString() : "",
@@ -915,6 +921,17 @@ public class ApposeClassifierBackend implements ClassifierBackend {
                     lossHeatmapPath,
                     tileImagePath
             ));
+        }
+
+        int total = results.size();
+        if (total > 0 && (missingDisagree > 0 || missingLoss > 0 || missingTile > 0)) {
+            logger.warn("Evaluation produced {} tiles; missing PNGs: "
+                    + "disagreement={}, loss={}, tile={}. These tiles will "
+                    + "show no overlay in the Training Area Issues dialog.",
+                    total, missingDisagree, missingLoss, missingTile);
+        } else if (total > 0) {
+            logger.info("Evaluation produced {} tiles, all with loss/disagreement/tile PNGs",
+                    total);
         }
 
         return results;

@@ -705,13 +705,24 @@ public class TrainingWorkflow {
                     // Open the results dialog on the FX thread. Pass the
                     // model directory and metadata so the dialog can offer
                     // Save/Load session functionality.
-                    Path modelDir = Path.of(modelPath).getParent();
+                    //
+                    // Python's model_path IS the classifier directory (contains
+                    // model.pt, metadata.json, disagreement/). If the path points
+                    // to a file (legacy/fallback), fall back to its parent.
+                    Path modelPathCandidate = Path.of(modelPath);
+                    Path modelDir = Files.isDirectory(modelPathCandidate)
+                            ? modelPathCandidate
+                            : modelPathCandidate.getParent();
                     qupath.ext.dlclassifier.model.ClassifierMetadata metadata = null;
                     try {
                         metadata = new ModelManager().loadMetadata(modelDir);
                     } catch (Exception metaErr) {
                         logger.debug("Could not load classifier metadata for session support: {}",
                                 metaErr.getMessage());
+                    }
+                    if (metadata == null) {
+                        logger.warn("No classifier metadata found at {} -- "
+                                + "Save/Load Session will be disabled", modelDir);
                     }
                     final qupath.ext.dlclassifier.model.ClassifierMetadata finalMetadata = metadata;
                     final Path finalModelDir = modelDir;
