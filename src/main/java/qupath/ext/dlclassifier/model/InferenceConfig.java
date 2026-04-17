@@ -239,36 +239,93 @@ public class InferenceConfig {
      * Computes the effective per-side padding for tile overlap.
      * <p>
      * Both the overlay (expanded reads + center crop) and Apply Classifier
-     * (TileProcessor batch inference) use this to ensure consistent tile
-     * boundary handling. The result is a per-side padding value; total
-     * overlap between adjacent tiles is {@code 2 * effectivePadding}.
+     * (TileProcessor batch inference) use this to decide how much context
+     * to read around each tile. The result is a per-side padding value;
+     * total overlap between adjacent tiles is {@code 2 * effectivePadding}.
      * <p>
-     * Guardrails (all proportional to tileSize so they stay valid for
-     * small tiles):
-     * <ul>
-     *   <li>Minimum 25% of tileSize per side ({@code tileSize / 4})</li>
-     *   <li>Maximum 37.5% of tileSize per side ({@code tileSize * 3 / 8}),
-     *       which keeps stride = tileSize - 2*padding at 25% of tileSize
-     *       so tiling actually advances</li>
-     * </ul>
-     * <p>
-     * A previous implementation imposed an absolute 64-pixel floor on
-     * padding; combined with the ceiling this left stride = 0 for
-     * tileSize below about 170 (e.g. tileSize=128 with overlap=64
-     * produced padding=64, stride=0). Stride=0 breaks the tiling loop,
-     * overflows the tile-count estimate (MAX*MAX wraps to 1), and
-     * triggers the overlay guardrail that refuses the full-viewport
-     * request as oversized. Proportional bounds only from here on.
+     * Only one invariant is enforced here: {@code stride = tileSize -
+     * 2*padding} must be &gt; 0 so the tiling loop advances. That means
+     * {@code padding < tileSize / 2}. The user's configured overlap is
+     * otherwise respected as-is: no silent minimum, no silent clamp
+     * toward a "recommended" range. Prior implementations imposed
+     * absolute / proportional floors and ceilings that overrode user
+     * intent and, on small tiles, drove stride to zero -- the UI is the
+     * right place to advise on quality tradeoffs, not this function.
      *
      * @param tileSize      tile size in pixels
      * @param configOverlap configured overlap in pixels (from user preferences)
-     * @return effective padding per side, always leaving a non-zero stride
+     * @return effective padding per side; clamped only so stride &gt; 0
      */
     public static int computeEffectivePadding(int tileSize, int configOverlap) {
-        int minPadding = tileSize / 4;
-        int maxPadding = tileSize * 3 / 8;
-        int padding = Math.min(Math.max(configOverlap, minPadding), maxPadding);
-        return Math.max(1, padding);
+        if (tileSize <= 0) return 0;
+        int maxPadding = (tileSize - 1) / 2;
+        return Math.min(Math.max(0, configOverlap), maxPadding);
+    }
+
+    /**
+     * Checks a tileSize / overlap pair against recommended quality and
+     * speed ranges, returning a short advisory string when something is
+     * likely to be problematic or {@code null} when the pair is in a
+     * sensible range. Does not alter the values -- callers (typically
+     * the training / inference dialog) use this purely to populate a
+     * warning label so the user knows the tradeoff they are making.
+     * <p>
+     * Current ranges (all tileSize-relative so they hold for any size):
+     * <ul>
+     *   <li>Stride must stay &gt; 0. If the requested overlap is &ge;
+     *       tileSize/2, the effective padding will silently clamp --
+     *       surface that.</li>
+     *   <li>Padding &lt; 12.5% of tileSize: tile boundaries will not
+     *       have enough model context; visible seams are likely near
+     *       high-contrast transitions.</li>
+     *   <li>Padding &gt; 37.5% of tileSize: most of each tile is
+     *       discarded context; inference is much slower with little
+     *       quality benefit.</li>
+     *   <li>tileSize &lt; 192: any fixed-px context budget becomes a
+     *       large fraction of the tile, and the tile count grows
+     *       quadratically with 1/tileSize, so inference is slower.</li>
+     * </ul>
+     *
+     * @return a human-readable advisory, or {@code null} if the pair is
+     *         within recommended ranges
+     */
+    public static String checkTileSettings(int tileSize, int configOverlap) {
+        if (tileSize <= 0) return null;
+        int padding = Math.max(0, configOverlap);
+        if (padding >= tileSize / 2) {
+            int clamped = (tileSize - 1) / 2;
+            return String.format(
+                    "Overlap %dpx is >= tileSize/2 (%dpx) -- stride would be zero "
+                    + "and tiling cannot advance. Value will be clamped to %dpx "
+                    + "at inference. Reduce overlap to fix this properly.",
+                    configOverlap, tileSize / 2, clamped);
+        }
+        double pct = 100.0 * padding / tileSize;
+        if (tileSize < 192) {
+            return String.format(
+                    "Small tile size (%dpx): inference will be slower (tile count "
+                    + "grows as 1/tileSize^2) and per-tile context is limited, "
+                    + "which tends to hurt edge predictions. 256-512px is the "
+                    + "typical working range.",
+                    tileSize);
+        }
+        if (pct < 12.5) {
+            return String.format(
+                    "Low overlap (%.1f%% of tileSize): tile boundaries may show "
+                    + "visible seams in the overlay, especially at high-contrast "
+                    + "class transitions. 12.5-25%% (%d-%dpx for this tile size) "
+                    + "is the typical working range.",
+                    pct, tileSize / 8, tileSize / 4);
+        }
+        if (pct > 37.5) {
+            return String.format(
+                    "High overlap (%.1f%% of tileSize): most of each tile is "
+                    + "discarded context, so inference will be significantly "
+                    + "slower with little quality benefit. 12.5-25%% is the "
+                    + "typical working range.",
+                    pct);
+        }
+        return null;
     }
 
     public static Builder builder() {

@@ -281,6 +281,10 @@ public class TrainingDialog {
 
         // Live VRAM estimation
         private Label vramEstimateLabel;
+
+        // Live tile-settings advisory (small tile, low/high overlap, zero stride).
+        // Purely informational -- the values are not rewritten silently.
+        private Label tileAdvisoryLabel;
         private Label earlyStoppingStatusLabel;
         private Spinner<Double> discriminativeLrSpinner;
         private Label effectiveLrLabel;
@@ -470,6 +474,7 @@ public class TrainingDialog {
             // Initial validation and VRAM estimate
             updateValidation();
             updateVramEstimate();
+            updateTileAdvisory();
 
             // Scan for orphaned best-in-progress checkpoints so we can offer
             // one-click recovery for any interrupted training.
@@ -2656,11 +2661,15 @@ public class TrainingDialog {
             updateSpatialInfoLabels();
 
             // Wire VRAM estimation listeners to all parameters that affect GPU memory
-            tileSizeSpinner.valueProperty().addListener((obs, old, newVal) -> updateVramEstimate());
+            tileSizeSpinner.valueProperty().addListener((obs, old, newVal) -> {
+                updateVramEstimate();
+                updateTileAdvisory();
+            });
             batchSizeSpinner.valueProperty().addListener((obs, old, newVal) -> updateVramEstimate());
             contextScaleCombo.valueProperty().addListener((obs, old, newVal) -> updateVramEstimate());
             architectureCombo.valueProperty().addListener((obs, old, newVal) -> updateVramEstimate());
             backboneCombo.valueProperty().addListener((obs, old, newVal) -> updateVramEstimate());
+            overlapSpinner.valueProperty().addListener((obs, old, newVal) -> updateTileAdvisory());
 
             // Wire tile/time estimate listeners -- refresh when relevant parameters change
             tileSizeSpinner.valueProperty().addListener((obs, o, n) -> {
@@ -2699,6 +2708,18 @@ public class TrainingDialog {
 
             grid.add(overlapLabel, 0, row);
             grid.add(overlapSpinner, 1, row);
+            row++;
+
+            // Tile settings advisory -- updated on tileSize / overlap change.
+            // Green when in the sensible range, orange when likely suboptimal,
+            // red when the requested overlap would force stride<=0. This is
+            // advice; the dialog still allows the user to proceed.
+            tileAdvisoryLabel = new Label();
+            tileAdvisoryLabel.setWrapText(true);
+            tileAdvisoryLabel.setStyle("-fx-font-size: 11px;");
+            tileAdvisoryLabel.setVisible(false);
+            tileAdvisoryLabel.setManaged(false);
+            grid.add(tileAdvisoryLabel, 0, row, 3, 1);
             row++;
 
             // Line stroke width - restore from preferences, or fall back to QuPath's stroke thickness
@@ -4767,6 +4788,37 @@ public class TrainingDialog {
             } catch (Exception e) {
                 logger.debug("Could not cache GPU memory: {}", e.getMessage());
             }
+        }
+
+        /**
+         * Updates the tile-settings advisory label based on current tile
+         * size and overlap. Warns the user about small tiles (slow/low
+         * edge context), low overlap (seams), high overlap (wasted
+         * compute), and overlap large enough to force stride=0 at
+         * inference. The values are never silently rewritten -- this is
+         * pure advice, mirroring the VRAM estimate directly above.
+         */
+        private void updateTileAdvisory() {
+            if (tileAdvisoryLabel == null || tileSizeSpinner == null
+                    || overlapSpinner == null) return;
+            int tileSize = tileSizeSpinner.getValue();
+            int overlap = overlapSpinner.getValue();
+            String advisory = qupath.ext.dlclassifier.model.InferenceConfig
+                    .checkTileSettings(tileSize, overlap);
+            if (advisory == null) {
+                tileAdvisoryLabel.setVisible(false);
+                tileAdvisoryLabel.setManaged(false);
+                tileAdvisoryLabel.setText("");
+                return;
+            }
+            String color = overlap >= tileSize / 2 ? "#CC0000"  // red: stride<=0
+                    : "#CC7A00";                                 // orange: suboptimal
+            tileAdvisoryLabel.setStyle(
+                    "-fx-font-size: 11px; -fx-text-fill: " + color + ";"
+                    + " -fx-font-weight: bold;");
+            tileAdvisoryLabel.setText(advisory);
+            tileAdvisoryLabel.setVisible(true);
+            tileAdvisoryLabel.setManaged(true);
         }
 
         /**
