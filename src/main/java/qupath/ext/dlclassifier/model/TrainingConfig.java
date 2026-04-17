@@ -65,6 +65,7 @@ public class TrainingConfig {
     private final double ohemHardRatio;
     private final double ohemHardRatioStart;
     private final String ohemSchedule; // "fixed" or "anneal" -- derived from start vs end
+    private final boolean ohemAdaptiveFloor;
     private final String earlyStoppingMetric;
     private final int earlyStoppingPatience;
     private final boolean mixedPrecision;
@@ -136,6 +137,7 @@ public class TrainingConfig {
         this.ohemHardRatio = builder.ohemHardRatio;
         this.ohemHardRatioStart = builder.ohemHardRatioStart;
         this.ohemSchedule = builder.ohemSchedule;
+        this.ohemAdaptiveFloor = builder.ohemAdaptiveFloor;
         this.earlyStoppingMetric = builder.earlyStoppingMetric;
         this.earlyStoppingPatience = builder.earlyStoppingPatience;
         this.mixedPrecision = builder.mixedPrecision;
@@ -353,6 +355,18 @@ public class TrainingConfig {
      */
     public String getOhemSchedule() {
         return ohemSchedule;
+    }
+
+    /**
+     * Whether OHEM uses the adaptive global-topk + per-class-floor strategy.
+     * <p>
+     * {@code false} (default) selects pixels per-class proportionally, matching
+     * each class's natural frequency in the batch. {@code true} selects the
+     * globally hardest pixels and then tops each present class up to a small
+     * safety floor, letting hard pixels concentrate on the weaker class.
+     */
+    public boolean isOhemAdaptiveFloor() {
+        return ohemAdaptiveFloor;
     }
 
     /**
@@ -654,6 +668,7 @@ public class TrainingConfig {
                 Double.compare(that.focalGamma, focalGamma) == 0 &&
                 Double.compare(that.ohemHardRatio, ohemHardRatio) == 0 &&
                 Double.compare(that.ohemHardRatioStart, ohemHardRatioStart) == 0 &&
+                ohemAdaptiveFloor == that.ohemAdaptiveFloor &&
                 Objects.equals(earlyStoppingMetric, that.earlyStoppingMetric) &&
                 Objects.equals(focusClass, that.focusClass) &&
                 Objects.equals(intensityAugMode, that.intensityAugMode) &&
@@ -671,7 +686,7 @@ public class TrainingConfig {
                 augmentationParams,
                 usePretrainedWeights, freezeEncoderLayers, frozenLayers, lineStrokeWidth,
                 classWeightMultipliers, contextScale, schedulerType, lossFunction,
-                focalGamma, ohemHardRatio, ohemHardRatioStart,
+                focalGamma, ohemHardRatio, ohemHardRatioStart, ohemAdaptiveFloor,
                 earlyStoppingMetric, earlyStoppingPatience, mixedPrecision,
                 focusClass, focusClassMinIoU, intensityAugMode,
                 gradientAccumulationSteps, progressiveResize, wholeImage, pretrainedModelPath);
@@ -720,6 +735,7 @@ public class TrainingConfig {
         private double ohemHardRatio = 1.0;
         private double ohemHardRatioStart = 1.0;
         private String ohemSchedule = "fixed";
+        private boolean ohemAdaptiveFloor = false;
         private String earlyStoppingMetric = "mean_iou";
         private int earlyStoppingPatience = 15;
         private boolean mixedPrecision = true;
@@ -775,6 +791,7 @@ public class TrainingConfig {
             this.ohemHardRatio = config.ohemHardRatio;
             this.ohemHardRatioStart = config.ohemHardRatioStart;
             this.ohemSchedule = config.ohemSchedule;
+            this.ohemAdaptiveFloor = config.ohemAdaptiveFloor;
             this.earlyStoppingMetric = config.earlyStoppingMetric;
             this.earlyStoppingPatience = config.earlyStoppingPatience;
             this.mixedPrecision = config.mixedPrecision;
@@ -1029,6 +1046,15 @@ public class TrainingConfig {
          */
         public Builder ohemSchedule(String ohemSchedule) {
             this.ohemSchedule = ohemSchedule != null ? ohemSchedule : "fixed";
+            return this;
+        }
+
+        /**
+         * When {@code true}, OHEM uses global topk + per-class safety floor
+         * instead of the default per-class proportional selection.
+         */
+        public Builder ohemAdaptiveFloor(boolean ohemAdaptiveFloor) {
+            this.ohemAdaptiveFloor = ohemAdaptiveFloor;
             return this;
         }
 

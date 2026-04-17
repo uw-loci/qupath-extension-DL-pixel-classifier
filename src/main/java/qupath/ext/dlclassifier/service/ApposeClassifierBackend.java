@@ -289,6 +289,7 @@ public class ApposeClassifierBackend implements ClassifierBackend {
             trainingParams.put("ohem_hard_ratio", trainingConfig.getOhemHardRatio());
             trainingParams.put("ohem_hard_ratio_start", trainingConfig.getOhemHardRatioStart());
             trainingParams.put("ohem_schedule", trainingConfig.getOhemSchedule());
+            trainingParams.put("ohem_adaptive_floor", trainingConfig.isOhemAdaptiveFloor());
         }
         // "disabled" as the metric means the user wants to train for the full
         // epoch count -- turn off the EarlyStopping instance on the Python side.

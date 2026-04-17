@@ -176,6 +176,12 @@ public final class DLClassifierPreferences {
     private static final StringProperty defaultOhemSchedule = PathPrefs.createPersistentPreference(
             "dlclassifier.defaultOhemSchedule", "fixed");
 
+    // When true, OHEM uses global topk + per-class safety floor (lets hard
+    // pixels concentrate on the weaker class). When false, each class keeps
+    // a proportional share of the hard pixels -- the legacy behavior.
+    private static final BooleanProperty defaultOhemAdaptiveFloor = PathPrefs.createPersistentPreference(
+            "dlclassifier.defaultOhemAdaptiveFloor", false);
+
     private static final BooleanProperty defaultProgressiveResize = PathPrefs.createPersistentPreference(
             "dlclassifier.defaultProgressiveResize", false);
 
@@ -291,6 +297,27 @@ public final class DLClassifierPreferences {
                         "menu items (Train, Apply Classifier, Overlay) are temporarily " +
                         "disabled and re-enabled once the rebuild completes. " +
                         "Disable this if you prefer to rebuild manually via Utilities.")
+                .build());
+
+        items.add(new PropertyItemBuilder<>(overlaySmoothing, Double.class)
+                .name("Overlay Prediction Smoothing")
+                .category(CATEGORY)
+                .description("Gaussian sigma for smoothing probability maps before " +
+                        "classification in the prediction overlay. " +
+                        "0 = no smoothing (raw model output, may appear noisy); " +
+                        "1-2 = light; 3-5 = moderate (recommended for noisy models); " +
+                        "5+ = heavy (may lose fine detail). " +
+                        "Changes apply immediately if an overlay is active.")
+                .build());
+
+        items.add(new PropertyItemBuilder<>(multiPassAveraging, Boolean.class)
+                .name("Overlay High-Quality Tile Averaging")
+                .category(CATEGORY)
+                .description("Run each tile at 4 spatial offsets and average the " +
+                        "predictions to eliminate tile boundary artifacts. " +
+                        "Recommended for context-scale models where seams are visible. " +
+                        "Applies to both the overlay and Apply Classifier. " +
+                        "~4x slower but produces seamless results.")
                 .build());
 
         items.add(new PropertyItemBuilder<>(showMenuDot, Boolean.class)
@@ -811,6 +838,18 @@ public final class DLClassifierPreferences {
 
     public static void setDefaultOhemSchedule(String schedule) {
         defaultOhemSchedule.set(schedule != null ? schedule : "fixed");
+    }
+
+    public static boolean isDefaultOhemAdaptiveFloor() {
+        return defaultOhemAdaptiveFloor.get();
+    }
+
+    public static void setDefaultOhemAdaptiveFloor(boolean enabled) {
+        defaultOhemAdaptiveFloor.set(enabled);
+    }
+
+    public static BooleanProperty defaultOhemAdaptiveFloorProperty() {
+        return defaultOhemAdaptiveFloor;
     }
 
     public static double getDefaultFocalGamma() {

@@ -211,6 +211,7 @@ public class TrainingDialog {
         private Label focalGammaLabel;
         private Spinner<Integer> ohemSpinner;
         private Spinner<Integer> ohemStartSpinner;
+        private CheckBox ohemAdaptiveFloorCheck;
         private ComboBox<String> ohemScheduleCombo;
         private Label ohemScheduleLabel;
         private ComboBox<String> earlyStoppingMetricCombo;
@@ -1383,6 +1384,10 @@ public class TrainingDialog {
                     ohemStartSpinner.getValueFactory().setValue(
                             "anneal".equals(sched) ? 100 : ohemSpinner.getValue());
                 }
+                if (ts.containsKey("ohem_adaptive_floor")) {
+                    ohemAdaptiveFloorCheck.setSelected(
+                            Boolean.TRUE.equals(ts.get("ohem_adaptive_floor")));
+                }
 
                 // Early stopping
                 if (ts.containsKey("early_stopping_metric")) {
@@ -1938,6 +1943,7 @@ public class TrainingDialog {
                     .ohemHardRatioStart(ohemStartSpinner.getValue() / 100.0)
                     .ohemSchedule(ohemStartSpinner.getValue() > ohemSpinner.getValue()
                             ? "anneal" : "fixed")
+                    .ohemAdaptiveFloor(ohemAdaptiveFloorCheck.isSelected())
                     .earlyStoppingMetric(mapEarlyStoppingMetricFromDisplay(earlyStoppingMetricCombo.getValue()))
                     .earlyStoppingPatience(earlyStoppingPatienceSpinner.getValue())
                     .mixedPrecision(mixedPrecisionCheck.isSelected())
@@ -2957,6 +2963,41 @@ public class TrainingDialog {
             grid.add(ohemStartSpinner, 1, row);
             row++;
 
+            // OHEM pixel-selection strategy. Visible only when OHEM is active.
+            ohemAdaptiveFloorCheck = new CheckBox("Adaptive per-class floor");
+            ohemAdaptiveFloorCheck.setSelected(
+                    DLClassifierPreferences.isDefaultOhemAdaptiveFloor());
+            TooltipHelper.install(
+                    "Which pixels OHEM keeps when selecting the hardest N%.\n\n" +
+                    "UNCHECKED (legacy, per-class proportional):\n" +
+                    "  For each class, keep the hardest (hard_ratio * class_count)\n" +
+                    "  pixels. The rare class's share of the selected loss matches\n" +
+                    "  its natural fraction of the batch -- so if rare is 5% of\n" +
+                    "  pixels it stays 5% of the loss. Simple and stable, but\n" +
+                    "  weak when class imbalance is extreme.\n\n" +
+                    "CHECKED (adaptive, global topk + per-class floor):\n" +
+                    "  1. Select the hardest N% globally, ignoring class.\n" +
+                    "  2. For every class present in the batch, top it up to at\n" +
+                    "     least floor = min(class_count, max(32, k / (2 * num_classes)))\n" +
+                    "     with that class's hardest remaining pixels.\n" +
+                    "  Lets hard pixels naturally concentrate on whichever class\n" +
+                    "  the model is currently failing (usually the minority),\n" +
+                    "  while guaranteeing no present class drops to zero pixels.\n\n" +
+                    "Try this when rare classes stagnate while majority classes\n" +
+                    "are already near IoU 1.0 and OHEM doesn't seem to help.",
+                    ohemAdaptiveFloorCheck);
+
+            boolean ohemActiveNow = ohemSpinner.getValue() < 100;
+            ohemAdaptiveFloorCheck.setVisible(ohemActiveNow);
+            ohemAdaptiveFloorCheck.setManaged(ohemActiveNow);
+            ohemSpinner.valueProperty().addListener((obs, old, val) -> {
+                boolean active = val != null && val < 100;
+                ohemAdaptiveFloorCheck.setVisible(active);
+                ohemAdaptiveFloorCheck.setManaged(active);
+            });
+            grid.add(ohemAdaptiveFloorCheck, 0, row, 2, 1);
+            row++;
+
             // Early stopping metric
             earlyStoppingMetricCombo = new ComboBox<>(FXCollections.observableArrayList(
                     "Mean IoU", "Validation Loss", "Disabled"));
@@ -3576,21 +3617,13 @@ public class TrainingDialog {
             loadClassesButton.setDisable(!anySelected);
         }
 
-        /** Updates the tile/time estimate label shown after classes are loaded. */
+        /** Updates the tile estimate label shown after classes are loaded. */
         private void updateTileEstimateLabel(int classCount, int imageCount) {
             if (tileEstimateLabel == null || cachedTotalAnnotationArea <= 0) return;
             int est = estimateTileCount();
-            String text = String.format(
+            tileEstimateLabel.setText(String.format(
                     "Loaded %d classes from %d images. Estimated ~%,d training tiles.",
-                    classCount, imageCount, est);
-
-            // Rough time estimate
-            String timeEst = estimateTrainingTime(est);
-            if (!timeEst.isEmpty()) {
-                text += " " + timeEst;
-            }
-
-            tileEstimateLabel.setText(text);
+                    classCount, imageCount, est));
             tileEstimateLabel.setVisible(true);
             tileEstimateLabel.setManaged(true);
         }
@@ -3604,39 +3637,6 @@ public class TrainingDialog {
             // PatchSampler uses ~50% overlap between patches
             double stepSize = coveragePerTile * 0.75;
             return Math.max(1, (int) (cachedTotalAnnotationArea / (stepSize * stepSize)));
-        }
-
-        /** Estimates training time as a human-readable range string. */
-        private String estimateTrainingTime(int tileCount) {
-            if (tileCount <= 0) return "";
-            int batchSize = batchSizeSpinner.getValue();
-            int epochs = epochsSpinner.getValue();
-            String backbone = backboneCombo.getValue();
-            if (backbone == null) return "";
-
-            // Rough ms-per-batch on a mid-range GPU (RTX 3060-3080 class)
-            double msPerBatch;
-            if (backbone.contains("resnet18") || backbone.equals("resnet18")) msPerBatch = 50;
-            else if (backbone.contains("resnet34") || backbone.equals("resnet34")) msPerBatch = 80;
-            else if (backbone.contains("resnet50") || backbone.equals("resnet50")) msPerBatch = 120;
-            else if (backbone.contains("efficientnet")) msPerBatch = 100;
-            else msPerBatch = 80;
-
-            int batchesPerEpoch = Math.max(1, tileCount / batchSize);
-            double totalMs = batchesPerEpoch * epochs * msPerBatch;
-
-            // Show range (0.5x - 2x) to account for GPU variation
-            long minSec = (long) (totalMs * 0.5 / 1000);
-            long maxSec = (long) (totalMs * 2.0 / 1000);
-
-            return String.format("Estimated time: ~%s - %s",
-                    formatDuration(minSec), formatDuration(maxSec));
-        }
-
-        private static String formatDuration(long seconds) {
-            if (seconds < 60) return seconds + " sec";
-            if (seconds < 3600) return (seconds / 60) + " min";
-            return String.format("%dh %dm", seconds / 3600, (seconds % 3600) / 60);
         }
 
         /** Visual indicator when images change after classes were already loaded. */
@@ -4457,6 +4457,7 @@ public class TrainingDialog {
             DLClassifierPreferences.setDefaultOhemHardPixelStartPct(ohemStartSpinner.getValue());
             DLClassifierPreferences.setDefaultOhemSchedule(
                     ohemStartSpinner.getValue() > ohemSpinner.getValue() ? "anneal" : "fixed");
+            DLClassifierPreferences.setDefaultOhemAdaptiveFloor(ohemAdaptiveFloorCheck.isSelected());
             DLClassifierPreferences.setDefaultFocalGamma(focalGammaSpinner.getValue());
             DLClassifierPreferences.setDefaultProgressiveResize(progressiveResizeCheck.isSelected());
             DLClassifierPreferences.setDefaultFocusClass(

@@ -441,10 +441,32 @@ class OHEMCrossEntropyLoss(nn.Module):
     instead of down-weighting them. When hard_ratio=1.0 this is
     equivalent to standard cross-entropy.
 
+    Two selection strategies are supported:
+      * adaptive_floor=False (default, legacy): for each class, keep the
+        hardest (hard_ratio * class_pixel_count) pixels.  The resulting
+        mixture matches each class's natural frequency in the batch, so
+        majority classes dominate when class imbalance is extreme.
+      * adaptive_floor=True: global topk over all valid pixels (hard pixels
+        naturally flow to the hardest class), then top up any present class
+        that fell below a per-class floor.  The floor is
+        min(class_count, max(min_pixels_per_class, k // (num_classes *
+        floor_divisor))), so a class can never contribute fewer than that
+        but also never more than it actually has.
+
     Args:
         hard_ratio: Fraction of pixels to keep (0.05-1.0)
         class_weights: Optional per-class weights
         ignore_index: Label index to ignore (default 255)
+        adaptive_floor: If True, use the global-topk + per-class-floor
+            strategy described above.  Default False preserves the original
+            per-class proportional behavior for backwards compatibility.
+        min_pixels_per_class: Absolute lower bound for the per-class floor
+            in adaptive_floor mode.
+        floor_divisor: Controls how large the per-class floor is relative
+            to equal allocation.  floor = k // (num_classes * floor_divisor),
+            so divisor=1 equalises classes, divisor=4 barely floors anything.
+            Default 2 = a quarter of equal-slot allocation, leaving most of
+            the budget for the hardest pixels.
     """
 
     def __init__(
@@ -452,20 +474,22 @@ class OHEMCrossEntropyLoss(nn.Module):
         hard_ratio: float = 0.25,
         class_weights: Optional[torch.Tensor] = None,
         ignore_index: int = 255,
+        adaptive_floor: bool = False,
+        min_pixels_per_class: int = 32,
+        floor_divisor: int = 2,
     ):
         super().__init__()
         self.hard_ratio = hard_ratio
         self.ignore_index = ignore_index
+        self.adaptive_floor = adaptive_floor
+        self.min_pixels_per_class = int(min_pixels_per_class)
+        self.floor_divisor = max(1, int(floor_divisor))
         self.ce = nn.CrossEntropyLoss(
             weight=class_weights, ignore_index=ignore_index, reduction="none"
         )
 
     def forward(self, inputs: torch.Tensor, targets: torch.Tensor) -> torch.Tensor:
         """Compute OHEM loss with per-class minimum representation.
-
-        Ensures every class present in the batch contributes at least some
-        hard pixels to the loss, preventing minority classes (e.g. Gland)
-        from being entirely dropped when their pixels are "easy."
 
         Args:
             inputs: Model logits of shape (N, C, H, W)
@@ -489,40 +513,67 @@ class OHEMCrossEntropyLoss(nn.Module):
             return valid_losses.mean()
 
         k = max(1, int(valid_losses.numel() * self.hard_ratio))
-
-        # Per-class minimum: guarantee each class gets at least
-        # (hard_ratio * class_pixel_count) pixels in the selection,
-        # with a floor of 1 pixel per class. This prevents minority
-        # classes from being entirely excluded when their pixels are
-        # easy relative to the majority class boundaries.
         num_classes = inputs.shape[1]
         selected_mask = torch.zeros_like(valid_losses, dtype=torch.bool)
 
-        for c in range(num_classes):
-            class_mask = valid_targets == c
-            class_count = class_mask.sum().item()
-            if class_count == 0:
-                continue
-            class_losses = valid_losses[class_mask]
-            # Keep at least hard_ratio of this class's pixels (min 1)
-            class_k = max(1, int(class_count * self.hard_ratio))
-            if class_k >= class_count:
-                selected_mask[class_mask] = True
-            else:
-                _, top_indices = torch.topk(class_losses, class_k)
-                # Map back to the valid_losses index space
-                class_indices = torch.where(class_mask)[0]
-                selected_mask[class_indices[top_indices]] = True
+        if self.adaptive_floor:
+            # Step 1: global topk -- hard pixels naturally concentrate on
+            # whichever class currently has the worst predictions.
+            actual_k = min(k, valid_losses.numel())
+            _, global_top = torch.topk(valid_losses, actual_k)
+            selected_mask[global_top] = True
 
-        # If per-class selection is less than k, fill remaining with
-        # global hardest pixels (original OHEM behavior for the rest)
-        selected_count = selected_mask.sum().item()
-        if selected_count < k:
-            remaining = valid_losses.clone()
-            remaining[selected_mask] = -1.0  # exclude already-selected
-            fill_k = k - int(selected_count)
-            _, fill_indices = torch.topk(remaining, min(fill_k, remaining.numel()))
-            selected_mask[fill_indices] = True
+            # Step 2: per-class safety floor so no present class drops to
+            # zero (or near-zero) pixels in the gradient.
+            floor_base = max(
+                self.min_pixels_per_class,
+                k // max(1, num_classes * self.floor_divisor),
+            )
+            for c in range(num_classes):
+                class_mask = valid_targets == c
+                class_count = class_mask.sum().item()
+                if class_count == 0:
+                    continue
+                floor = min(class_count, floor_base)
+                current = (class_mask & selected_mask).sum().item()
+                if current >= floor:
+                    continue
+                needed = floor - current
+                class_indices = torch.where(class_mask)[0]
+                already = selected_mask[class_indices]
+                candidate_losses = valid_losses[class_indices].clone()
+                candidate_losses[already] = -1.0  # exclude already-selected
+                _, top_indices = torch.topk(
+                    candidate_losses, min(needed, class_count - current)
+                )
+                selected_mask[class_indices[top_indices]] = True
+        else:
+            # Legacy per-class proportional: each class keeps its own
+            # hardest (hard_ratio * class_count) pixels, then fill up to
+            # the global k with the hardest remaining pixels.
+            for c in range(num_classes):
+                class_mask = valid_targets == c
+                class_count = class_mask.sum().item()
+                if class_count == 0:
+                    continue
+                class_losses = valid_losses[class_mask]
+                class_k = max(1, int(class_count * self.hard_ratio))
+                if class_k >= class_count:
+                    selected_mask[class_mask] = True
+                else:
+                    _, top_indices = torch.topk(class_losses, class_k)
+                    class_indices = torch.where(class_mask)[0]
+                    selected_mask[class_indices[top_indices]] = True
+
+            selected_count = selected_mask.sum().item()
+            if selected_count < k:
+                remaining = valid_losses.clone()
+                remaining[selected_mask] = -1.0  # exclude already-selected
+                fill_k = k - int(selected_count)
+                _, fill_indices = torch.topk(
+                    remaining, min(fill_k, remaining.numel())
+                )
+                selected_mask[fill_indices] = True
 
         return valid_losses[selected_mask].mean()
 
@@ -1398,6 +1449,14 @@ class TrainingService:
         # Derived schedule flag for downstream checks.
         _ohem_anneals = ohem_hard_ratio_start > ohem_hard_ratio
 
+        # When True, OHEM selects the GLOBAL hardest K pixels then tops up
+        # any present class that fell below a per-class safety floor.  This
+        # lets hard pixels concentrate on the worst-performing class (usually
+        # the minority) while guaranteeing every class keeps some signal.
+        # Default False preserves the legacy per-class proportional behavior.
+        ohem_adaptive_floor = bool(training_params.get(
+            "ohem_adaptive_floor", False))
+
         # Build the base pixel-level loss
         dice = DiceLoss(ignore_index=unlabeled_index)
 
@@ -1441,6 +1500,7 @@ class TrainingService:
                     hard_ratio=ohem_hard_ratio,
                     class_weights=class_weights,
                     ignore_index=unlabeled_index,
+                    adaptive_floor=ohem_adaptive_floor,
                 )
                 criterion = _CombinedPixelDiceLoss(ohem_pixel, dice)
                 sched_note = ""
@@ -1452,9 +1512,10 @@ class TrainingService:
                     # epoch actually begins at ohem_hard_ratio_start rather
                     # than the configured end value.
                     ohem_pixel.hard_ratio = ohem_hard_ratio_start
+                mode_note = " (adaptive per-class floor)" if ohem_adaptive_floor else ""
                 logger.info(
                     f"OHEM active: keeping hardest {ohem_hard_ratio * 100:.0f}%%"
-                    f" of pixels (pixel-loss component only, Dice unchanged)"
+                    f" of pixels{mode_note} (pixel-loss component only, Dice unchanged)"
                     f"{sched_note}"
                 )
             else:
@@ -1463,6 +1524,7 @@ class TrainingService:
                     hard_ratio=ohem_hard_ratio,
                     class_weights=class_weights,
                     ignore_index=unlabeled_index,
+                    adaptive_floor=ohem_adaptive_floor,
                 )
                 if _ohem_anneals:
                     criterion.hard_ratio = ohem_hard_ratio_start
@@ -1471,9 +1533,10 @@ class TrainingService:
                     sched_note = (f" [anneal: {ohem_hard_ratio_start * 100:.0f}%"
                                   f" -> {ohem_hard_ratio * 100:.0f}%"
                                   f" over first 75% of epochs]")
+                mode_note = " (adaptive per-class floor)" if ohem_adaptive_floor else ""
                 logger.info(
                     f"OHEM active: keeping hardest {ohem_hard_ratio * 100:.0f}%%"
-                    f" of pixels{sched_note}"
+                    f" of pixels{mode_note}{sched_note}"
                 )
 
         # Setup learning rate scheduler (deferred until after criterion for LR finder)
@@ -1764,7 +1827,7 @@ class TrainingService:
                 "Scheduler": sched_desc,
                 "Loss": self._format_loss_desc(
                     loss_function, focal_gamma, ohem_hard_ratio, ohem_schedule,
-                    ohem_hard_ratio_start),
+                    ohem_hard_ratio_start, ohem_adaptive_floor),
                 "Batch Size": (f"{batch_size} (accumulation={accumulation_steps},"
                                f" effective={batch_size * accumulation_steps})"),
                 "Tile Size": tile_size_str,
@@ -2789,7 +2852,8 @@ class TrainingService:
     def _format_loss_desc(
         loss_function: str, focal_gamma: float, ohem_hard_ratio: float,
         ohem_schedule: str = "fixed",
-        ohem_hard_ratio_start: float = None
+        ohem_hard_ratio_start: float = None,
+        ohem_adaptive_floor: bool = False,
     ) -> str:
         """Format a human-readable loss description for the config summary."""
         desc = loss_function
@@ -2798,11 +2862,12 @@ class TrainingService:
         if ohem_hard_ratio < 1.0:
             start = ohem_hard_ratio_start if ohem_hard_ratio_start is not None else ohem_hard_ratio
             anneals = start > ohem_hard_ratio
+            mode = "adaptive floor" if ohem_adaptive_floor else "per-class proportional"
             if anneals:
                 desc += (f" + OHEM (anneal {start * 100:.0f}%"
-                         f" -> {ohem_hard_ratio * 100:.0f}%)")
+                         f" -> {ohem_hard_ratio * 100:.0f}%, {mode})")
             else:
-                desc += f" + OHEM (keep {ohem_hard_ratio * 100:.0f}%)"
+                desc += f" + OHEM (keep {ohem_hard_ratio * 100:.0f}%, {mode})"
         return desc
 
     def find_learning_rate(self, model, train_loader, criterion,
