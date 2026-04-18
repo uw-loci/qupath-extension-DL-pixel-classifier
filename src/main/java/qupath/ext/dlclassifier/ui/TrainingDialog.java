@@ -2675,7 +2675,7 @@ public class TrainingDialog {
             contextScaleCombo.valueProperty().addListener((obs, old, newVal) -> updateVramEstimate());
             architectureCombo.valueProperty().addListener((obs, old, newVal) -> updateVramEstimate());
             backboneCombo.valueProperty().addListener((obs, old, newVal) -> updateVramEstimate());
-            overlapSpinner.valueProperty().addListener((obs, old, newVal) -> updateTileAdvisory());
+            // overlapSpinner listener wired after construction below
 
             // Wire tile/time estimate listeners -- refresh when relevant parameters change
             tileSizeSpinner.valueProperty().addListener((obs, o, n) -> {
@@ -2723,6 +2723,8 @@ public class TrainingDialog {
             grid.add(overlapLabel, 0, row);
             grid.add(overlapSpinner, 1, row);
             row++;
+
+            overlapSpinner.valueProperty().addListener((obs, old, newVal) -> updateTileAdvisory());
 
             // Tile settings advisory -- updated on tileSize / overlap change.
             // Green when in the sensible range, orange when likely suboptimal,
