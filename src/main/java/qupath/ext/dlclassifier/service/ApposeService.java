@@ -882,12 +882,29 @@ public class ApposeService {
         logger.info("Installing dlclassifier-server via pixi run pip...");
         report(statusCallback, "Installing DL classifier server package...");
 
-        java.util.List<String> command = java.util.List.of(
-                pixi.toString(), "run",
-                "--manifest-path", manifestPath.toString(),
-                "pip", "install", "--upgrade", "--no-deps",
-                DL_SERVER_PIP_URL
-        );
+        // For dev builds, force reinstall and bypass pip's cache so each
+        // "Rebuild DL Environment" actually pulls the latest master. Without
+        // these flags, pip sees the installed dlclassifier_server still has
+        // version "0.X.Y-dev" (unchanged between commits) and skips.
+        // Release builds get a version-tagged tarball, so plain --upgrade is
+        // sufficient and we avoid the cost of a re-download.
+        java.util.List<String> command;
+        if (IS_DEV_BUILD) {
+            command = java.util.List.of(
+                    pixi.toString(), "run",
+                    "--manifest-path", manifestPath.toString(),
+                    "pip", "install", "--upgrade", "--no-deps",
+                    "--force-reinstall", "--no-cache-dir",
+                    DL_SERVER_PIP_URL
+            );
+        } else {
+            command = java.util.List.of(
+                    pixi.toString(), "run",
+                    "--manifest-path", manifestPath.toString(),
+                    "pip", "install", "--upgrade", "--no-deps",
+                    DL_SERVER_PIP_URL
+            );
+        }
 
         ProcessBuilder pb = new ProcessBuilder(command);
         pb.directory(envBase.toFile());
