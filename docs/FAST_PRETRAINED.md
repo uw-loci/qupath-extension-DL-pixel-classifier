@@ -106,6 +106,17 @@ other architectures:
   RAM after pre-flight RAM check.
 - **Auto-find learning rate**: runs LR Finder presweep before
   OneCycleLR; can be disabled to save ~10 s per training run.
+- **GPU augmentation (experimental)**: kornia-based augmentation on
+  the GPU. See [TINY_MODEL.md](TINY_MODEL.md#training-speed-notes)
+  for the shared notes.
+- **torch.compile (experimental, Linux + CUDA)**: wraps the model
+  for kernel fusion. See [TINY_MODEL.md](TINY_MODEL.md#training-speed-notes)
+  for requirements and caveats. Fast Pretrained's mobile encoders
+  (EfficientNet-Lite0 without SE/hard-swish) compile cleanly.
+
+At inference time, `channels_last` memory format is enabled
+automatically on CUDA for both encoders here (no SE blocks or BRN
+reshape paths to undo the layout propagation).
 
 ## References
 

@@ -222,6 +222,7 @@ public class TrainingDialog {
         private CheckBox fusedOptimizerCheck;
         private CheckBox useLrFinderCheck;
         private CheckBox gpuAugmentationCheck;
+        private CheckBox useTorchCompileCheck;
 
         // Focus class
         private ComboBox<String> focusClassCombo;
@@ -1970,6 +1971,8 @@ public class TrainingDialog {
                             ? useLrFinderCheck.isSelected() : true)
                     .gpuAugmentation(gpuAugmentationCheck != null
                             && gpuAugmentationCheck.isSelected())
+                    .useTorchCompile(useTorchCompileCheck != null
+                            && useTorchCompileCheck.isSelected())
                     .gradientAccumulationSteps(gradientAccumulationSpinner.getValue())
                     .progressiveResize(progressiveResizeCheck.isSelected())
                     .focusClass(mapFocusClassFromDisplay(focusClassCombo.getValue()))
@@ -3281,6 +3284,27 @@ public class TrainingDialog {
                     "when kornia is not installed or the device is not CUDA.",
                     "https://kornia.readthedocs.io/en/latest/augmentation.html");
             grid.add(gpuAugmentationCheck, 0, row, 2, 1);
+            row++;
+
+            // torch.compile at training (experimental, Linux+CUDA only)
+            useTorchCompileCheck = new CheckBox("torch.compile (experimental, Linux+CUDA)");
+            useTorchCompileCheck.setSelected(false);
+            TooltipHelper.installWithLink(useTorchCompileCheck,
+                    "Wrap the training model with torch.compile(mode=\"reduce-overhead\")\n" +
+                    "for kernel fusion and CUDA graph capture. On tiny models this is\n" +
+                    "usually a 1.4-2x steady-state speedup after the compile cost\n" +
+                    "(~15-40 s on the first iteration).\n\n" +
+                    "Requirements auto-checked at runtime:\n" +
+                    "- Linux host (triton does not install cleanly on Windows yet)\n" +
+                    "- CUDA GPU with compute capability 7.0+ (Volta or newer)\n" +
+                    "- triton importable in the Python environment\n\n" +
+                    "Known caveat: BatchRenorm's in-place buffer updates can trigger\n" +
+                    "graph breaks that limit the speedup. For maximum benefit, pair\n" +
+                    "with Tiny UNet + norm=gn instead of the default norm=brn.\n\n" +
+                    "Safe to leave off. Silently falls back to eager mode on any\n" +
+                    "failure; check the training log for the actual outcome.",
+                    "https://pytorch.org/docs/stable/generated/torch.compile.html");
+            grid.add(useTorchCompileCheck, 0, row, 2, 1);
 
             // Update the basic-mode early stopping status label when these controls change,
             // and grey out the patience spinner when early stopping is disabled.

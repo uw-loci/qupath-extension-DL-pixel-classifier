@@ -78,6 +78,9 @@ public class TrainingConfig {
     // GPU-side augmentation via kornia. Off by default (opt-in);
     // auto-disabled on non-CUDA devices or when kornia is not installed.
     private final boolean gpuAugmentation;
+    // torch.compile at training. Off by default (experimental).
+    // Auto-disabled on non-Linux, non-CUDA, or when triton is unavailable.
+    private final boolean useTorchCompile;
 
     // Focus class for best model selection and early stopping
     private final String focusClass;       // null = disabled (use earlyStoppingMetric as-is)
@@ -155,6 +158,7 @@ public class TrainingConfig {
         this.fusedOptimizer = builder.fusedOptimizer;
         this.useLrFinder = builder.useLrFinder;
         this.gpuAugmentation = builder.gpuAugmentation;
+        this.useTorchCompile = builder.useTorchCompile;
         this.focusClass = builder.focusClass;
         this.focusClassMinIoU = builder.focusClassMinIoU;
         this.intensityAugMode = builder.intensityAugMode;
@@ -437,6 +441,10 @@ public class TrainingConfig {
 
     public boolean isGpuAugmentation() {
         return gpuAugmentation;
+    }
+
+    public boolean isUseTorchCompile() {
+        return useTorchCompile;
     }
 
     /**
@@ -790,6 +798,7 @@ public class TrainingConfig {
         private boolean fusedOptimizer = true;
         private boolean useLrFinder = true;
         private boolean gpuAugmentation = false;
+        private boolean useTorchCompile = false;
         private String focusClass = null;
         private double focusClassMinIoU = 0.5;
         private String intensityAugMode = "none";
@@ -851,6 +860,7 @@ public class TrainingConfig {
             this.fusedOptimizer = config.fusedOptimizer;
             this.useLrFinder = config.useLrFinder;
             this.gpuAugmentation = config.gpuAugmentation;
+            this.useTorchCompile = config.useTorchCompile;
             this.focusClass = config.focusClass;
             this.focusClassMinIoU = config.focusClassMinIoU;
             this.intensityAugMode = config.intensityAugMode;
@@ -1175,6 +1185,11 @@ public class TrainingConfig {
 
         public Builder gpuAugmentation(boolean gpuAugmentation) {
             this.gpuAugmentation = gpuAugmentation;
+            return this;
+        }
+
+        public Builder useTorchCompile(boolean useTorchCompile) {
+            this.useTorchCompile = useTorchCompile;
             return this;
         }
 

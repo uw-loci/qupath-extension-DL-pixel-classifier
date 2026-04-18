@@ -1171,6 +1171,15 @@ class TrainingService:
 
         model = model.to(self.device)
 
+        # torch.compile (opt-in, experimental).  Gated on Linux + CUDA +
+        # Triton availability; silently falls back to eager on any failure.
+        # BRN's in-place buffer updates are the known weak spot for compile
+        # graph-breaks (agent B2); tiny-unet with norm="gn" is the safest
+        # target. Users enable this explicitly via the "Experimental:
+        # torch.compile" checkbox in the Training dialog.
+        if training_params.get("use_torch_compile", False):
+            model = self._try_training_compile(model, model_type, architecture)
+
         # Load pretrained weights from a previously trained model (fine-tuning).
         # Only loads network weights -- optimizer/scheduler start fresh.
         # Skipped when checkpoint_path is set (checkpoint loading restores everything).
@@ -3376,6 +3385,85 @@ class TrainingService:
         if save_path.exists():
             save_path.unlink()
             logger.debug(f"Cleaned up in-progress best model: {save_path}")
+
+    def _try_training_compile(self, model, model_type: str,
+                              architecture: Dict[str, Any]):
+        """Attempt to wrap a training model with torch.compile().
+
+        Experimental and opt-in.  Requires Linux + CUDA + sm_70+ + Triton.
+        Silently returns the eager model on any failure.  Warns when the
+        architecture has a known graph-break risk so the user gets a clear
+        signal in the training log.
+
+        Args:
+            model: The model on its training device.
+            model_type: "unet", "muvit", "tiny-unet", "fast-pretrained", ...
+            architecture: architecture dict from the request.
+
+        Returns:
+            Either the original model (on failure / unsupported) or the
+            torch.compile()-wrapped model.
+        """
+        import platform
+
+        if not hasattr(torch, "compile"):
+            logger.info("torch.compile unavailable in this PyTorch build; "
+                        "using eager mode.")
+            return model
+        if platform.system() != "Linux":
+            logger.info("torch.compile is Linux-gated in this build "
+                        "(Windows/macOS: Triton support is incomplete); "
+                        "using eager mode.")
+            return model
+        if not (isinstance(self.device, torch.device)
+                and self.device.type == "cuda"):
+            logger.info("torch.compile requires CUDA; device=%s", self.device)
+            return model
+        try:
+            cap = torch.cuda.get_device_capability(self.device)
+            if cap[0] < 7:
+                logger.info(
+                    "torch.compile skipped: GPU capability %d.%d < 7.0 "
+                    "(Triton Inductor requires Volta or newer).",
+                    cap[0], cap[1],
+                )
+                return model
+        except Exception as e:
+            logger.debug("Could not query device capability: %s", e)
+        try:
+            import triton  # noqa: F401
+        except ImportError:
+            logger.info("torch.compile requires triton -- not installed. "
+                        "Falling back to eager mode.")
+            return model
+
+        # Warn about known problematic combinations.
+        brn_risk = (
+            model_type != "muvit"
+            and not (model_type == "tiny-unet"
+                     and str(architecture.get("norm", "brn")) == "gn")
+        )
+        if brn_risk:
+            logger.warning(
+                "torch.compile enabled with BatchRenorm in the model "
+                "(model_type=%s, norm=%s). Expect graph-breaks around the "
+                "BRN buffer updates; the speedup may be limited. For the "
+                "best result, use tiny-unet with norm=gn.",
+                model_type, architecture.get("norm", "brn"),
+            )
+
+        try:
+            compiled = torch.compile(model, mode="reduce-overhead",
+                                     dynamic=False)
+            logger.info("Training model wrapped with torch.compile "
+                        "(mode=reduce-overhead, dynamic=False)")
+            return compiled
+        except Exception as e:
+            logger.warning(
+                "torch.compile failed (%s); training continues in eager mode.",
+                e,
+            )
+            return model
 
     def _create_model(
         self,

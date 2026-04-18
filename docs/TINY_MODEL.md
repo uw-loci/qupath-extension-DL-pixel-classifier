@@ -103,7 +103,9 @@ datasets:
 
 ## Training speed notes
 
-Two checkboxes in the Advanced section are worth knowing about:
+Several checkboxes in the Advanced section of the Training dialog
+affect throughput. Defaults are safe; experimental flags are clearly
+labeled and off by default.
 
 - **Fused optimizer (CUDA only)**: Enables PyTorch's fused AdamW
   implementation. Saves 2-5 ms/step on tiny models. Safe to leave on;
@@ -113,6 +115,24 @@ Two checkboxes in the Advanced section are worth knowing about:
   UNet where total training can be <60s, consider disabling to save
   ~10s. When disabled, `max_lr = base_lr * sqrt(batch_size / 8)` is
   used instead.
+- **GPU augmentation (experimental, CUDA only)**: Moves data
+  augmentation from the CPU (albumentations) to the GPU (kornia). With
+  the in-memory dataset preload active, CPU augmentation is typically
+  the per-batch bottleneck; kornia can collapse that 10-20x on small
+  models. Covers flip/rotate90/color-jitter/noise/blur; arbitrary-angle
+  rotation and elastic transforms stay on the CPU path. Falls back
+  silently if kornia is not installed or the device is not CUDA.
+- **torch.compile (experimental, Linux + CUDA)**: Wraps the model with
+  `torch.compile(mode="reduce-overhead")` for kernel fusion and CUDA
+  graph capture. Expected 1.4-2x steady-state speedup on tiny models
+  after a ~15-40 s one-time compile cost. Gated on Linux, CUDA
+  capability >= 7.0, and triton availability; silently falls back to
+  eager on any failure. For maximum benefit pair with `norm=gn`
+  (BatchRenorm's in-place buffer updates cause graph breaks).
+
+At inference time the extension also enables `channels_last` memory
+format on CUDA when the architecture benefits (typical 1.1-1.3x on
+conv-heavy models). This is automatic; no UI toggle.
 
 ## References
 

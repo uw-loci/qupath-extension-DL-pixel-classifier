@@ -305,6 +305,7 @@ public class ApposeClassifierBackend implements ClassifierBackend {
         trainingParams.put("fused_optimizer", trainingConfig.isFusedOptimizer());
         trainingParams.put("use_lr_finder", trainingConfig.isUseLrFinder());
         trainingParams.put("gpu_augmentation", trainingConfig.isGpuAugmentation());
+        trainingParams.put("use_torch_compile", trainingConfig.isUseTorchCompile());
         if (trainingConfig.getGradientAccumulationSteps() > 1) {
             trainingParams.put("gradient_accumulation_steps", trainingConfig.getGradientAccumulationSteps());
         }

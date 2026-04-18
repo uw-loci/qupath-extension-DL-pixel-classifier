@@ -70,6 +70,9 @@ class InferenceService:
         self._model_cache: Dict[str, Tuple[str, Any]] = {}
         # Track which models have been compiled to avoid recompilation
         self._compiled_models: set = set()
+        # Track which cached models have channels_last memory format so that
+        # _infer_batch_spatial knows to convert input tensors to NHWC.
+        self._channels_last_models: set = set()
         self._onnx_providers = self._get_onnx_providers()
 
         logger.info("InferenceService initialized on device: %s", self._device_str)
@@ -493,6 +496,11 @@ class InferenceService:
             else:
                 # PyTorch inference with optional AMP
                 batch_tensor = torch.from_numpy(batch_np).to(self.device)
+                # Match memory format when the model was converted to NHWC.
+                if getattr(model, "_dlclassifier_channels_last", False):
+                    batch_tensor = batch_tensor.contiguous(
+                        memory_format=torch.channels_last
+                    )
                 with torch.no_grad():
                     if use_amp and self._device_str == "cuda":
                         # Prefer BF16 on Ampere+ GPUs, fall back to FP16
@@ -896,6 +904,13 @@ class InferenceService:
             model = model.to(self.device)
             model.eval()
 
+            # channels_last memory format: improves throughput on Tensor Cores
+            # for conv-heavy models on Ampere+ GPUs.  Skip for MuViT (transformer,
+            # no benefit) and for TinyUNet with BatchRenorm (BRN internal reshapes
+            # silently undo the NHWC propagation).
+            if self._apply_channels_last(model, model_type, arch):
+                self._channels_last_models.add(model_path)
+
             self._model_cache[model_path] = ("pytorch", model)
 
             # Apply torch.compile if requested
@@ -905,6 +920,51 @@ class InferenceService:
             return self._model_cache[model_path]
 
         raise FileNotFoundError("No model found at %s" % model_path)
+
+    def _apply_channels_last(self, model, model_type: str,
+                             arch: Dict[str, Any]) -> bool:
+        """Convert a loaded PyTorch model to channels_last memory format.
+
+        Gains 10-30% throughput on convnets on Ampere+ GPUs with Tensor
+        Cores.  Gate carefully: transformers (MuViT) do not benefit and
+        BatchRenorm silently undoes NHWC propagation via internal reshape
+        operations (agent report B2).
+
+        Args:
+            model: The loaded nn.Module
+            model_type: "unet", "muvit", "tiny-unet", "fast-pretrained", ...
+            arch: architecture dict from metadata (used to detect BRN use)
+
+        Returns:
+            True if channels_last was successfully applied, False otherwise.
+            The caller records the result so input tensors can match format.
+        """
+        if self._device_str != "cuda":
+            return False
+        # Transformers -- NHWC offers no benefit and can hurt.
+        if model_type == "muvit":
+            return False
+        # TinyUNet with BatchRenorm -- see agent B2.
+        if model_type == "tiny-unet" and str(arch.get("norm", "brn")) == "brn":
+            logger.debug(
+                "channels_last skipped: tiny-unet with BRN (norm=%s)",
+                arch.get("norm", "brn"),
+            )
+            return False
+        try:
+            model.to(memory_format=torch.channels_last)
+            # Tag for _infer_batch_spatial so input tensors match the layout.
+            setattr(model, "_dlclassifier_channels_last", True)
+            logger.info(
+                "channels_last memory format enabled for %s inference",
+                model_type,
+            )
+            return True
+        except Exception as e:
+            logger.debug(
+                "channels_last not applied (%s): %s", model_type, e
+            )
+            return False
 
     def _try_compile_model(self, model_path: str,
                            model_tuple: Tuple[str, Any]) -> None:
