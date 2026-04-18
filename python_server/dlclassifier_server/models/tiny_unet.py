@@ -163,13 +163,16 @@ class TinyUNet(nn.Module):
             # BatchRenorm2d inherits BN-like affine params -- default ones/zeros ok.
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
+        # Auto-pad up to a multiple of 2**depth with reflection, run the
+        # U-Net, then crop back to the original spatial size. Lets callers
+        # pass arbitrary tile + context-padding combinations (e.g.,
+        # 512 + 2*20 = 552) without hitting a divisibility error.
         h, w = x.shape[-2:]
         mod = 1 << self.depth
-        if h % mod != 0 or w % mod != 0:
-            raise ValueError(
-                "TinyUNet(depth=%d) requires H and W divisible by %d, got %dx%d"
-                % (self.depth, mod, h, w)
-            )
+        pad_h = (mod - h % mod) % mod
+        pad_w = (mod - w % mod) % mod
+        if pad_h or pad_w:
+            x = F.pad(x, (0, pad_w, 0, pad_h), mode="reflect")
 
         x = self.stem(x)
         skips = [x]
@@ -184,4 +187,8 @@ class TinyUNet(nn.Module):
             skip = skips[-2 - i]
             x = torch.cat([x, skip], dim=1)
             x = dec(x)
-        return self.head(x)
+        out = self.head(x)
+
+        if pad_h or pad_w:
+            out = out[..., :h, :w]
+        return out
