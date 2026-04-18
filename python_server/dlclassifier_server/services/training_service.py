@@ -3710,6 +3710,13 @@ class TrainingService:
         torch.save(model.state_dict(), model_path)
 
         # Export to ONNX (skip for MuViT -- custom ops not ONNX-compatible)
+        # We produce two variants when possible:
+        #   model.onnx         -- dynamic batch/H/W, works at any tile size
+        #   model_static.onnx  -- shape fixed to training input_size, used by
+        #                         Phase 4 TensorRT and faster ORT paths
+        # The static variant is only loaded at inference when the runtime tile
+        # shape matches the baked-in shape; otherwise we fall back to dynamic.
+        onnx_variants: Dict[str, Any] = {}
         if model_type == "muvit":
             logger.info("Skipping ONNX export for MuViT model (not supported)")
         else:
@@ -3739,8 +3746,34 @@ class TrainingService:
                     }
                 )
                 logger.info(f"Exported ONNX model to {onnx_path}")
+                onnx_variants["dynamic"] = {"path": "model.onnx"}
             except Exception as e:
-                logger.warning(f"ONNX export failed: {e}")
+                logger.warning(f"ONNX export (dynamic) failed: {e}")
+
+            # Static-shape variant. Phase 3b / Phase 4 prerequisite.
+            try:
+                onnx_static_path = output_dir / "model_static.onnx"
+                torch.onnx.export(
+                    model,
+                    dummy_input,
+                    str(onnx_static_path),
+                    opset_version=14,
+                    input_names=["input"],
+                    output_names=["output"],
+                    # no dynamic_axes -> fully static shape baked into the graph
+                )
+                logger.info(
+                    "Exported static-shape ONNX model to %s (shape=%s)",
+                    onnx_static_path,
+                    [1, actual_channels, input_size[0], input_size[1]],
+                )
+                onnx_variants["static"] = {
+                    "path": "model_static.onnx",
+                    "shape": [1, int(actual_channels),
+                              int(input_size[0]), int(input_size[1])],
+                }
+            except Exception as e:
+                logger.warning(f"ONNX export (static) failed: {e}")
 
         # Read class colors from training config.json if available
         class_colors = {}
@@ -3797,6 +3830,8 @@ class TrainingService:
             "input_config": saved_input_config,
             "classes": class_list
         }
+        if onnx_variants:
+            metadata["onnx_variants"] = onnx_variants
 
         # Also store normalization_stats at top level for backward compat
         if normalization_stats:

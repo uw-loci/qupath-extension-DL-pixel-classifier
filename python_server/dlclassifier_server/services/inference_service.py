@@ -78,6 +78,9 @@ class InferenceService:
         # Track which cached models have channels_last memory format so that
         # _infer_batch_spatial knows to convert input tensors to NHWC.
         self._channels_last_models: set = set()
+        # Model paths where the static-shape ONNX variant does not match
+        # runtime tile geometry; _load_model skips it and uses model.onnx.
+        self._onnx_skip_static: set = set()
         self._onnx_providers = self._get_onnx_providers()
 
         logger.info("InferenceService initialized on device: %s", self._device_str)
@@ -495,6 +498,29 @@ class InferenceService:
             batch_np = np.stack(batch_arrays, axis=0)
 
             if model_type == "onnx":
+                # Runtime shape check for static-shape ONNX. If the batch
+                # shape doesn't match the baked-in shape, fall back to the
+                # dynamic model.onnx variant by evicting this cached session
+                # and marking this model to skip static on future loads.
+                # See Phase 3b notes in
+                # claude-reports/2026-04-17_input-size-divisibility.md.
+                static_shape = getattr(
+                    model, "_dlclassifier_onnx_static_shape", None)
+                if static_shape is not None:
+                    _, c0, h0, w0 = static_shape
+                    _, cb, hb, wb = batch_np.shape
+                    if (cb, hb, wb) != (c0, h0, w0):
+                        logger.info(
+                            "Batch shape %s differs from static ONNX shape "
+                            "%s -- falling back to dynamic model.onnx",
+                            (cb, hb, wb), (c0, h0, w0))
+                        for key, val in list(self._model_cache.items()):
+                            if val is model_tuple:
+                                del self._model_cache[key]
+                                self._onnx_skip_static.add(key)
+                                model_tuple = self._load_model(key)
+                                model_type, model = model_tuple
+                                break
                 input_name = model.get_inputs()[0].name
                 outputs = model.run(None, {input_name: batch_np})
                 batch_logits = outputs[0]  # (N, C, H, W)
@@ -677,21 +703,55 @@ class InferenceService:
 
         model_dir = Path(model_path)
 
-        # Try ONNX first
+        # Prefer the static-shape ONNX when present. It bakes fixed H/W into
+        # the graph (faster on ORT CPU/CUDA; required by Phase 4 TensorRT).
+        # If the runtime tile shape does not match the baked-in shape, the
+        # ORT session.run() call will raise and _infer_batch_spatial falls
+        # back to the dynamic model on a re-load. See
+        # claude-reports/2026-04-17_input-size-divisibility.md for shape
+        # coordination notes.
+        onnx_static_path = model_dir / "model_static.onnx"
         onnx_path = model_dir / "model.onnx"
-        if onnx_path.exists():
+
+        def _try_load_onnx(path: Path, label: str, static_shape=None):
             try:
-                logger.info("Loading ONNX model from %s", onnx_path)
+                logger.info("Loading %s ONNX model from %s", label, path)
                 import onnxruntime as ort
 
                 session = ort.InferenceSession(
-                    str(onnx_path),
+                    str(path),
                     providers=self._onnx_providers
                 )
+                # Tag the session so _infer_batch_spatial can tell whether
+                # it is safe to feed an arbitrary-shaped batch.
+                session._dlclassifier_onnx_variant = label
+                session._dlclassifier_onnx_static_shape = static_shape
                 self._model_cache[model_path] = ("onnx", session)
                 return ("onnx", session)
             except Exception as e:
-                logger.warning("ONNX loading failed, trying PyTorch: %s", e)
+                logger.warning(
+                    "%s ONNX loading failed (%s): %s", label, path, e)
+                return None
+
+        if onnx_static_path.exists() and model_path not in self._onnx_skip_static:
+            # Read baked-in shape from metadata so runtime can check matches.
+            static_shape = None
+            try:
+                with open(model_dir / "metadata.json") as f:
+                    meta = json.load(f)
+                variants = meta.get("onnx_variants", {}) or {}
+                static_shape = variants.get("static", {}).get("shape")
+            except Exception:
+                static_shape = None
+            loaded = _try_load_onnx(
+                onnx_static_path, "static", static_shape=static_shape)
+            if loaded is not None:
+                return loaded
+
+        if onnx_path.exists():
+            loaded = _try_load_onnx(onnx_path, "dynamic")
+            if loaded is not None:
+                return loaded
 
         # Try PyTorch
         pt_path = model_dir / "model.pt"
