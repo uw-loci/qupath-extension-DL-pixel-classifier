@@ -62,6 +62,11 @@ public class TrainingConfig {
     private final String schedulerType;
     private final String lossFunction;
     private final double focalGamma;
+    // Distance-transform weighting for "boundary_ce" / "boundary_ce_dice".
+    // sigma is the exp falloff length in pixels; w_min is the floor
+    // weight assigned exactly at a class boundary.
+    private final double boundarySigma;
+    private final double boundaryWMin;
     private final double ohemHardRatio;
     private final double ohemHardRatioStart;
     private final String ohemSchedule; // "fixed" or "anneal" -- derived from start vs end
@@ -146,6 +151,8 @@ public class TrainingConfig {
         this.schedulerType = builder.schedulerType;
         this.lossFunction = builder.lossFunction;
         this.focalGamma = builder.focalGamma;
+        this.boundarySigma = builder.boundarySigma;
+        this.boundaryWMin = builder.boundaryWMin;
         this.ohemHardRatio = builder.ohemHardRatio;
         this.ohemHardRatioStart = builder.ohemHardRatioStart;
         this.ohemSchedule = builder.ohemSchedule;
@@ -341,6 +348,31 @@ public class TrainingConfig {
      */
     public double getFocalGamma() {
         return focalGamma;
+    }
+
+    /**
+     * Gets the boundary-softening falloff length in pixels.
+     * <p>
+     * Only used when loss function is "boundary_ce" or "boundary_ce_dice".
+     * Controls how fast the per-pixel weight recovers to 1.0 with
+     * distance from the nearest GT class boundary.
+     *
+     * @return sigma (pixels, default 3.0)
+     */
+    public double getBoundarySigma() {
+        return boundarySigma;
+    }
+
+    /**
+     * Gets the boundary-softening floor weight.
+     * <p>
+     * Only used when loss function is "boundary_ce" or "boundary_ce_dice".
+     * The weight applied to pixels sitting exactly on a class boundary.
+     *
+     * @return w_min (default 0.1)
+     */
+    public double getBoundaryWMin() {
+        return boundaryWMin;
     }
 
     /**
@@ -717,6 +749,8 @@ public class TrainingConfig {
                 Objects.equals(schedulerType, that.schedulerType) &&
                 Objects.equals(lossFunction, that.lossFunction) &&
                 Double.compare(that.focalGamma, focalGamma) == 0 &&
+                Double.compare(that.boundarySigma, boundarySigma) == 0 &&
+                Double.compare(that.boundaryWMin, boundaryWMin) == 0 &&
                 Double.compare(that.ohemHardRatio, ohemHardRatio) == 0 &&
                 Double.compare(that.ohemHardRatioStart, ohemHardRatioStart) == 0 &&
                 ohemAdaptiveFloor == that.ohemAdaptiveFloor &&
@@ -739,7 +773,8 @@ public class TrainingConfig {
                 augmentationParams,
                 usePretrainedWeights, freezeEncoderLayers, frozenLayers, lineStrokeWidth,
                 classWeightMultipliers, contextScale, schedulerType, lossFunction,
-                focalGamma, ohemHardRatio, ohemHardRatioStart, ohemAdaptiveFloor,
+                focalGamma, boundarySigma, boundaryWMin,
+                ohemHardRatio, ohemHardRatioStart, ohemAdaptiveFloor,
                 dataLoaderWorkers, inMemoryDataset,
                 earlyStoppingMetric, earlyStoppingPatience, mixedPrecision,
                 focusClass, focusClassMinIoU, intensityAugMode,
@@ -786,6 +821,8 @@ public class TrainingConfig {
         private String schedulerType = "onecycle";
         private String lossFunction = "ce_dice";
         private double focalGamma = 2.0;
+        private double boundarySigma = 3.0;
+        private double boundaryWMin = 0.1;
         private double ohemHardRatio = 1.0;
         private double ohemHardRatioStart = 1.0;
         private String ohemSchedule = "fixed";
@@ -848,6 +885,8 @@ public class TrainingConfig {
             this.schedulerType = config.schedulerType;
             this.lossFunction = config.lossFunction;
             this.focalGamma = config.focalGamma;
+            this.boundarySigma = config.boundarySigma;
+            this.boundaryWMin = config.boundaryWMin;
             this.ohemHardRatio = config.ohemHardRatio;
             this.ohemHardRatioStart = config.ohemHardRatioStart;
             this.ohemSchedule = config.ohemSchedule;
@@ -1080,6 +1119,28 @@ public class TrainingConfig {
          */
         public Builder focalGamma(double focalGamma) {
             this.focalGamma = focalGamma;
+            return this;
+        }
+
+        /**
+         * Sets the boundary-softening falloff length in pixels.
+         * Only used when loss function is "boundary_ce" / "boundary_ce_dice".
+         *
+         * @param boundarySigma falloff length (1.0-20.0, default 3.0)
+         */
+        public Builder boundarySigma(double boundarySigma) {
+            this.boundarySigma = boundarySigma;
+            return this;
+        }
+
+        /**
+         * Sets the boundary-softening floor weight.
+         * Only used when loss function is "boundary_ce" / "boundary_ce_dice".
+         *
+         * @param boundaryWMin weight at exact boundary (0.0-1.0, default 0.1)
+         */
+        public Builder boundaryWMin(double boundaryWMin) {
+            this.boundaryWMin = boundaryWMin;
             return this;
         }
 
@@ -1323,6 +1384,12 @@ public class TrainingConfig {
             }
             if (focalGamma < 0.0 || focalGamma > 10.0) {
                 throw new IllegalStateException("Focal gamma must be between 0.0 and 10.0");
+            }
+            if (boundarySigma <= 0.0 || boundarySigma > 64.0) {
+                throw new IllegalStateException("Boundary sigma must be in (0.0, 64.0]");
+            }
+            if (boundaryWMin < 0.0 || boundaryWMin > 1.0) {
+                throw new IllegalStateException("Boundary w_min must be between 0.0 and 1.0");
             }
             if (ohemHardRatio < 0.05 || ohemHardRatio > 1.0) {
                 throw new IllegalStateException("OHEM hard ratio must be between 0.05 and 1.0");

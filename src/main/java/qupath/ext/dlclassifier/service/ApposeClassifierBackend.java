@@ -286,6 +286,10 @@ public class ApposeClassifierBackend implements ClassifierBackend {
         if ("focal_dice".equals(lf) || "focal".equals(lf)) {
             trainingParams.put("focal_gamma", trainingConfig.getFocalGamma());
         }
+        if ("boundary_ce".equals(lf) || "boundary_ce_dice".equals(lf)) {
+            trainingParams.put("boundary_sigma", trainingConfig.getBoundarySigma());
+            trainingParams.put("boundary_w_min", trainingConfig.getBoundaryWMin());
+        }
         if (trainingConfig.getOhemHardRatio() < 1.0) {
             trainingParams.put("ohem_hard_ratio", trainingConfig.getOhemHardRatio());
             trainingParams.put("ohem_hard_ratio_start", trainingConfig.getOhemHardRatioStart());

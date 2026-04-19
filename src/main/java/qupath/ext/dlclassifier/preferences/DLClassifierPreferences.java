@@ -173,6 +173,14 @@ public final class DLClassifierPreferences {
     private static final DoubleProperty defaultFocalGamma = PathPrefs.createPersistentPreference(
             "dlclassifier.defaultFocalGamma", 2.0);
 
+    // Boundary-softened CE parameters (loss_function = "boundary_ce" or
+    // "boundary_ce_dice"). sigma is the EDT falloff length in pixels,
+    // w_min is the floor weight at exact boundaries.
+    private static final DoubleProperty defaultBoundarySigma = PathPrefs.createPersistentPreference(
+            "dlclassifier.defaultBoundarySigma", 3.0);
+    private static final DoubleProperty defaultBoundaryWMin = PathPrefs.createPersistentPreference(
+            "dlclassifier.defaultBoundaryWMin", 0.1);
+
     private static final StringProperty defaultOhemSchedule = PathPrefs.createPersistentPreference(
             "dlclassifier.defaultOhemSchedule", "fixed");
 
@@ -939,6 +947,30 @@ public final class DLClassifierPreferences {
 
     public static void setDefaultFocalGamma(double gamma) {
         defaultFocalGamma.set(gamma);
+    }
+
+    public static double getDefaultBoundarySigma() {
+        return defaultBoundarySigma.get();
+    }
+
+    public static void setDefaultBoundarySigma(double sigma) {
+        defaultBoundarySigma.set(sigma);
+    }
+
+    public static DoubleProperty defaultBoundarySigmaProperty() {
+        return defaultBoundarySigma;
+    }
+
+    public static double getDefaultBoundaryWMin() {
+        return defaultBoundaryWMin.get();
+    }
+
+    public static void setDefaultBoundaryWMin(double wMin) {
+        defaultBoundaryWMin.set(wMin);
+    }
+
+    public static DoubleProperty defaultBoundaryWMinProperty() {
+        return defaultBoundaryWMin;
     }
 
     public static boolean isDefaultProgressiveResize() {

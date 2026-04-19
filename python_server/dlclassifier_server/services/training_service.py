@@ -731,6 +731,262 @@ class _CombinedPixelDiceLoss(nn.Module):
         return self.pixel_weight * px + self.dice_weight * dice
 
 
+def _lovasz_grad(gt_sorted: torch.Tensor) -> torch.Tensor:
+    """Gradient of the Lovasz extension w.r.t sorted errors (Alg. 1).
+
+    Berman et al., CVPR 2018 (arXiv:1705.08790). Adapted from the
+    original MIT-licensed reference at
+    https://github.com/bermanmaxim/LovaszSoftmax.
+    """
+    p = gt_sorted.numel()
+    gts = gt_sorted.sum()
+    intersection = gts - gt_sorted.float().cumsum(0)
+    union = gts + (1.0 - gt_sorted).float().cumsum(0)
+    jaccard = 1.0 - intersection / union
+    if p > 1:
+        jaccard[1:p] = jaccard[1:p] - jaccard[0:-1].clone()
+    return jaccard
+
+
+class LovaszSoftmaxLoss(nn.Module):
+    """Multi-class Lovasz-Softmax loss -- directly optimises mean IoU.
+
+    Differentiable surrogate for the Jaccard (IoU) index. Has no
+    hyperparameters. Best used after CE warmup (alone it can be
+    unstable early in training), or composed with CE.
+
+    Reference: Berman et al., "The Lovasz-Softmax loss", CVPR 2018.
+    arXiv:1705.08790. See `CombinedCELovaszLoss` for the warmup-
+    friendly combination.
+
+    Args:
+        ignore_index: Label index to ignore (default 255)
+        per_image: Compute per-image then mean (slightly more stable
+            for small batches) or flatten-then-compute (faster). Default False.
+    """
+
+    def __init__(self, ignore_index: int = 255, per_image: bool = False):
+        super().__init__()
+        self.ignore_index = ignore_index
+        self.per_image = per_image
+
+    def forward(self, inputs: torch.Tensor, targets: torch.Tensor) -> torch.Tensor:
+        probs = F.softmax(inputs, dim=1)
+        if self.per_image:
+            losses = []
+            for p, t in zip(probs, targets):
+                fp, ft = self._flatten(p.unsqueeze(0), t.unsqueeze(0))
+                losses.append(self._lovasz_softmax_flat(fp, ft))
+            return torch.stack(losses).mean()
+        fp, ft = self._flatten(probs, targets)
+        return self._lovasz_softmax_flat(fp, ft)
+
+    def _flatten(self, probs: torch.Tensor, targets: torch.Tensor):
+        N, C, H, W = probs.size()
+        probs = probs.permute(0, 2, 3, 1).contiguous().view(-1, C)
+        targets = targets.view(-1)
+        valid = targets != self.ignore_index
+        return probs[valid], targets[valid]
+
+    def _lovasz_softmax_flat(self, probs: torch.Tensor, targets: torch.Tensor):
+        if probs.numel() == 0:
+            return probs.sum() * 0.0
+        C = probs.size(1)
+        losses = []
+        for c in range(C):
+            fg = (targets == c).float()
+            if fg.sum() == 0:
+                continue
+            errors = (fg - probs[:, c]).abs()
+            errors_sorted, perm = torch.sort(errors, descending=True)
+            fg_sorted = fg[perm]
+            grad = _lovasz_grad(fg_sorted)
+            losses.append(torch.dot(errors_sorted, grad))
+        if not losses:
+            return probs.sum() * 0.0
+        return torch.stack(losses).mean()
+
+
+class CombinedCELovaszLoss(nn.Module):
+    """CE + Lovasz-Softmax combiner.
+
+    Pairs standard CE (stable gradient, good early convergence) with
+    Lovasz-Softmax (direct IoU optimisation). The CE term acts as an
+    implicit warmup -- Lovasz alone is known to be unstable from
+    random init.
+
+    Args:
+        class_weights: Optional per-class weights for the CE component
+        ignore_index: Label index to ignore (default 255)
+        ce_weight: Weight on CE (default 0.5)
+        lovasz_weight: Weight on Lovasz (default 0.5)
+    """
+
+    def __init__(
+        self,
+        class_weights: Optional[torch.Tensor] = None,
+        ignore_index: int = 255,
+        ce_weight: float = 0.5,
+        lovasz_weight: float = 0.5,
+    ):
+        super().__init__()
+        self.ce_loss = nn.CrossEntropyLoss(
+            weight=class_weights, ignore_index=ignore_index,
+        )
+        self.lovasz_loss = LovaszSoftmaxLoss(ignore_index=ignore_index)
+        self.ce_weight = ce_weight
+        self.lovasz_weight = lovasz_weight
+
+    def forward(self, inputs: torch.Tensor, targets: torch.Tensor) -> torch.Tensor:
+        inputs = inputs.clamp(-50.0, 50.0)
+        ce = self.ce_loss(inputs, targets)
+        lov = self.lovasz_loss(inputs, targets)
+        return self.ce_weight * ce + self.lovasz_weight * lov
+
+
+class BoundarySoftenedCELoss(nn.Module):
+    """Cross-Entropy with per-pixel distance-transform weighting.
+
+    Down-weights pixels near class boundaries in the ground truth,
+    where manual annotations are typically imprecise. The weight
+    applied to each pixel's CE is:
+
+        w(x) = w_min + (1 - w_min) * (1 - exp(-d(x) / sigma))
+
+    where d(x) is the Euclidean distance transform (pixels) from x
+    to the nearest GT class boundary. Interior pixels get full
+    weight; pixels on or near a boundary get `w_min`.
+
+    This is the inverse of the classic UNet boundary weighting
+    (Ronneberger 2015), targeted at the "noisy manual annotation"
+    regime where edges carry more label noise than interior.
+
+    Boundary detection uses `skimage.segmentation.find_boundaries`
+    with mode='thick' so both inner and outer boundary pixels are
+    included. Distance transform via `scipy.ndimage.distance_transform_edt`.
+
+    Args:
+        sigma: Falloff length in pixels (default 3.0).
+        w_min: Minimum weight at boundary (default 0.1).
+        class_weights: Optional per-class weights (applied to CE).
+        ignore_index: Label index to ignore (default 255).
+    """
+
+    def __init__(
+        self,
+        sigma: float = 3.0,
+        w_min: float = 0.1,
+        class_weights: Optional[torch.Tensor] = None,
+        ignore_index: int = 255,
+    ):
+        super().__init__()
+        self.sigma = float(sigma)
+        self.w_min = float(w_min)
+        self.ignore_index = ignore_index
+        if class_weights is not None:
+            self.register_buffer("class_weights", class_weights)
+        else:
+            self.class_weights = None
+
+    def forward(self, inputs: torch.Tensor, targets: torch.Tensor) -> torch.Tensor:
+        ce = F.cross_entropy(
+            inputs,
+            targets,
+            weight=self.class_weights,
+            ignore_index=self.ignore_index,
+            reduction="none",
+        )  # (N, H, W)
+        weight = self._compute_boundary_weight(targets)  # (N, H, W)
+        valid = targets != self.ignore_index
+        weighted = ce * weight
+        if valid.sum() == 0:
+            return weighted.sum() * 0.0
+        return weighted[valid].mean()
+
+    def _compute_boundary_weight(self, targets: torch.Tensor) -> torch.Tensor:
+        """Compute per-pixel distance-transform weights on CPU.
+
+        Called once per forward pass. At 256x256 with 16-tile batch
+        this runs in ~15-25ms on a modern CPU -- usually smaller than
+        the backward pass for Tiny UNet so it does not bottleneck.
+        Falls back to uniform weights if scipy / skimage are missing
+        (effectively plain CE).
+        """
+        try:
+            from scipy.ndimage import distance_transform_edt
+            from skimage.segmentation import find_boundaries
+        except ImportError:
+            logger.warning(
+                "BoundarySoftenedCE: scipy or scikit-image not available, "
+                "falling back to uniform weights (equivalent to plain CE)"
+            )
+            return torch.ones_like(targets, dtype=torch.float32)
+
+        t = targets.detach().cpu().numpy()
+        N = t.shape[0]
+        weights = np.empty(t.shape, dtype=np.float32)
+        fallback_dist = self.sigma * 5.0
+        for i in range(N):
+            tile = t[i]
+            # find_boundaries treats each distinct label as its own
+            # region, so valid/ignore transitions also count as
+            # boundaries -- that's fine, pixels adjacent to
+            # ignore_index are genuinely uncertain and should be
+            # down-weighted along with class-class boundaries.
+            boundary = find_boundaries(tile, mode="thick")
+            if boundary.any():
+                dist = distance_transform_edt(~boundary).astype(np.float32)
+            else:
+                dist = np.full_like(tile, fallback_dist, dtype=np.float32)
+            weights[i] = self.w_min + (1.0 - self.w_min) * (
+                1.0 - np.exp(-dist / self.sigma)
+            )
+        return torch.from_numpy(weights).to(targets.device)
+
+
+class BoundarySoftenedCEDiceLoss(nn.Module):
+    """Boundary-softened CE combined with Dice.
+
+    Pairs the boundary-weighted CE (addresses edge noise) with Dice
+    (region-level, insensitive to pixel-wise noise at boundaries).
+    This is the recommended configuration when manual annotations
+    have imprecise boundaries -- the two components complement each
+    other: boundary-softened CE lowers gradient at edge noise, Dice
+    continues to push on overall region overlap.
+
+    Args:
+        sigma, w_min: passed through to BoundarySoftenedCELoss.
+        class_weights, ignore_index: standard.
+        ce_weight, dice_weight: weights on each component (default 0.5 each).
+    """
+
+    def __init__(
+        self,
+        sigma: float = 3.0,
+        w_min: float = 0.1,
+        class_weights: Optional[torch.Tensor] = None,
+        ignore_index: int = 255,
+        ce_weight: float = 0.5,
+        dice_weight: float = 0.5,
+    ):
+        super().__init__()
+        self.boundary_ce = BoundarySoftenedCELoss(
+            sigma=sigma,
+            w_min=w_min,
+            class_weights=class_weights,
+            ignore_index=ignore_index,
+        )
+        self.dice_loss = DiceLoss(ignore_index=ignore_index)
+        self.ce_weight = ce_weight
+        self.dice_weight = dice_weight
+
+    def forward(self, inputs: torch.Tensor, targets: torch.Tensor) -> torch.Tensor:
+        inputs = inputs.clamp(-50.0, 50.0)
+        bce = self.boundary_ce(inputs, targets)
+        dice = self.dice_loss(inputs, targets)
+        return self.ce_weight * bce + self.dice_weight * dice
+
+
 class SegmentationDataset(Dataset):
     """Dataset for segmentation training with augmentation support."""
 
@@ -1652,6 +1908,11 @@ class TrainingService:
 
         loss_function = training_params.get("loss_function", "ce_dice")
         focal_gamma = training_params.get("focal_gamma", 2.0)
+        # Boundary-softened CE parameters (only used when loss_function is
+        # "boundary_ce" or "boundary_ce_dice"). sigma is the falloff length
+        # in pixels; w_min is the floor weight applied at exact boundaries.
+        boundary_sigma = float(training_params.get("boundary_sigma", 3.0))
+        boundary_w_min = float(training_params.get("boundary_w_min", 0.1))
         ohem_hard_ratio = training_params.get("ohem_hard_ratio", 1.0)
         # Start value for OHEM anneal.  Defaults to the end value, i.e.
         # "fixed" (no anneal).  When start > end, the ratio linearly anneals
@@ -1701,6 +1962,37 @@ class TrainingService:
                 ignore_index=unlabeled_index
             )
             logger.info("Using Combined CE + Dice loss")
+        elif loss_function == "boundary_ce":
+            criterion = BoundarySoftenedCELoss(
+                sigma=boundary_sigma,
+                w_min=boundary_w_min,
+                class_weights=class_weights,
+                ignore_index=unlabeled_index,
+            )
+            logger.info(
+                "Using Boundary-softened CE (sigma=%.2f, w_min=%.2f)",
+                boundary_sigma, boundary_w_min,
+            )
+        elif loss_function == "boundary_ce_dice":
+            criterion = BoundarySoftenedCEDiceLoss(
+                sigma=boundary_sigma,
+                w_min=boundary_w_min,
+                class_weights=class_weights,
+                ignore_index=unlabeled_index,
+            )
+            logger.info(
+                "Using Boundary-softened CE + Dice (sigma=%.2f, w_min=%.2f)",
+                boundary_sigma, boundary_w_min,
+            )
+        elif loss_function == "lovasz":
+            criterion = LovaszSoftmaxLoss(ignore_index=unlabeled_index)
+            logger.info("Using Lovasz-Softmax loss")
+        elif loss_function == "ce_lovasz":
+            criterion = CombinedCELovaszLoss(
+                class_weights=class_weights,
+                ignore_index=unlabeled_index,
+            )
+            logger.info("Using Combined CE + Lovasz-Softmax loss")
         else:
             criterion = nn.CrossEntropyLoss(
                 weight=class_weights,
@@ -1708,8 +2000,20 @@ class TrainingService:
             )
             logger.info("Using CrossEntropy loss")
 
-        # Wrap with OHEM if active (applies to pixel-loss component only)
-        if ohem_hard_ratio < 1.0:
+        # Wrap with OHEM if active (applies to pixel-loss component only).
+        # Skip for boundary-softened and Lovasz variants: their per-pixel
+        # contribution is already reweighted (boundary) or built from a
+        # sorted-errors decomposition (Lovasz) that does not compose with
+        # hard-example selection.
+        _ohem_incompatible = loss_function in (
+            "boundary_ce", "boundary_ce_dice", "lovasz", "ce_lovasz",
+        )
+        if ohem_hard_ratio < 1.0 and _ohem_incompatible:
+            logger.info(
+                "OHEM disabled: loss_function=%s does not compose with "
+                "hard-pixel selection.", loss_function,
+            )
+        if ohem_hard_ratio < 1.0 and not _ohem_incompatible:
             if isinstance(criterion, (_CombinedPixelDiceLoss, CombinedCEDiceLoss)):
                 # Replace the pixel-loss component with OHEM-wrapped version
                 if isinstance(criterion, _CombinedPixelDiceLoss):

@@ -229,6 +229,10 @@ public class TrainingDialog {
         private ComboBox<String> lossFunctionCombo;
         private Spinner<Double> focalGammaSpinner;
         private Label focalGammaLabel;
+        private Spinner<Double> boundarySigmaSpinner;
+        private Label boundarySigmaLabel;
+        private Spinner<Double> boundaryWMinSpinner;
+        private Label boundaryWMinLabel;
         private Spinner<Integer> ohemSpinner;
         private Spinner<Integer> ohemStartSpinner;
         private CheckBox ohemAdaptiveFloorCheck;
@@ -1433,6 +1437,14 @@ public class TrainingDialog {
                     focalGammaSpinner.getValueFactory().setValue(
                             ((Number) ts.get("focal_gamma")).doubleValue());
                 }
+                if (ts.containsKey("boundary_sigma")) {
+                    boundarySigmaSpinner.getValueFactory().setValue(
+                            ((Number) ts.get("boundary_sigma")).doubleValue());
+                }
+                if (ts.containsKey("boundary_w_min")) {
+                    boundaryWMinSpinner.getValueFactory().setValue(
+                            ((Number) ts.get("boundary_w_min")).doubleValue());
+                }
                 if (ts.containsKey("ohem_hard_ratio")) {
                     ohemSpinner.getValueFactory().setValue(
                             (int) Math.round(((Number) ts.get("ohem_hard_ratio")).doubleValue() * 100));
@@ -2002,6 +2014,8 @@ public class TrainingDialog {
                     .schedulerType(mapSchedulerFromDisplay(schedulerCombo.getValue()))
                     .lossFunction(mapLossFunctionFromDisplay(lossFunctionCombo.getValue()))
                     .focalGamma(focalGammaSpinner.getValue())
+                    .boundarySigma(boundarySigmaSpinner.getValue())
+                    .boundaryWMin(boundaryWMinSpinner.getValue())
                     .ohemHardRatio(ohemSpinner.getValue() / 100.0)
                     .ohemHardRatioStart(ohemStartSpinner.getValue() / 100.0)
                     .ohemSchedule(ohemStartSpinner.getValue() > ohemSpinner.getValue()
@@ -2913,7 +2927,9 @@ public class TrainingDialog {
             // Loss function
             lossFunctionCombo = new ComboBox<>(FXCollections.observableArrayList(
                     "Cross Entropy + Dice", "Cross Entropy",
-                    "Focal + Dice", "Focal"));
+                    "Focal + Dice", "Focal",
+                    "Boundary-softened CE", "Boundary-softened CE + Dice",
+                    "Lovasz-Softmax", "CE + Lovasz-Softmax"));
             lossFunctionCombo.setValue(mapLossFunctionToDisplay(DLClassifierPreferences.getDefaultLossFunction()));
             Label lossLabel = new Label("Loss Function:");
             TooltipHelper.installWithLink(
@@ -2924,7 +2940,20 @@ public class TrainingDialog {
                     "Focal + Dice: Focal loss down-weights easy pixels via\n" +
                     "  (1-p)^gamma, combined with Dice. Best when some regions\n" +
                     "  are much harder than others (e.g., small structures).\n\n" +
-                    "Focal: Focal loss only (no Dice component).",
+                    "Focal: Focal loss only (no Dice component).\n\n" +
+                    "Boundary-softened CE: CE with per-pixel distance-transform\n" +
+                    "  weighting. Down-weights pixels near class boundaries in\n" +
+                    "  the annotation. Use when manual annotations have noisy /\n" +
+                    "  imprecise edges. Reference: inverse of Ronneberger 2015\n" +
+                    "  boundary weighting.\n\n" +
+                    "Boundary-softened CE + Dice: combines the above with Dice,\n" +
+                    "  recommended when edge noise is the main error source.\n\n" +
+                    "Lovasz-Softmax: directly optimises mean IoU. Best used\n" +
+                    "  after a CE warmup (or as CE + Lovasz). No hyperparameters.\n" +
+                    "  Berman et al., CVPR 2018 (arXiv:1705.08790).\n\n" +
+                    "CE + Lovasz-Softmax: CE provides stable early gradient,\n" +
+                    "  Lovasz pushes directly toward IoU. OHEM disabled for\n" +
+                    "  these four new variants (does not compose).",
                     "https://smp.readthedocs.io/en/latest/losses.html",
                     lossLabel, lossFunctionCombo);
 
@@ -2956,16 +2985,85 @@ public class TrainingDialog {
             focalGammaLabel.setManaged(focalSelected);
             focalGammaSpinner.setVisible(focalSelected);
             focalGammaSpinner.setManaged(focalSelected);
-            lossFunctionCombo.valueProperty().addListener((obs, oldVal, newVal) -> {
-                boolean show = isFocalLossSelected(newVal);
-                focalGammaLabel.setVisible(show);
-                focalGammaLabel.setManaged(show);
-                focalGammaSpinner.setVisible(show);
-                focalGammaSpinner.setManaged(show);
-            });
             grid.add(focalGammaLabel, 0, row);
             grid.add(focalGammaSpinner, 1, row);
             row++;
+
+            // Boundary-softening params (visible only when a boundary_ce*
+            // variant is selected). sigma controls the EDT falloff length;
+            // w_min is the floor weight applied at exact boundaries.
+            boundarySigmaLabel = new Label("Boundary Sigma (px):");
+            boundarySigmaSpinner = new Spinner<>(
+                    new SpinnerValueFactory.DoubleSpinnerValueFactory(
+                            0.5, 32.0, DLClassifierPreferences.getDefaultBoundarySigma(), 0.5));
+            boundarySigmaSpinner.setEditable(true);
+            TooltipHelper.install(
+                    "Boundary-softening falloff length in pixels.\n\n" +
+                    "Each pixel's CE loss is weighted by\n" +
+                    "  w = w_min + (1 - w_min) * (1 - exp(-d / sigma))\n" +
+                    "where d is the Euclidean distance to the nearest\n" +
+                    "annotation boundary. Larger sigma = wider soft band.\n\n" +
+                    "  sigma=1-2 px: very tight band (strict).\n" +
+                    "  sigma=3 px (default): matches typical annotator\n" +
+                    "    jitter on 256-px tiles.\n" +
+                    "  sigma=5-10 px: aggressive softening; try when edge\n" +
+                    "    noise is severe (e.g. polygon-traced annotations).\n\n" +
+                    "Tile size divided by 2^depth (for Tiny UNet depth=4, that's\n" +
+                    "16 px) is a reasonable upper bound -- beyond that most\n" +
+                    "pixels are 'near' a boundary and the weighting does nothing.",
+                    boundarySigmaLabel, boundarySigmaSpinner);
+
+            boundaryWMinLabel = new Label("Boundary Floor Weight:");
+            boundaryWMinSpinner = new Spinner<>(
+                    new SpinnerValueFactory.DoubleSpinnerValueFactory(
+                            0.0, 1.0, DLClassifierPreferences.getDefaultBoundaryWMin(), 0.05));
+            boundaryWMinSpinner.setEditable(true);
+            TooltipHelper.install(
+                    "Minimum weight applied at an exact annotation boundary.\n\n" +
+                    "  w_min=0.0: edges contribute no gradient at all\n" +
+                    "    (equivalent to setting the annotation boundary\n" +
+                    "    as an ignore band).\n" +
+                    "  w_min=0.1 (default): edges contribute 10% of\n" +
+                    "    interior gradient. Safe starting point.\n" +
+                    "  w_min=1.0: no softening (equivalent to plain CE).\n\n" +
+                    "Pair with sigma to shape the curve: (sigma=3, w_min=0.1)\n" +
+                    "means boundary pixels get 10% weight, recovering to ~63%\n" +
+                    "at distance = sigma and ~95% at distance = 3 * sigma.",
+                    boundaryWMinLabel, boundaryWMinSpinner);
+
+            boolean boundarySelected = isBoundaryLossSelected(lossFunctionCombo.getValue());
+            boundarySigmaLabel.setVisible(boundarySelected);
+            boundarySigmaLabel.setManaged(boundarySelected);
+            boundarySigmaSpinner.setVisible(boundarySelected);
+            boundarySigmaSpinner.setManaged(boundarySelected);
+            boundaryWMinLabel.setVisible(boundarySelected);
+            boundaryWMinLabel.setManaged(boundarySelected);
+            boundaryWMinSpinner.setVisible(boundarySelected);
+            boundaryWMinSpinner.setManaged(boundarySelected);
+            grid.add(boundarySigmaLabel, 0, row);
+            grid.add(boundarySigmaSpinner, 1, row);
+            row++;
+            grid.add(boundaryWMinLabel, 0, row);
+            grid.add(boundaryWMinSpinner, 1, row);
+            row++;
+
+            // Single listener handles both conditional parameter groups.
+            lossFunctionCombo.valueProperty().addListener((obs, oldVal, newVal) -> {
+                boolean showFocal = isFocalLossSelected(newVal);
+                focalGammaLabel.setVisible(showFocal);
+                focalGammaLabel.setManaged(showFocal);
+                focalGammaSpinner.setVisible(showFocal);
+                focalGammaSpinner.setManaged(showFocal);
+                boolean showBoundary = isBoundaryLossSelected(newVal);
+                boundarySigmaLabel.setVisible(showBoundary);
+                boundarySigmaLabel.setManaged(showBoundary);
+                boundarySigmaSpinner.setVisible(showBoundary);
+                boundarySigmaSpinner.setManaged(showBoundary);
+                boundaryWMinLabel.setVisible(showBoundary);
+                boundaryWMinLabel.setManaged(showBoundary);
+                boundaryWMinSpinner.setVisible(showBoundary);
+                boundaryWMinSpinner.setManaged(showBoundary);
+            });
 
             // OHEM hard pixel % (END / target value)
             ohemSpinner = new Spinner<>(
@@ -4726,6 +4824,8 @@ public class TrainingDialog {
                     ohemStartSpinner.getValue() > ohemSpinner.getValue() ? "anneal" : "fixed");
             DLClassifierPreferences.setDefaultOhemAdaptiveFloor(ohemAdaptiveFloorCheck.isSelected());
             DLClassifierPreferences.setDefaultFocalGamma(focalGammaSpinner.getValue());
+            DLClassifierPreferences.setDefaultBoundarySigma(boundarySigmaSpinner.getValue());
+            DLClassifierPreferences.setDefaultBoundaryWMin(boundaryWMinSpinner.getValue());
             DLClassifierPreferences.setDefaultProgressiveResize(progressiveResizeCheck.isSelected());
             DLClassifierPreferences.setDefaultFocusClass(
                     mapFocusClassFromDisplay(focusClassCombo.getValue()));
@@ -5280,6 +5380,10 @@ public class TrainingDialog {
                 case "cross_entropy" -> "Cross Entropy";
                 case "focal_dice" -> "Focal + Dice";
                 case "focal" -> "Focal";
+                case "boundary_ce" -> "Boundary-softened CE";
+                case "boundary_ce_dice" -> "Boundary-softened CE + Dice";
+                case "lovasz" -> "Lovasz-Softmax";
+                case "ce_lovasz" -> "CE + Lovasz-Softmax";
                 default -> "Cross Entropy + Dice";
             };
         }
@@ -5289,12 +5393,21 @@ public class TrainingDialog {
                 case "Cross Entropy" -> "cross_entropy";
                 case "Focal + Dice" -> "focal_dice";
                 case "Focal" -> "focal";
+                case "Boundary-softened CE" -> "boundary_ce";
+                case "Boundary-softened CE + Dice" -> "boundary_ce_dice";
+                case "Lovasz-Softmax" -> "lovasz";
+                case "CE + Lovasz-Softmax" -> "ce_lovasz";
                 default -> "ce_dice";
             };
         }
 
         private static boolean isFocalLossSelected(String display) {
             return "Focal + Dice".equals(display) || "Focal".equals(display);
+        }
+
+        private static boolean isBoundaryLossSelected(String display) {
+            return "Boundary-softened CE".equals(display)
+                    || "Boundary-softened CE + Dice".equals(display);
         }
 
         private static String mapEarlyStoppingMetricToDisplay(String value) {

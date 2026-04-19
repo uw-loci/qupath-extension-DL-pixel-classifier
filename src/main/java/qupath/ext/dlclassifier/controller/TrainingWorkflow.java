@@ -2226,6 +2226,10 @@ public class TrainingWorkflow {
         if ("focal_dice".equals(lf) || "focal".equals(lf)) {
             settings.put("focal_gamma", config.getFocalGamma());
         }
+        if ("boundary_ce".equals(lf) || "boundary_ce_dice".equals(lf)) {
+            settings.put("boundary_sigma", config.getBoundarySigma());
+            settings.put("boundary_w_min", config.getBoundaryWMin());
+        }
         if (config.getOhemHardRatio() < 1.0) {
             settings.put("ohem_hard_ratio", config.getOhemHardRatio());
             settings.put("ohem_hard_ratio_start", config.getOhemHardRatioStart());
