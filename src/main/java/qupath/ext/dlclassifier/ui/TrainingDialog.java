@@ -2975,11 +2975,17 @@ public class TrainingDialog {
                     "  Lovasz pushes directly toward IoU. OHEM is disabled\n" +
                     "  for the two Lovasz variants (Lovasz is a sorted-\n" +
                     "  errors surrogate, not a per-pixel loss).\n\n" +
-                    "OHEM composes with boundary-softened CE: the per-pixel\n" +
-                    "CE is weighted by the boundary map FIRST, then OHEM\n" +
-                    "selects the hardest K%% on those weighted losses.\n" +
-                    "Near-boundary pixels drop out of the hard set, so\n" +
-                    "OHEM capacity focuses on interior errors.",
+                    "OHEM composes with all other variants:\n" +
+                    "- With CE / CE+Dice: top-K of the per-pixel CE.\n" +
+                    "- With Focal / Focal+Dice: the focal modulation\n" +
+                    "  (1-p_t)^gamma is applied BEFORE the top-K sort\n" +
+                    "  (OHEMFocalLoss), so focal_gamma is preserved.\n" +
+                    "- With Boundary-softened CE: the boundary weight\n" +
+                    "  map is applied BEFORE top-K, pushing edge\n" +
+                    "  annotation noise out of the hard set and\n" +
+                    "  focusing OHEM capacity on interior errors.\n\n" +
+                    "Class weights apply everywhere: CE, Focal, Boundary-\n" +
+                    "softened CE, and Lovasz-Softmax (all variants).",
                     "https://smp.readthedocs.io/en/latest/losses.html",
                     lossLabel, lossFunctionCombo);
 

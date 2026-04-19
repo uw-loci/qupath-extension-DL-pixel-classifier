@@ -815,24 +815,42 @@ def _lovasz_grad(gt_sorted: torch.Tensor) -> torch.Tensor:
 class LovaszSoftmaxLoss(nn.Module):
     """Multi-class Lovasz-Softmax loss -- directly optimises mean IoU.
 
-    Differentiable surrogate for the Jaccard (IoU) index. Has no
-    hyperparameters. Best used after CE warmup (alone it can be
-    unstable early in training), or composed with CE.
+    Differentiable surrogate for the Jaccard (IoU) index. No
+    hyperparameters beyond the class weights and the ignore index.
+    Best used after CE warmup (alone it can be unstable early in
+    training), or composed with CE.
 
     Reference: Berman et al., "The Lovasz-Softmax loss", CVPR 2018.
     arXiv:1705.08790. See `CombinedCELovaszLoss` for the warmup-
     friendly combination.
 
     Args:
-        ignore_index: Label index to ignore (default 255)
+        ignore_index: Label index to ignore (default 255).
         per_image: Compute per-image then mean (slightly more stable
-            for small batches) or flatten-then-compute (faster). Default False.
+            for small batches) or flatten-then-compute (faster).
+            Default False.
+        class_weights: Optional per-class weights applied to each
+            class's Lovasz-extension contribution BEFORE the final
+            mean. Matches the semantics of `CrossEntropyLoss.weight`:
+            rare classes can be given a higher weight to pull their
+            Jaccard index up faster. When None (default), all
+            present classes are weighted equally. When provided,
+            must have length C (shape compatible with the logits).
     """
 
-    def __init__(self, ignore_index: int = 255, per_image: bool = False):
+    def __init__(
+        self,
+        ignore_index: int = 255,
+        per_image: bool = False,
+        class_weights: Optional[torch.Tensor] = None,
+    ):
         super().__init__()
         self.ignore_index = ignore_index
         self.per_image = per_image
+        if class_weights is not None:
+            self.register_buffer("class_weights", class_weights)
+        else:
+            self.class_weights = None
 
     def forward(self, inputs: torch.Tensor, targets: torch.Tensor) -> torch.Tensor:
         probs = F.softmax(inputs, dim=1)
@@ -857,6 +875,7 @@ class LovaszSoftmaxLoss(nn.Module):
             return probs.sum() * 0.0
         C = probs.size(1)
         losses = []
+        weights: List[torch.Tensor] = []
         for c in range(C):
             fg = (targets == c).float()
             if fg.sum() == 0:
@@ -866,9 +885,17 @@ class LovaszSoftmaxLoss(nn.Module):
             fg_sorted = fg[perm]
             grad = _lovasz_grad(fg_sorted)
             losses.append(torch.dot(errors_sorted, grad))
+            if self.class_weights is not None:
+                weights.append(self.class_weights[c])
         if not losses:
             return probs.sum() * 0.0
-        return torch.stack(losses).mean()
+        stacked = torch.stack(losses)
+        if self.class_weights is not None and weights:
+            w = torch.stack(weights).to(stacked.dtype).to(stacked.device)
+            # Weighted mean so total loss scale is preserved when
+            # weights sum to C (legacy unweighted == all-ones /C).
+            return (stacked * w).sum() / w.sum()
+        return stacked.mean()
 
 
 class CombinedCELovaszLoss(nn.Module):
@@ -897,7 +924,10 @@ class CombinedCELovaszLoss(nn.Module):
         self.ce_loss = nn.CrossEntropyLoss(
             weight=class_weights, ignore_index=ignore_index,
         )
-        self.lovasz_loss = LovaszSoftmaxLoss(ignore_index=ignore_index)
+        self.lovasz_loss = LovaszSoftmaxLoss(
+            ignore_index=ignore_index,
+            class_weights=class_weights,
+        )
         self.ce_weight = ce_weight
         self.lovasz_weight = lovasz_weight
 
@@ -1019,6 +1049,72 @@ class BoundarySoftenedCEDiceLoss(nn.Module):
         bce = self.boundary_ce(inputs, targets)
         dice = self.dice_loss(inputs, targets)
         return self.ce_weight * bce + self.dice_weight * dice
+
+
+def _find_ohem_module(criterion: nn.Module) -> Optional["OHEMCrossEntropyLoss"]:
+    """Locate the OHEM module inside a (possibly composed) criterion.
+
+    Handles the current composition shapes: bare OHEM, OHEM-in-
+    _CombinedPixelDiceLoss, and CombinedCEDiceLoss whose CE slot
+    has been replaced with OHEM. Returns None if no OHEM module
+    is reachable.
+
+    Used by checkpoint save/restore to persist the current
+    `hard_ratio` across pause/resume, and by tests to introspect
+    a composed criterion.
+    """
+    if isinstance(criterion, OHEMCrossEntropyLoss):
+        return criterion
+    if isinstance(criterion, _CombinedPixelDiceLoss):
+        if isinstance(criterion.pixel_loss, OHEMCrossEntropyLoss):
+            return criterion.pixel_loss
+    if isinstance(criterion, CombinedCEDiceLoss):
+        if isinstance(criterion.ce_loss, OHEMCrossEntropyLoss):
+            return criterion.ce_loss
+    return None
+
+
+class OHEMFocalLoss(OHEMCrossEntropyLoss):
+    """OHEM hard-pixel mining composed with Focal-loss modulation.
+
+    Before this class existed, the factory wrapping path for
+    Focal + OHEM silently replaced the Focal component with plain
+    OHEM-CE, discarding the user's focal_gamma. This class
+    preserves the focal modulation:
+
+    1. Parent's self.ce computes unreduced CE (with class weights).
+    2. This class computes (1 - p_t)^gamma and folds it in via
+       `pixel_weights` so the parent applies it BEFORE top-K
+       selection.
+    3. Top-K hard-pixel selection then picks the hardest focal-
+       weighted losses -- exactly what the user asked for.
+
+    If `pixel_weights` is supplied by a further composition (e.g.
+    via a boundary-softening wrapper -- though we do not currently
+    ship one on top of Focal), it is multiplied with the focal
+    weight.
+    """
+
+    def __init__(self, gamma: float = 2.0, **kwargs):
+        super().__init__(**kwargs)
+        self.gamma = float(gamma)
+
+    def forward(
+        self,
+        inputs: torch.Tensor,
+        targets: torch.Tensor,
+        pixel_weights: Optional[torch.Tensor] = None,
+    ) -> torch.Tensor:
+        # Compute p_t (probability of the true class) per pixel.
+        probs = F.softmax(inputs, dim=1)
+        targets_safe = targets.clone()
+        valid_mask = targets != self.ignore_index
+        targets_safe[~valid_mask] = 0
+        p_t = probs.gather(1, targets_safe.unsqueeze(1)).squeeze(1)
+        focal_weight = (1.0 - p_t) ** self.gamma
+        if pixel_weights is not None:
+            focal_weight = focal_weight * pixel_weights
+        return super().forward(inputs, targets, pixel_weights=focal_weight)
 
 
 class BoundarySoftenedOHEMCELoss(OHEMCrossEntropyLoss):
@@ -2070,8 +2166,14 @@ class TrainingService:
                 boundary_sigma, boundary_w_min,
             )
         elif loss_function == "lovasz":
-            criterion = LovaszSoftmaxLoss(ignore_index=unlabeled_index)
-            logger.info("Using Lovasz-Softmax loss")
+            criterion = LovaszSoftmaxLoss(
+                ignore_index=unlabeled_index,
+                class_weights=class_weights,
+            )
+            if class_weights is not None:
+                logger.info("Using Lovasz-Softmax loss with class weights")
+            else:
+                logger.info("Using Lovasz-Softmax loss")
         elif loss_function == "ce_lovasz":
             criterion = CombinedCELovaszLoss(
                 class_weights=class_weights,
@@ -2133,17 +2235,29 @@ class TrainingService:
                     mode_note, sched_note,
                 )
             elif isinstance(criterion, (_CombinedPixelDiceLoss, CombinedCEDiceLoss)):
-                # Replace the pixel-loss component with OHEM-wrapped version
+                # Replace the pixel-loss component with OHEM-wrapped version.
+                # For Focal variants, use OHEMFocalLoss so focal_gamma is
+                # preserved inside the top-K selection (weight-first,
+                # then select).
                 if isinstance(criterion, _CombinedPixelDiceLoss):
                     inner_pixel = criterion.pixel_loss
                 else:
                     inner_pixel = criterion.ce_loss
-                ohem_pixel = OHEMCrossEntropyLoss(
-                    hard_ratio=ohem_hard_ratio,
-                    class_weights=class_weights,
-                    ignore_index=unlabeled_index,
-                    adaptive_floor=ohem_adaptive_floor,
-                )
+                if loss_function in ("focal", "focal_dice"):
+                    ohem_pixel = OHEMFocalLoss(
+                        gamma=focal_gamma,
+                        hard_ratio=ohem_hard_ratio,
+                        class_weights=class_weights,
+                        ignore_index=unlabeled_index,
+                        adaptive_floor=ohem_adaptive_floor,
+                    )
+                else:
+                    ohem_pixel = OHEMCrossEntropyLoss(
+                        hard_ratio=ohem_hard_ratio,
+                        class_weights=class_weights,
+                        ignore_index=unlabeled_index,
+                        adaptive_floor=ohem_adaptive_floor,
+                    )
                 criterion = _CombinedPixelDiceLoss(ohem_pixel, dice)
                 sched_note = ""
                 if _ohem_anneals:
@@ -2161,13 +2275,24 @@ class TrainingService:
                     f"{sched_note}"
                 )
             else:
-                # Pure pixel loss (CE or Focal) -- wrap entirely
-                criterion = OHEMCrossEntropyLoss(
-                    hard_ratio=ohem_hard_ratio,
-                    class_weights=class_weights,
-                    ignore_index=unlabeled_index,
-                    adaptive_floor=ohem_adaptive_floor,
-                )
+                # Pure pixel loss (CE or Focal) -- wrap entirely.
+                # Focal keeps its gamma via OHEMFocalLoss; plain CE
+                # uses the base OHEM class.
+                if loss_function == "focal":
+                    criterion = OHEMFocalLoss(
+                        gamma=focal_gamma,
+                        hard_ratio=ohem_hard_ratio,
+                        class_weights=class_weights,
+                        ignore_index=unlabeled_index,
+                        adaptive_floor=ohem_adaptive_floor,
+                    )
+                else:
+                    criterion = OHEMCrossEntropyLoss(
+                        hard_ratio=ohem_hard_ratio,
+                        class_weights=class_weights,
+                        ignore_index=unlabeled_index,
+                        adaptive_floor=ohem_adaptive_floor,
+                    )
                 if _ohem_anneals:
                     criterion.hard_ratio = ohem_hard_ratio_start
                 sched_note = ""
@@ -2325,6 +2450,23 @@ class TrainingService:
                 early_stopping.counter = es_state["counter"]
                 if "best_state" in es_state and es_state["best_state"] is not None:
                     early_stopping.best_state = es_state["best_state"]
+
+            # Restore OHEM anneal state if present. Safety net on top
+            # of the formulaic per-epoch anneal block -- it ensures
+            # the resumed run begins with the exact hard_ratio that
+            # was active at pause, independent of any changes to
+            # training_params in between save and resume.
+            if "ohem_state" in checkpoint:
+                _ohem_module = _find_ohem_module(criterion)
+                if _ohem_module is not None:
+                    _saved_state = checkpoint["ohem_state"]
+                    _ohem_module.hard_ratio = float(_saved_state["hard_ratio"])
+                    logger.info(
+                        "Restored OHEM hard_ratio from checkpoint: %.3f "
+                        "(saved at epoch %d)",
+                        _ohem_module.hard_ratio,
+                        _saved_state.get("epoch_at_save", -1),
+                    )
 
             # Restore training history and best model (handle both formats)
             training_history = checkpoint.get("training_history", [])
@@ -3172,6 +3314,7 @@ class TrainingService:
                         "classes": classes,
                     },
                     normalization_stats=dataset_norm_stats,
+                    criterion=criterion,
                 )
                 # Free GPU memory during pause
                 model = model.cpu()
@@ -3225,6 +3368,7 @@ class TrainingService:
                     "training_params": training_params, "classes": classes,
                 },
                 normalization_stats=dataset_norm_stats,
+                criterion=criterion,
             )
             # Save last-epoch model (current model state)
             _cls_name = training_params.get("classifier_name")
@@ -3308,6 +3452,7 @@ class TrainingService:
                 "classes": classes,
             },
             normalization_stats=dataset_norm_stats,
+            criterion=criterion,
         )
 
         # Clear cache before restoring weights
@@ -3706,7 +3851,8 @@ class TrainingService:
         best_model_state: Optional[Dict],
         model_type: str,
         training_config: Dict[str, Any],
-        normalization_stats: Optional[List[Dict[str, float]]] = None
+        normalization_stats: Optional[List[Dict[str, float]]] = None,
+        criterion: Optional[nn.Module] = None,
     ) -> str:
         """Save a training checkpoint for pause/resume.
 
@@ -3758,6 +3904,20 @@ class TrainingService:
                 "counter": early_stopping.counter,
                 "best_state": early_stopping.best_state,
             }
+
+        # Persist OHEM anneal state so resume picks up at the exact
+        # hard_ratio that was active at pause. Without this, subtle
+        # mismatches between training_params at pause and at resume
+        # (e.g. user tweaked ohem_hard_ratio_start) could cause the
+        # resumed run to start one step of each epoch with an
+        # unexpected ratio before the anneal block corrects it.
+        if criterion is not None:
+            ohem_module = _find_ohem_module(criterion)
+            if ohem_module is not None:
+                checkpoint["ohem_state"] = {
+                    "hard_ratio": float(ohem_module.hard_ratio),
+                    "epoch_at_save": len(training_history),
+                }
 
         torch.save(checkpoint, str(checkpoint_path))
         logger.info(f"Checkpoint saved to {checkpoint_path}")
