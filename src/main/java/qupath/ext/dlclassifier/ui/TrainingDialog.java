@@ -350,7 +350,10 @@ public class TrainingDialog {
 
             okButton = new Button("Start Training");
             okButton.setDisable(true);
-            okButton.setDefaultButton(true);
+            // Intentionally NOT setDefaultButton(true): the dialog has many
+            // text fields and Enter used to kick off training while the user
+            // was still typing a value. Training is a long-running, not-
+            // trivially-reversible action, so require an explicit click.
             okButton.setOnAction(e -> {
                 var result = buildResult();
                 if (result == null) {
