@@ -755,6 +755,27 @@ class SegmentationDataset(Dataset):
                                   list(self.images_dir.glob("*.png")) +
                                   list(self.images_dir.glob("*.raw")))
         logger.info(f"Found {len(self.image_files)} images in {images_dir}")
+        # When Java reports export success but the directory is empty or
+        # missing, something went wrong on the Java side (annotations
+        # outside class list, patchLocations=0, exception during write).
+        # Surface what we see so the root cause is clear from one log
+        # instead of forcing a second round trip.
+        if len(self.image_files) == 0:
+            if not self.images_dir.exists():
+                logger.error(
+                    "Training images directory does not exist: %s "
+                    "(the Java-side exporter did not write here -- check "
+                    "QuPath's log pane for the export step)",
+                    self.images_dir)
+            else:
+                other = sorted(p.name for p in self.images_dir.iterdir())
+                logger.error(
+                    "Training images directory exists but has 0 images "
+                    "(checked .tiff/.tif/.png/.raw). Contents: %s. "
+                    "Check QuPath's log pane for the Java exporter's "
+                    "'Exported N training patches' and 'Found N annotations' "
+                    "lines.",
+                    other if other else "(empty)")
         if self.context_dir:
             logger.info(f"Multi-scale context enabled from {context_dir}")
 
