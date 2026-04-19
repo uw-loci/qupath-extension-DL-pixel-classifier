@@ -30,6 +30,7 @@ import qupath.ext.dlclassifier.service.ClassifierClient;
 import qupath.ext.dlclassifier.service.DLPixelClassifier;
 import qupath.ext.dlclassifier.service.ModelManager;
 import qupath.ext.dlclassifier.service.OverlayService;
+import qupath.ext.dlclassifier.service.warnings.InteractionWarningRegistration;
 import qupath.ext.dlclassifier.model.ChannelConfiguration;
 import qupath.ext.dlclassifier.utilities.CheckpointScanner;
 import qupath.ext.dlclassifier.utilities.CheckpointScanner.OrphanedCheckpoint;
@@ -121,6 +122,12 @@ public class SetupDLClassifier implements QuPathExtension, GitHubProject {
 
         // Register persistent preferences
         DLClassifierPreferences.installPreferences(qupath);
+
+        // Register interaction-warning watchers so pre-training,
+        // pre-inference and preference-toggle checks know what to
+        // evaluate. Safe to call before anything else uses the
+        // service -- registration is idempotent by watcher id.
+        InteractionWarningRegistration.registerAll();
 
         // Fast filesystem check to determine environment state (no downloads)
         updateEnvironmentState();

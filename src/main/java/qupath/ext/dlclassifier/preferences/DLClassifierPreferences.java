@@ -4,6 +4,7 @@ import javafx.beans.property.*;
 import javafx.collections.ObservableList;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import qupath.ext.dlclassifier.service.warnings.InteractionWarningService;
 import qupath.fx.prefs.controlsfx.PropertyItemBuilder;
 import qupath.lib.gui.QuPathGUI;
 import qupath.lib.gui.prefs.PathPrefs;
@@ -303,6 +304,26 @@ public final class DLClassifierPreferences {
             return;
 
         logger.info("Installing DL Pixel Classifier preferences");
+
+        // Wire interaction-warning preference-toggle listeners. Fires
+        // the relevant PreferenceWarning watchers when the user flips
+        // the experimental TRT / INT8 toggles, so they get an
+        // immediate popup instead of wondering why nothing changed.
+        javafx.beans.value.ChangeListener<Boolean> providerToggleListener =
+                (obs, oldV, newV) -> {
+                    try {
+                        var list = InteractionWarningService.evaluatePreferences();
+                        var visible = InteractionWarningService.filterVisible(list);
+                        if (!visible.isEmpty()) {
+                            InteractionWarningService.showIfAny(visible, null);
+                        }
+                    } catch (RuntimeException ex) {
+                        logger.warn("Preference-toggle interaction warning "
+                                + "evaluation failed", ex);
+                    }
+                };
+        experimentalTensorRT.addListener(providerToggleListener);
+        experimentalInt8.addListener(providerToggleListener);
 
         ObservableList<org.controlsfx.control.PropertySheet.Item> items =
                 qupath.getPreferencePane()

@@ -202,11 +202,38 @@ public class OverlayService {
                 .outputType(InferenceConfig.OutputType.OVERLAY)
                 .build();
 
+        showInferenceInteractionWarnings(config, selectedMetadata);
+
         DLPixelClassifier pixelClassifier = new DLPixelClassifier(
                 selectedMetadata, selectedChannelConfig, config, imageData);
         applyClassifierOverlay(imageData, pixelClassifier,
                 selectedMetadata, selectedChannelConfig);
         return true;
+    }
+
+    /**
+     * Runs inference-scope interaction checks (e.g. channels_last
+     * skipped on BRN models) once per overlay creation and shows the
+     * popup if any fire. Info-level warnings do not block overlay
+     * creation -- the user dismisses or suppresses them and work
+     * proceeds. Suppressed watchers are silent.
+     */
+    private void showInferenceInteractionWarnings(
+            InferenceConfig config,
+            qupath.ext.dlclassifier.model.ClassifierMetadata metadata) {
+        try {
+            var warnings = qupath.ext.dlclassifier.service.warnings
+                    .InteractionWarningService.evaluate(config, metadata);
+            var visible = qupath.ext.dlclassifier.service.warnings
+                    .InteractionWarningService.filterVisible(warnings);
+            if (!visible.isEmpty()) {
+                qupath.ext.dlclassifier.service.warnings
+                        .InteractionWarningService.showIfAny(visible, null);
+            }
+        } catch (RuntimeException ex) {
+            // A buggy watcher must never prevent overlay creation.
+            logger.warn("Inference interaction-warning evaluation failed", ex);
+        }
     }
 
     /**

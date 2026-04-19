@@ -32,6 +32,12 @@ public class TrainingConfig {
     // Tile parameters
     private final int tileSize;
     private final int overlap;
+    // True when at least one image in the project has been assigned an
+    // explicit TRAIN_ONLY or VAL_ONLY role. When false and overlap > 0,
+    // overlapping tiles from the same source image can land on opposite
+    // sides of the stratified train/val split (pixel-level leakage) --
+    // see TileOverlapSplitWatcher.
+    private final boolean hasPerImageSplitRoles;
     private final double downsample;
 
     // Data configuration
@@ -138,6 +144,7 @@ public class TrainingConfig {
         this.seed = builder.seed;
         this.tileSize = builder.tileSize;
         this.overlap = builder.overlap;
+        this.hasPerImageSplitRoles = builder.hasPerImageSplitRoles;
         this.downsample = builder.downsample;
         this.validationSplit = builder.validationSplit;
         this.augmentationConfig = Collections.unmodifiableMap(new LinkedHashMap<>(builder.augmentationConfig));
@@ -216,6 +223,15 @@ public class TrainingConfig {
 
     public int getOverlap() {
         return overlap;
+    }
+
+    /**
+     * @return true iff at least one image in the project has an
+     *     explicit TRAIN_ONLY or VAL_ONLY split role. Used by the
+     *     pre-training overlap+split-leakage check.
+     */
+    public boolean isHasPerImageSplitRoles() {
+        return hasPerImageSplitRoles;
     }
 
     /**
@@ -731,6 +747,7 @@ public class TrainingConfig {
                 Objects.equals(seed, that.seed) &&
                 tileSize == that.tileSize &&
                 overlap == that.overlap &&
+                hasPerImageSplitRoles == that.hasPerImageSplitRoles &&
                 Double.compare(that.downsample, downsample) == 0 &&
                 Double.compare(that.validationSplit, validationSplit) == 0 &&
                 usePretrainedWeights == that.usePretrainedWeights &&
@@ -769,7 +786,7 @@ public class TrainingConfig {
     public int hashCode() {
         return Objects.hash(modelType, backbone, epochs, batchSize, learningRate,
                 weightDecay, discriminativeLrRatio, seed,
-                tileSize, overlap, downsample, validationSplit, augmentationConfig,
+                tileSize, overlap, hasPerImageSplitRoles, downsample, validationSplit, augmentationConfig,
                 augmentationParams,
                 usePretrainedWeights, freezeEncoderLayers, frozenLayers, lineStrokeWidth,
                 classWeightMultipliers, contextScale, schedulerType, lossFunction,
@@ -808,6 +825,7 @@ public class TrainingConfig {
         private Integer seed = null;
         private int tileSize = 512;
         private int overlap = 64;
+        private boolean hasPerImageSplitRoles = false;
         private double downsample = 1.0;
         private double validationSplit = 0.2;
         private Map<String, Boolean> augmentationConfig = new LinkedHashMap<>();
@@ -872,6 +890,7 @@ public class TrainingConfig {
             this.seed = config.seed;
             this.tileSize = config.tileSize;
             this.overlap = config.overlap;
+            this.hasPerImageSplitRoles = config.hasPerImageSplitRoles;
             this.downsample = config.downsample;
             this.validationSplit = config.validationSplit;
             this.augmentationConfig = new LinkedHashMap<>(config.augmentationConfig);
@@ -965,6 +984,16 @@ public class TrainingConfig {
 
         public Builder overlap(int overlap) {
             this.overlap = overlap;
+            return this;
+        }
+
+        /**
+         * Set whether at least one image in the project has an
+         * explicit TRAIN_ONLY or VAL_ONLY role. Feeds the
+         * pre-training overlap+split-leakage watcher.
+         */
+        public Builder hasPerImageSplitRoles(boolean hasPerImageSplitRoles) {
+            this.hasPerImageSplitRoles = hasPerImageSplitRoles;
             return this;
         }
 

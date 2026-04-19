@@ -2016,6 +2016,7 @@ public class TrainingDialog {
                     .focalGamma(focalGammaSpinner.getValue())
                     .boundarySigma(boundarySigmaSpinner.getValue())
                     .boundaryWMin(boundaryWMinSpinner.getValue())
+                    .hasPerImageSplitRoles(computeHasPerImageSplitRoles())
                     .ohemHardRatio(ohemSpinner.getValue() / 100.0)
                     .ohemHardRatioStart(ohemStartSpinner.getValue() / 100.0)
                     .ohemSchedule(ohemStartSpinner.getValue() > ohemSpinner.getValue()
@@ -2042,6 +2043,25 @@ public class TrainingDialog {
                     .handlerParameters(currentHandlerUI != null
                             ? currentHandlerUI.getParameters() : Map.of())
                     .build();
+        }
+
+        /**
+         * @return true iff at least one selected image has an explicit
+         *     TRAIN_ONLY or VAL_ONLY role. Used by
+         *     TileOverlapSplitWatcher to detect the overlap+leakage
+         *     situation (only per-image roles prevent leakage).
+         */
+        private boolean computeHasPerImageSplitRoles() {
+            if (imageSelectionList == null) return false;
+            for (ImageSelectionItem item : imageSelectionList.getItems()) {
+                if (!item.selected.get()) continue;
+                SplitRole role = item.splitRole.get();
+                if (role == SplitRole.TRAIN_ONLY
+                        || role == SplitRole.VAL_ONLY) {
+                    return true;
+                }
+            }
+            return false;
         }
 
         /**
@@ -4839,6 +4859,25 @@ public class TrainingDialog {
 
             // Build training config from unified weight init strategy
             TrainingConfig trainingConfig = buildTrainingConfig();
+
+            // Run pairwise interaction checks against the built config.
+            // BLOCKING watchers (e.g. overlap + no-per-image-split-roles)
+            // return the user to the dialog if they pick Cancel; INFO/WARN
+            // watchers show a single popup they can dismiss or suppress
+            // per-warning.
+            var interactionWarnings = qupath.ext.dlclassifier.service
+                    .warnings.InteractionWarningService.evaluate(trainingConfig);
+            var visibleInteractionWarnings = qupath.ext.dlclassifier.service
+                    .warnings.InteractionWarningService.filterVisible(
+                            interactionWarnings);
+            if (!visibleInteractionWarnings.isEmpty()) {
+                boolean proceed = qupath.ext.dlclassifier.service
+                        .warnings.InteractionWarningService.showIfAny(
+                                visibleInteractionWarnings, dialog);
+                if (!proceed) {
+                    return null;
+                }
+            }
 
             // Get channel config
             ChannelConfiguration channelConfig = channelPanel.getChannelConfiguration();
