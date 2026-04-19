@@ -269,8 +269,26 @@ public class ClassifierClient {
             String sourceImageId,
             String disagreementImagePath,
             String lossHeatmapPath,
-            String tileImagePath
-    ) {}
+            String tileImagePath,
+            String predictionMapPath,
+            String confidenceMapPath,
+            String groundTruthMaskPath
+    ) {
+        /**
+         * Backward-compatible constructor for results without prediction/confidence/gt maps
+         * (e.g. sessions saved before annotation adjustment was added).
+         */
+        public TileEvaluationResult(String filename, String split, double loss,
+                                     double disagreementPct, Map<String, Double> perClassIoU,
+                                     double meanIoU, int x, int y,
+                                     String sourceImage, String sourceImageId,
+                                     String disagreementImagePath, String lossHeatmapPath,
+                                     String tileImagePath) {
+            this(filename, split, loss, disagreementPct, perClassIoU, meanIoU,
+                    x, y, sourceImage, sourceImageId, disagreementImagePath,
+                    lossHeatmapPath, tileImagePath, null, null, null);
+        }
+    }
 
     /**
      * Progress update during tile evaluation.

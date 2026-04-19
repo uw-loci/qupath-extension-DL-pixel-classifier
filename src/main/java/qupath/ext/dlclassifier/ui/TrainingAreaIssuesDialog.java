@@ -23,15 +23,20 @@ import org.slf4j.LoggerFactory;
 import javafx.beans.binding.Bindings;
 import javafx.beans.binding.StringBinding;
 import qupath.ext.dlclassifier.model.ClassifierMetadata;
+import qupath.ext.dlclassifier.service.AnnotationAdjuster;
 import qupath.ext.dlclassifier.service.ClassifierClient;
 import qupath.ext.dlclassifier.service.TrainingIssuesOverlayController;
 import qupath.ext.dlclassifier.service.TrainingIssuesOverlayController.OverlayMode;
 import qupath.ext.dlclassifier.service.TrainingIssuesSessionStore;
 import qupath.lib.gui.QuPathGUI;
+import qupath.lib.gui.viewer.overlays.BufferedImageOverlay;
+import qupath.lib.regions.ImagePlane;
+import qupath.lib.regions.ImageRegion;
 import qupath.fx.dialogs.Dialogs;
 import qupath.lib.gui.viewer.OverlayOptions;
 import qupath.lib.gui.viewer.QuPathViewer;
 
+import java.awt.image.BufferedImage;
 import java.io.File;
 import java.nio.file.Path;
 import java.util.ArrayList;
@@ -85,6 +90,16 @@ public class TrainingAreaIssuesDialog {
     private final ComboBox<String> overlaySelector;
     private static final String OVERLAY_DISAGREEMENT = "Disagreement";
     private static final String OVERLAY_LOSS_HEATMAP = "Loss Heatmap";
+
+    // Annotation adjustment
+    private AnnotationAdjuster annotationAdjuster;
+    private Button adjustButton;
+    private Button undoButton;
+    private Label adjustStatusLabel;
+    private CheckBox previewCheckBox;
+    private Slider confidenceSlider;
+    // Cached preview result for the apply-after-preview flow
+    private AnnotationAdjuster.PreviewResult pendingPreview;
 
     /**
      * Creates the training area issues dialog.
@@ -241,9 +256,11 @@ public class TrainingAreaIssuesDialog {
                 navigateToTile(newRow);
                 updatePreview(newRow);
                 showViewerOverlay(newRow);
+                updateAdjustmentPanelState(newRow);
             } else {
                 clearPreview();
                 overlayController.clear();
+                updateAdjustmentPanelState(null);
             }
         });
 
@@ -361,9 +378,13 @@ public class TrainingAreaIssuesDialog {
         HBox titleBar = new HBox(8, previewTitle, overlaySelector);
         titleBar.setAlignment(Pos.CENTER_LEFT);
 
+        // Annotation adjustment panel (collapsible)
+        TitledPane adjustmentPane = buildAnnotationAdjustmentPane();
+
         VBox previewPane = new VBox(8, titleBar, previewScroll,
                 zoomLabel, zoomSlider,
-                opacityLabel, opacitySlider, legendBox);
+                opacityLabel, opacitySlider, legendBox,
+                adjustmentPane);
         previewPane.setPadding(new Insets(10, 0, 0, 10));
         previewPane.setAlignment(Pos.TOP_CENTER);
         previewPane.setMinWidth(300);
@@ -889,6 +910,271 @@ public class TrainingAreaIssuesDialog {
         legendBox.getChildren().addAll(gradientBar, labels);
     }
 
+    // ==================== Annotation Adjustment ====================
+
+    /**
+     * Builds the collapsible annotation adjustment panel. Contains a confidence
+     * threshold slider, preview toggle, adjust/undo buttons, and status label.
+     */
+    private TitledPane buildAnnotationAdjustmentPane() {
+        // Confidence threshold slider
+        Label confLabel = new Label("Confidence: 80%");
+        confLabel.setStyle("-fx-font-size: 11px;");
+        confidenceSlider = new Slider(0.50, 0.99, 0.80);
+        confidenceSlider.setShowTickLabels(true);
+        confidenceSlider.setShowTickMarks(true);
+        confidenceSlider.setMajorTickUnit(0.1);
+        confidenceSlider.setMinorTickCount(1);
+        confidenceSlider.setBlockIncrement(0.05);
+        confidenceSlider.setPrefWidth(250);
+        confidenceSlider.setTooltip(TooltipHelper.create(
+                "Minimum model confidence to accept a prediction.\n"
+                + "Higher = more conservative (only fix obvious errors).\n"
+                + "Lower = more aggressive (change more borders).\n"
+                + "0.80 is a good starting point."));
+        confidenceSlider.valueProperty().addListener((obs, oldVal, newVal) -> {
+            confLabel.setText(String.format("Confidence: %.0f%%", newVal.doubleValue() * 100));
+            // Invalidate any cached preview when threshold changes
+            pendingPreview = null;
+        });
+
+        // Preview checkbox
+        previewCheckBox = new CheckBox("Preview changes before applying");
+        previewCheckBox.setSelected(true);
+        previewCheckBox.setStyle("-fx-font-size: 11px;");
+        previewCheckBox.setTooltip(TooltipHelper.create(
+                "When checked, clicking 'Adjust' will first show\n"
+                + "a preview overlay of which pixels would change.\n"
+                + "You can then confirm or cancel."));
+
+        // Adjust button
+        adjustButton = new Button("Adjust annotations in current tile");
+        adjustButton.setMaxWidth(Double.MAX_VALUE);
+        adjustButton.setDisable(true);
+        adjustButton.setTooltip(TooltipHelper.create(
+                "Modify annotations within this tile so they match\n"
+                + "the model's predictions where the model is confident.\n"
+                + "Annotations OUTSIDE the tile boundary are not touched."));
+        adjustButton.setOnAction(e -> handleAdjustAction());
+
+        // Undo button
+        undoButton = new Button("Undo last adjustment");
+        undoButton.setMaxWidth(Double.MAX_VALUE);
+        undoButton.setDisable(true);
+        undoButton.setStyle("-fx-font-size: 11px;");
+        undoButton.setTooltip(TooltipHelper.create(
+                "Reverses the most recent annotation adjustment,\n"
+                + "restoring the original annotations."));
+        undoButton.setOnAction(e -> handleUndoAction());
+
+        // Status label
+        adjustStatusLabel = new Label("Select a tile to enable adjustment");
+        adjustStatusLabel.setWrapText(true);
+        adjustStatusLabel.setStyle("-fx-font-size: 11px; -fx-text-fill: #666;");
+
+        VBox content = new VBox(6,
+                confLabel, confidenceSlider,
+                previewCheckBox,
+                adjustButton, undoButton,
+                adjustStatusLabel);
+        content.setPadding(new Insets(8));
+
+        TitledPane pane = new TitledPane("Annotation Adjustment", content);
+        pane.setExpanded(false);
+        pane.setAnimated(true);
+        pane.setStyle("-fx-font-size: 11px;");
+        return pane;
+    }
+
+    /**
+     * Called when the selected tile changes. Updates the adjustment panel state.
+     */
+    private void updateAdjustmentPanelState(TileRow row) {
+        pendingPreview = null;
+        if (row == null || !row.hasPredictionData()) {
+            adjustButton.setDisable(true);
+            if (row == null) {
+                adjustStatusLabel.setText("Select a tile to enable adjustment");
+            } else {
+                adjustStatusLabel.setText(
+                        "No prediction data for this tile.\n"
+                        + "Re-run evaluation to generate prediction maps.");
+            }
+            return;
+        }
+        adjustButton.setDisable(false);
+        adjustStatusLabel.setText("Ready to adjust annotations in this tile");
+    }
+
+    /**
+     * Handles the Adjust button click. If a pending preview exists, applies it.
+     * If preview mode is enabled, shows a preview overlay first. Otherwise
+     * applies the adjustment directly after a confirmation dialog.
+     */
+    private void handleAdjustAction() {
+        TileRow row = table.getSelectionModel().getSelectedItem();
+        if (row == null || !row.hasPredictionData()) return;
+
+        QuPathGUI qupath = QuPathGUI.getInstance();
+        if (qupath == null) return;
+        QuPathViewer viewer = qupath.getViewer();
+        if (viewer == null || viewer.getImageData() == null) {
+            adjustStatusLabel.setText("No image open in viewer");
+            return;
+        }
+
+        // Second click: apply the pending preview
+        if (pendingPreview != null) {
+            boolean confirmed = Dialogs.showConfirmDialog(
+                    "Apply Annotation Adjustment",
+                    String.format("%d pixels will be changed.\n\n"
+                            + "This modifies annotations within this tile only.\n"
+                            + "Use 'Undo last adjustment' to reverse.\n\n"
+                            + "Apply?", pendingPreview.totalChangedPixels()));
+            if (!confirmed) {
+                pendingPreview = null;
+                adjustButton.setText("Adjust annotations in current tile");
+                adjustStatusLabel.setText("Adjustment cancelled");
+                showViewerOverlay(row);
+                return;
+            }
+            applyAdjustmentFromPreview(viewer, row, pendingPreview);
+            return;
+        }
+
+        double threshold = confidenceSlider.getValue();
+
+        // Ensure the adjuster is initialized with class info from metadata
+        if (annotationAdjuster == null) {
+            List<String> classNameList = new ArrayList<>();
+            if (classifierMetadata != null && classifierMetadata.getClasses() != null) {
+                for (var c : classifierMetadata.getClasses()) {
+                    classNameList.add(c.name());
+                }
+            }
+            if (classNameList.isEmpty()) {
+                adjustStatusLabel.setText("No class information available");
+                return;
+            }
+            annotationAdjuster = new AnnotationAdjuster(downsample, patchSize, classNameList);
+        }
+
+        try {
+            // Compute preview (always, for stats and the adjusted mask)
+            AnnotationAdjuster.PreviewResult preview = annotationAdjuster.computePreview(
+                    row.getPredictionMapPath(),
+                    row.getConfidenceMapPath(),
+                    row.getGroundTruthMaskPath(),
+                    threshold,
+                    classColors);
+
+            if (preview.totalChangedPixels() == 0) {
+                adjustStatusLabel.setText(
+                        "No changes needed at this confidence threshold.\n"
+                        + "Try lowering the threshold to include more pixels.");
+                return;
+            }
+
+            // Build summary of proposed changes
+            StringBuilder changeSummary = new StringBuilder();
+            changeSummary.append(String.format("%d pixels would change:\n",
+                    preview.totalChangedPixels()));
+            for (Map.Entry<String, Integer> entry : preview.changesPerClass().entrySet()) {
+                changeSummary.append(String.format("  %s: %d pixels\n",
+                        entry.getKey(), entry.getValue()));
+            }
+
+            if (previewCheckBox.isSelected()) {
+                // Show preview overlay on the viewer
+                pendingPreview = preview;
+                showAdjustmentPreviewOverlay(viewer, row, preview.previewImage());
+                adjustStatusLabel.setText(changeSummary
+                        + "\nPreview shown on viewer. Click 'Adjust' again to apply,\n"
+                        + "or change threshold/tile to cancel.");
+                // Change button text to indicate "apply" mode
+                adjustButton.setText("Apply previewed adjustment");
+                return;
+            }
+
+            // No preview -- confirm and apply directly
+            boolean confirmed = Dialogs.showConfirmDialog(
+                    "Adjust Annotations",
+                    changeSummary
+                    + "\nThis will modify annotations within this tile only.\n"
+                    + "Annotations outside the tile boundary are preserved.\n\n"
+                    + "Continue?");
+            if (!confirmed) {
+                adjustStatusLabel.setText("Adjustment cancelled");
+                return;
+            }
+
+            applyAdjustmentFromPreview(viewer, row, preview);
+
+        } catch (Exception ex) {
+            logger.error("Annotation adjustment failed", ex);
+            adjustStatusLabel.setText("Error: " + ex.getMessage());
+        }
+    }
+
+    /**
+     * Called when the adjust button is clicked while a preview is pending
+     * (second click in preview flow), or called directly when preview is off.
+     */
+    private void applyAdjustmentFromPreview(QuPathViewer viewer, TileRow row,
+                                             AnnotationAdjuster.PreviewResult preview) {
+        // Clear any preview overlay before applying
+        overlayController.clear();
+
+        AnnotationAdjuster.AdjustmentResult result = annotationAdjuster.applyAdjustment(
+                viewer, row.getX(), row.getY(), preview.adjustedMask());
+
+        adjustStatusLabel.setText(result.summary()
+                + String.format("\n(%d pixels changed)", preview.totalChangedPixels()));
+        undoButton.setDisable(false);
+        pendingPreview = null;
+        adjustButton.setText("Adjust annotations in current tile");
+
+        // Re-install the loss/disagreement overlay
+        showViewerOverlay(row);
+    }
+
+    /**
+     * Shows the adjustment preview as a temporary viewer overlay.
+     */
+    private void showAdjustmentPreviewOverlay(QuPathViewer viewer, TileRow row,
+                                               BufferedImage previewImage) {
+        int regionSize = (int) (patchSize * downsample);
+        ImageRegion region = ImageRegion.createInstance(
+                row.getX(), row.getY(), regionSize, regionSize,
+                ImagePlane.getDefaultPlane().getZ(),
+                ImagePlane.getDefaultPlane().getT());
+
+        QuPathGUI qupath = QuPathGUI.getInstance();
+        if (qupath == null) return;
+
+        BufferedImageOverlay overlay = new BufferedImageOverlay(
+                qupath.getOverlayOptions(), region, previewImage);
+
+        Platform.runLater(() -> {
+            viewer.setCustomPixelLayerOverlay(overlay);
+            viewer.repaint();
+        });
+    }
+
+    private void handleUndoAction() {
+        if (annotationAdjuster == null || !annotationAdjuster.canUndo()) {
+            adjustStatusLabel.setText("Nothing to undo");
+            return;
+        }
+        boolean success = annotationAdjuster.undoLastAdjustment();
+        if (success) {
+            adjustStatusLabel.setText("Adjustment undone -- original annotations restored");
+            undoButton.setDisable(true);
+        } else {
+            adjustStatusLabel.setText("Undo failed");
+        }
+    }
+
     // ==================== Helper Classes ====================
 
     /**
@@ -935,6 +1221,9 @@ public class TrainingAreaIssuesDialog {
         private final StringProperty disagreementImagePath;
         private final StringProperty lossHeatmapPath;
         private final StringProperty tileImagePath;
+        private final StringProperty predictionMapPath;
+        private final StringProperty confidenceMapPath;
+        private final StringProperty groundTruthMaskPath;
         // Preserved for session round-trips; not bound to the TableView.
         private final Map<String, Double> perClassIoU;
 
@@ -954,6 +1243,9 @@ public class TrainingAreaIssuesDialog {
             this.disagreementImagePath = new SimpleStringProperty(result.disagreementImagePath());
             this.lossHeatmapPath = new SimpleStringProperty(result.lossHeatmapPath());
             this.tileImagePath = new SimpleStringProperty(result.tileImagePath());
+            this.predictionMapPath = new SimpleStringProperty(result.predictionMapPath());
+            this.confidenceMapPath = new SimpleStringProperty(result.confidenceMapPath());
+            this.groundTruthMaskPath = new SimpleStringProperty(result.groundTruthMaskPath());
 
             // Compute worst class: lowest IoU among classes actually present in the tile.
             // Null IoU values indicate the class has no ground truth pixels in this tile
@@ -1001,6 +1293,16 @@ public class TrainingAreaIssuesDialog {
         public String getDisagreementImagePath() { return disagreementImagePath.get(); }
         public String getLossHeatmapPath() { return lossHeatmapPath.get(); }
         public String getTileImagePath() { return tileImagePath.get(); }
+        public String getPredictionMapPath() { return predictionMapPath.get(); }
+        public String getConfidenceMapPath() { return confidenceMapPath.get(); }
+        public String getGroundTruthMaskPath() { return groundTruthMaskPath.get(); }
+
+        /** Whether this tile has prediction/confidence/gt maps for annotation adjustment. */
+        public boolean hasPredictionData() {
+            return getPredictionMapPath() != null && !getPredictionMapPath().isEmpty()
+                    && getConfidenceMapPath() != null && !getConfidenceMapPath().isEmpty()
+                    && getGroundTruthMaskPath() != null && !getGroundTruthMaskPath().isEmpty();
+        }
 
         /**
          * Rebuilds a {@link ClassifierClient.TileEvaluationResult} from this
@@ -1022,7 +1324,10 @@ public class TrainingAreaIssuesDialog {
                     getSourceImageId(),
                     getDisagreementImagePath(),
                     getLossHeatmapPath(),
-                    getTileImagePath()
+                    getTileImagePath(),
+                    getPredictionMapPath(),
+                    getConfidenceMapPath(),
+                    getGroundTruthMaskPath()
             );
         }
 

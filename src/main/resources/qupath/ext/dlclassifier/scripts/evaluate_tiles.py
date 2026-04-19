@@ -360,6 +360,10 @@ try:
 
             preds = logits.argmax(dim=1)
 
+            # Softmax probabilities for confidence maps (used by annotation adjustment)
+            probs = F.softmax(logits, dim=1)
+            confidence = probs.max(dim=1).values  # [B, H, W], range 0.0-1.0
+
             for i in range(batch_size):
                 if cancel_flag.is_set():
                     break
@@ -420,16 +424,20 @@ try:
                 disagree_path = None
                 loss_heatmap_path = None
                 tile_img_path = None
+                prediction_map_path = None
+                confidence_map_path = None
+                gt_mask_path = None
 
                 try:
                     pred_np = pred_i.cpu().numpy()
                     mask_np = mask_i.cpu().numpy()
                     loss_np = loss_i.cpu().numpy()
+                    conf_np = confidence[i].cpu().numpy()
                 except Exception as convert_err:
                     logger.warning(
                         "Failed to convert tensors for [%s] %s: %s",
                         split_name, stem, convert_err)
-                    pred_np = mask_np = loss_np = None
+                    pred_np = mask_np = loss_np = conf_np = None
 
                 if pred_np is not None:
                     disagree_file = split_disagree_dir / f"{stem}_disagree.png"
@@ -451,6 +459,41 @@ try:
                     except Exception as save_err:
                         logger.warning(
                             "save_loss_heatmap failed for [%s] %s: %s",
+                            split_name, stem, save_err)
+
+                    # Prediction map: argmax class indices as uint8 grayscale PNG.
+                    # Used by annotation adjustment to know what the model predicted.
+                    pred_file = split_disagree_dir / f"{stem}_pred.png"
+                    try:
+                        Image.fromarray(pred_np.astype(np.uint8)).save(str(pred_file))
+                        prediction_map_path = str(pred_file)
+                    except Exception as save_err:
+                        logger.warning(
+                            "save prediction map failed for [%s] %s: %s",
+                            split_name, stem, save_err)
+
+                    # Confidence map: max softmax probability scaled to 0-255.
+                    # Used by annotation adjustment threshold.
+                    conf_file = split_disagree_dir / f"{stem}_conf.png"
+                    try:
+                        conf_uint8 = (conf_np * 255).astype(np.uint8)
+                        Image.fromarray(conf_uint8).save(str(conf_file))
+                        confidence_map_path = str(conf_file)
+                    except Exception as save_err:
+                        logger.warning(
+                            "save confidence map failed for [%s] %s: %s",
+                            split_name, stem, save_err)
+
+                    # Ground truth mask: saved alongside prediction/confidence so
+                    # annotation adjustment can compare without needing the
+                    # original training data directory.
+                    gt_file = split_disagree_dir / f"{stem}_gt.png"
+                    try:
+                        Image.fromarray(mask_np.astype(np.uint8)).save(str(gt_file))
+                        gt_mask_path = str(gt_file)
+                    except Exception as save_err:
+                        logger.warning(
+                            "save ground truth mask failed for [%s] %s: %s",
                             split_name, stem, save_err)
 
                 tile_file = split_disagree_dir / f"{stem}_tile.png"
@@ -478,6 +521,9 @@ try:
                     "disagreement_image": disagree_path,
                     "loss_heatmap": loss_heatmap_path,
                     "tile_image": tile_img_path,
+                    "prediction_map": prediction_map_path,
+                    "confidence_map": confidence_map_path,
+                    "ground_truth_mask": gt_mask_path,
                 })
 
             tile_idx += batch_size

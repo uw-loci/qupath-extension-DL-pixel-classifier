@@ -235,9 +235,15 @@ public final class TrainingIssuesSessionStore {
             String tileAsset     = copyAsset(r.tileImagePath(), assetsDir, split);
             String lossAsset     = copyAsset(r.lossHeatmapPath(), assetsDir, split);
             String disagreeAsset = copyAsset(r.disagreementImagePath(), assetsDir, split);
+            String predAsset     = copyAsset(r.predictionMapPath(), assetsDir, split);
+            String confAsset     = copyAsset(r.confidenceMapPath(), assetsDir, split);
+            String gtAsset       = copyAsset(r.groundTruthMaskPath(), assetsDir, split);
             t.addProperty("tileAsset", tileAsset);
             t.addProperty("lossAsset", lossAsset);
             t.addProperty("disagreeAsset", disagreeAsset);
+            t.addProperty("predAsset", predAsset);
+            t.addProperty("confAsset", confAsset);
+            t.addProperty("gtAsset", gtAsset);
 
             tiles.add(t);
         }
@@ -331,7 +337,10 @@ public final class TrainingIssuesSessionStore {
                     getString(t, "sourceImageId", ""),
                     resolveAsset(sessionDir, t, "disagreeAsset"),
                     resolveAsset(sessionDir, t, "lossAsset"),
-                    resolveAsset(sessionDir, t, "tileAsset")
+                    resolveAsset(sessionDir, t, "tileAsset"),
+                    resolveAsset(sessionDir, t, "predAsset"),
+                    resolveAsset(sessionDir, t, "confAsset"),
+                    resolveAsset(sessionDir, t, "gtAsset")
             ));
         }
 
