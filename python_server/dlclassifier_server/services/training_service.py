@@ -1604,27 +1604,27 @@ class TrainingService:
                         patch_size + 2 * context_padding,
                         patch_size + 2 * context_padding)
 
-        # Create model with optional frozen layers
+        # Create model with optional frozen layers.
+        #
+        # Tiny UNet and MuViT have no entry in pretrained_models._create_model's
+        # arch_map -- they are built by self._create_model above. To keep the
+        # freeze logic in one place we always build via self._create_model, and
+        # then apply any requested freezes via pretrained_service. SMP
+        # architectures still get the identical outcome they had before.
         _report_setup("creating_model")
+        model = self._create_model(
+            model_type=model_type,
+            architecture=architecture,
+            num_channels=effective_channels,
+            num_classes=len(classes)
+        )
         if frozen_layers:
             from .pretrained_models import get_pretrained_service
             pretrained_service = get_pretrained_service()
-
-            model = pretrained_service.create_model_with_frozen_layers(
-                architecture=model_type,
-                encoder=architecture.get("backbone", "resnet34"),
-                num_channels=effective_channels,
-                num_classes=len(classes),
-                frozen_layers=frozen_layers
+            pretrained_service.apply_frozen_layers(
+                model, frozen_layers, effective_channels
             )
-            logger.info(f"Created model with {len(frozen_layers)} frozen layer groups")
-        else:
-            model = self._create_model(
-                model_type=model_type,
-                architecture=architecture,
-                num_channels=effective_channels,
-                num_classes=len(classes)
-            )
+            logger.info(f"Applied {len(frozen_layers)} frozen layer groups")
 
         # Replace BatchNorm with BatchRenorm to eliminate tiling artifacts
         # during sliding-window inference (see arXiv:2503.19545).

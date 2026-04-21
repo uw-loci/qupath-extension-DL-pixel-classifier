@@ -4787,7 +4787,7 @@ public class TrainingDialog {
         private boolean checkAdvancedSettingsDiffer() {
             // Training strategy
             if (schedulerCombo != null && !"One Cycle".equals(schedulerCombo.getValue())) return true;
-            if (lossFunctionCombo != null && !"Cross-Entropy + Dice".equals(lossFunctionCombo.getValue())) return true;
+            if (lossFunctionCombo != null && !"Cross Entropy + Dice".equals(lossFunctionCombo.getValue())) return true;
             if (earlyStoppingPatienceSpinner != null && earlyStoppingPatienceSpinner.getValue() != 15) return true;
             if (earlyStoppingMetricCombo != null && "Disabled".equals(earlyStoppingMetricCombo.getValue())) return true;
             if (mixedPrecisionCheck != null && !mixedPrecisionCheck.isSelected()) return true;

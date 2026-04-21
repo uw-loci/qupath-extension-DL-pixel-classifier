@@ -740,20 +740,25 @@ class PretrainedModelsService:
             PyTorch model with frozen layers
         """
         model = self._create_model(architecture, encoder, num_channels, num_classes)
+        self.apply_frozen_layers(model, frozen_layers, num_channels)
+        return model
 
+    def apply_frozen_layers(self, model, frozen_layers, num_channels: int):
+        """Freeze the named layer groups on an already-created model.
+
+        Separate from create_model_with_frozen_layers so callers that build
+        non-SMP models (Tiny UNet, MuViT) can still reuse the first-conv
+        guard + logging rather than duplicating freeze logic.
+
+        Returns the same model for chaining.
+        """
         # Guard: skip freezing the first conv layer when input channels
-        # differ from the pretrained channel count (3).  SMP adapts conv1
+        # differ from the pretrained channel count (3). SMP adapts conv1
         # by repeating/scaling pretrained weights, so those weights are NOT
         # truly pretrained for the extra channels (e.g. context_scale > 1
-        # doubles channels to 6).  Freezing them locks in a naive
+        # doubles channels to 6). Freezing them locks in a naive
         # initialization that treats detail and context tiles identically.
         pretrained_channels = 3
-        # Depth-0 layer group names across all encoder families:
-        #   ResNet/SE-ResNet: encoder.conv1
-        #   EfficientNet:     encoder._conv_stem
-        #   DenseNet:         encoder.features.conv0
-        #   VGG:              encoder.features[0:7]
-        #   MobileNet:        encoder.features[0:2]
         first_conv_names = ("encoder.conv1", "encoder._conv_stem",
                             "encoder.features.conv0", "encoder.features[0:7]",
                             "encoder.features[0:2]")
@@ -768,18 +773,15 @@ class PretrainedModelsService:
                         "pretrained and must be trainable.",
                         layer_name, num_channels, pretrained_channels)
 
-        # Freeze specified layers
         for layer_name in frozen_layers:
             if layer_name in skip_frozen:
                 continue
             self._freeze_layer(model, layer_name)
 
-        # Log freeze status
         trainable = sum(p.numel() for p in model.parameters() if p.requires_grad)
         total = sum(p.numel() for p in model.parameters())
         logger.info(f"Model created: {trainable:,}/{total:,} parameters trainable "
                    f"({100*trainable/total:.1f}%)")
-
         return model
 
     def _freeze_layer(self, model, layer_name: str):
