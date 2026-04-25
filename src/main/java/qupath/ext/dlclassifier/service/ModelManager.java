@@ -3,6 +3,7 @@ package qupath.ext.dlclassifier.service;
 import com.google.gson.Gson;
 import com.google.gson.GsonBuilder;
 import com.google.gson.JsonObject;
+import com.google.gson.JsonParseException;
 import com.google.gson.JsonParser;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -267,7 +268,10 @@ public class ModelManager {
                         for (String key : statObj.keySet()) {
                             try {
                                 statMap.put(key, statObj.get(key).getAsDouble());
-                            } catch (Exception ignored) {}
+                            } catch (NumberFormatException | IllegalStateException e) {
+                                logger.debug("Skipping non-numeric normalization stat '{}': {}",
+                                        key, e.getMessage());
+                            }
                         }
                         normalizationStats.add(statMap);
                     }
@@ -300,7 +304,8 @@ public class ModelManager {
             }
             return builder.build();
 
-        } catch (Exception e) {
+        } catch (IOException | JsonParseException | IllegalStateException e) {
+            // I/O failure or malformed metadata.json; treat as "no metadata".
             logger.error("Failed to load metadata from {}: {}", metadataPath, e.getMessage());
             return null;
         }

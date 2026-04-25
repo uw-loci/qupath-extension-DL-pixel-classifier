@@ -1114,7 +1114,8 @@ public class TrainingDialog {
                 return;
             }
 
-            try (FileReader reader = new FileReader(metadataFile)) {
+            try (java.io.Reader reader = java.nio.file.Files.newBufferedReader(
+                    metadataFile.toPath(), java.nio.charset.StandardCharsets.UTF_8)) {
                 JsonObject root = new Gson().fromJson(reader, JsonObject.class);
                 JsonObject arch = root.has("architecture")
                         ? root.getAsJsonObject("architecture") : null;
