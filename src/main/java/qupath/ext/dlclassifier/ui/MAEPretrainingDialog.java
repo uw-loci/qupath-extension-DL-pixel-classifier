@@ -325,11 +325,25 @@ public class MAEPretrainingDialog {
     private TitledPane buildModelSection() {
         GridPane grid = new GridPane();
         grid.setHgap(10); grid.setVgap(8); grid.setPadding(new Insets(10));
-        grid.add(new Label("Model size:"), 0, 0);
+        Label modelSizeLabel = new Label("Model size:");
+        TooltipHelper.install(
+                "MuViT encoder size for pretraining.\n" +
+                "Must match the model you plan to use for supervised training.",
+                modelSizeLabel, modelConfigCombo);
+        grid.add(modelSizeLabel, 0, 0);
         grid.add(modelConfigCombo, 1, 0);
-        grid.add(new Label("Patch size:"), 0, 1);
+        Label patchSizeLabel = new Label("Patch size:");
+        TooltipHelper.install(
+                "Non-overlapping ViT patch size. 16 is the standard.",
+                patchSizeLabel, patchSizeCombo);
+        grid.add(patchSizeLabel, 0, 1);
         grid.add(patchSizeCombo, 1, 1);
-        grid.add(new Label("Level scales:"), 0, 2);
+        Label levelScalesLabel = new Label("Level scales:");
+        TooltipHelper.install(
+                "Comma-separated scale factors for multi-resolution input.\n" +
+                "'1,4' = full resolution + 4x downsampled context.",
+                levelScalesLabel, levelScalesField);
+        grid.add(levelScalesLabel, 0, 2);
         grid.add(levelScalesField, 1, 2);
         TitledPane pane = new TitledPane("Model Architecture", grid);
         pane.setExpanded(true); pane.setCollapsible(false);
@@ -339,11 +353,33 @@ public class MAEPretrainingDialog {
     private TitledPane buildTrainingSection() {
         GridPane grid = new GridPane();
         grid.setHgap(10); grid.setVgap(8); grid.setPadding(new Insets(10));
-        grid.add(new Label("Epochs:"), 0, 0);         grid.add(epochsSpinner, 1, 0);
-        grid.add(new Label("Mask ratio:"), 0, 1);     grid.add(maskRatioSpinner, 1, 1);
-        grid.add(new Label("Batch size:"), 0, 2);     grid.add(batchSizeSpinner, 1, 2);
-        grid.add(new Label("Learning rate:"), 0, 3);  grid.add(learningRateSpinner, 1, 3);
-        grid.add(new Label("Warmup epochs:"), 0, 4);  grid.add(warmupEpochsSpinner, 1, 4);
+        Label epochsLabel = new Label("Epochs:");
+        TooltipHelper.install(epochsLabel,
+                "Number of complete passes through the training data.\n" +
+                "More epochs allow the model to learn more but risk overfitting.\n" +
+                "Typical range: 50-200.");
+        grid.add(epochsLabel, 0, 0);           grid.add(epochsSpinner, 1, 0);
+        Label maskRatioLabel = new Label("Mask ratio:");
+        TooltipHelper.install(maskRatioLabel,
+                "Fraction of image patches masked during pretraining.\n" +
+                "Higher ratios force the model to learn stronger representations.\n" +
+                "0.75 is the standard MAE default.");
+        grid.add(maskRatioLabel, 0, 1);         grid.add(maskRatioSpinner, 1, 1);
+        Label batchSizeLabel = new Label("Batch size:");
+        TooltipHelper.install(batchSizeLabel,
+                "Number of images processed together in each training step.\n" +
+                "Larger batches give more stable gradients but use more GPU memory.");
+        grid.add(batchSizeLabel, 0, 2);         grid.add(batchSizeSpinner, 1, 2);
+        Label learningRateLabel = new Label("Learning rate:");
+        TooltipHelper.install(learningRateLabel,
+                "Controls the step size during gradient descent.\n" +
+                "1.5e-4 is a common default for MAE pretraining.");
+        grid.add(learningRateLabel, 0, 3);      grid.add(learningRateSpinner, 1, 3);
+        Label warmupEpochsLabel = new Label("Warmup epochs:");
+        TooltipHelper.install(warmupEpochsLabel,
+                "Number of epochs to linearly ramp up the learning rate.\n" +
+                "Prevents early instability. 5-10 is typical.");
+        grid.add(warmupEpochsLabel, 0, 4);      grid.add(warmupEpochsSpinner, 1, 4);
         TitledPane pane = new TitledPane("Training Parameters", grid);
         pane.setExpanded(true); pane.setCollapsible(false);
         return pane;
@@ -385,11 +421,27 @@ public class MAEPretrainingDialog {
         GridPane extractionGrid = new GridPane();
         extractionGrid.setHgap(10); extractionGrid.setVgap(8);
         extractionGrid.setPadding(new Insets(6, 0, 0, 0));
-        extractionGrid.add(new Label("Tile size:"), 0, 0);
+        Label extTileSizeLabel = new Label("Tile size:");
+        TooltipHelper.install(
+                "Size of the image tiles extracted from each slide for\n" +
+                "MAE pretraining. 512 is a common default.",
+                extTileSizeLabel, extractionTileSpinner);
+        extractionGrid.add(extTileSizeLabel, 0, 0);
         extractionGrid.add(extractionTileSpinner, 1, 0);
-        extractionGrid.add(new Label("Downsample:"), 0, 1);
+        Label extDownsampleLabel = new Label("Downsample:");
+        TooltipHelper.install(
+                "Downsample factor applied when reading tiles from the slide.\n" +
+                "1 = full resolution; 2/4 = successively coarser.",
+                extDownsampleLabel, extractionDownsampleCombo);
+        extractionGrid.add(extDownsampleLabel, 0, 1);
         extractionGrid.add(extractionDownsampleCombo, 1, 1);
-        extractionGrid.add(new Label("Max tiles (total):"), 0, 2);
+        Label extMaxTilesLabel = new Label("Max tiles (total):");
+        TooltipHelper.install(
+                "Maximum tiles to keep across all selected images after\n" +
+                "extraction. Prevents a single large WSI from overwhelming\n" +
+                "the pretraining pool.",
+                extMaxTilesLabel, maxTilesSpinner);
+        extractionGrid.add(extMaxTilesLabel, 0, 2);
         extractionGrid.add(maxTilesSpinner, 1, 2);
         projectPanel.getChildren().add(extractionGrid);
 
@@ -410,7 +462,13 @@ public class MAEPretrainingDialog {
                 scanDatasetAndUpdateInfo(dir);
             }
         });
-        folderGrid.add(new Label("Image directory:"), 0, 0);
+        Label imageDirLabel = new Label("Image directory:");
+        TooltipHelper.install(
+                "Path to a directory containing unlabeled image tiles for\n" +
+                "pretraining. Supported formats: PNG, TIFF, JPEG, BMP, RAW.\n" +
+                "Subdirectories are scanned recursively.",
+                imageDirLabel, dataPathField);
+        folderGrid.add(imageDirLabel, 0, 0);
         folderGrid.add(dataPathField, 1, 0);
         GridPane.setHgrow(dataPathField, Priority.ALWAYS);
         folderGrid.add(browseBtn, 2, 0);
@@ -442,7 +500,11 @@ public class MAEPretrainingDialog {
             File dir = dc.showDialog(dialog.getDialogPane().getScene().getWindow());
             if (dir != null) outputDirField.setText(dir.getAbsolutePath());
         });
-        grid.add(new Label("Output directory:"), 0, 0);
+        Label outputDirLabel = new Label("Output directory:");
+        TooltipHelper.install(outputDirLabel,
+                "Directory where the pretrained encoder weights will be saved.\n" +
+                "Defaults to a timestamped folder inside the project directory.");
+        grid.add(outputDirLabel, 0, 0);
         grid.add(outputDirField, 1, 0);
         GridPane.setHgrow(outputDirField, Priority.ALWAYS);
         grid.add(browseBtn, 2, 0);

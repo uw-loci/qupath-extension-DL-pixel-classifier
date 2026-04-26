@@ -2043,12 +2043,17 @@ public class TrainingDialog {
             Label archLabel = new Label("Architecture:");
             TooltipHelper.installWithLink(
                     "Segmentation architecture:\n\n" +
-                    "UNet: Symmetric encoder-decoder with skip connections.\n" +
+                    "UNet: Encoder-decoder with skip connections.\n" +
                     "  Best general-purpose choice. Good default for most tasks.\n\n" +
-                    "MuViT (Transformer): Multi-resolution Vision Transformer\n" +
-                    "  with multi-scale feature fusion. Supports MAE pretraining.\n\n" +
-                    "Custom ONNX: Import externally trained models for inference.\n" +
-                    "  UNTESTED -- no end-to-end validation yet; expect rough edges.",
+                    "Tiny UNet: Minimal UNet, no pretrained weights.\n" +
+                    "  Fast experiments, any channel count, low VRAM.\n\n" +
+                    "Fast Pretrained: UNet with mobile encoders.\n" +
+                    "  Quick training with lightweight ImageNet weights.\n\n" +
+                    "MuViT (Transformer): Multi-resolution Vision Transformer.\n" +
+                    "  Multi-scale fusion. Supports MAE pretraining.\n\n" +
+                    "Custom ONNX: Import externally trained models.\n" +
+                    "  Inference only. UNTESTED -- expect rough edges.\n\n" +
+                    "Click '?' for detailed guide with references.",
                     "https://arxiv.org/abs/1505.04597",
                     archLabel, architectureCombo);
             architectureCombo.valueProperty().addListener((obs, old, newVal) -> updateBackboneOptions(newVal));
@@ -2085,23 +2090,27 @@ public class TrainingDialog {
 
             backboneLabel = new Label("Encoder:");
             TooltipHelper.installWithLink(
-                    "Pretrained encoder network that extracts features:\n\n" +
-                    "--- Standard (ImageNet) ---\n" +
+                    "Encoder (backbone) that extracts image features.\n" +
+                    "Options depend on the selected architecture.\n\n" +
+                    "--- UNet: Standard (ImageNet) ---\n" +
                     "resnet34: Best default. Good balance of speed and accuracy.\n" +
-                    "resnet50: More capacity. For large datasets or complex tasks.\n" +
-                    "efficientnet-b0: Lightweight, fast inference, low VRAM.\n\n" +
-                    "--- Histology-pretrained ---\n" +
-                    "Lunit, Kather100K, TCGA-BRCA: Trained on millions of H&E tissue\n" +
-                    "patches at 20x. Best for H&E brightfield. ~100MB download.\n" +
-                    "Tip: If results are unstable, try a standard ResNet (resnet50)\n" +
-                    "with limited frozen layers -- ImageNet features can generalize\n" +
-                    "better for non-H&E or multi-channel images.\n\n" +
-                    "--- Foundation Models (downloaded on-demand) ---\n" +
-                    "H-optimus-0, Virchow, Hibou-B/L, Midnight, DINOv2:\n" +
-                    "Large-scale vision models (86M-1.1B params). Permissive licenses\n" +
-                    "(Apache 2.0 / MIT). Gated models need HF_TOKEN env var.\n" +
-                    "~200MB-2GB download on first use.\n" +
-                    "Inspired by LazySlide (Zheng et al. 2026, Nature Methods).",
+                    "resnet50: More capacity for larger datasets.\n" +
+                    "efficientnet-b0: Lightweight, fast inference.\n" +
+                    "mobilenet_v2: Fastest inference, smallest model.\n\n" +
+                    "--- UNet: Histology-pretrained ---\n" +
+                    "Lunit, Kather100K, TCGA-BRCA: Trained on H&E tissue\n" +
+                    "at 20x. Best for H&E brightfield. ~100MB download.\n\n" +
+                    "--- UNet: Foundation Models ---\n" +
+                    "H-optimus-0, Virchow, Hibou, Midnight, DINOv2:\n" +
+                    "Large-scale models (86M-1.1B params). ~200MB-2GB download.\n" +
+                    "Gated models need HF_TOKEN env var.\n\n" +
+                    "--- Tiny UNet ---\n" +
+                    "Size presets (Nano/Tiny/Compact/Small). No pretrained\n" +
+                    "weights -- trains from scratch, any channel count.\n\n" +
+                    "--- Fast Pretrained ---\n" +
+                    "EfficientNet-Lite0 or MobileNetV3-Small. Lightweight\n" +
+                    "ImageNet encoders for fast training.\n\n" +
+                    "Click '?' on the Architecture row for a detailed guide.",
                     "https://github.com/uw-loci/qupath-extension-dl-pixel-classifier/blob/main/docs/BEST_PRACTICES.md#backbone-selection",
                     backboneLabel, backboneCombo);
             grid.add(backboneLabel, 0, row);
@@ -2110,14 +2119,23 @@ public class TrainingDialog {
 
             // Basic mode guidance (hidden in advanced)
             Label basicModelHint = new Label(
-                    "ResNet18: Fastest, least VRAM. Good starting point.\n" +
-                    "ResNet34: Best balance of speed and accuracy (recommended).\n" +
-                    "ResNet50: Most capacity, needs more data and VRAM.");
+                    "Small: Fast training, low VRAM. Good starting point.\n" +
+                    "Medium: Best balance of speed and accuracy (recommended).\n" +
+                    "Large: Most capacity, needs more data and VRAM.");
             basicModelHint.setWrapText(true);
             basicModelHint.setStyle("-fx-text-fill: #666; -fx-font-size: 11px;");
             basicModelHint.visibleProperty().bind(advancedMode.not());
             basicModelHint.managedProperty().bind(advancedMode.not());
             grid.add(basicModelHint, 0, row, 2, 1);
+
+            // Help button for basic mode (hidden in advanced)
+            Button basicHelpBtn = new Button("?");
+            basicHelpBtn.setStyle("-fx-font-size: 10; -fx-padding: 1 6 1 6; -fx-min-width: 22;");
+            basicHelpBtn.setTooltip(new Tooltip("Learn about model sizes"));
+            basicHelpBtn.setOnAction(e -> showBasicArchitectureGuide());
+            basicHelpBtn.visibleProperty().bind(advancedMode.not());
+            basicHelpBtn.managedProperty().bind(advancedMode.not());
+            grid.add(basicHelpBtn, 2, row);
 
             // Dynamic handler-specific UI (e.g., MuViT transformer parameters)
             handlerUIContainer = new javafx.scene.layout.VBox();
@@ -5426,7 +5444,9 @@ public class TrainingDialog {
             if (tileAdvisoryLabel == null || tileSizeSpinner == null
                     || overlapSpinner == null) return;
             int tileSize = tileSizeSpinner.getValue();
-            int overlap = overlapSpinner.getValue();
+            int overlapPct = overlapSpinner.getValue();
+            // Spinner is percentage (0-50); checkTileSettings expects pixels
+            int overlap = (int) Math.round(tileSize * overlapPct / 100.0);
             String advisory = qupath.ext.dlclassifier.model.InferenceConfig
                     .checkTileSettings(tileSize, overlap);
             if (advisory == null) {
@@ -5766,6 +5786,71 @@ public class TrainingDialog {
         }
 
         /**
+         * Shows a simplified guide for basic mode users explaining just the
+         * three ResNet size options and general guidance.
+         */
+        private void showBasicArchitectureGuide() {
+            Dialog<Void> dialog = new Dialog<>();
+            dialog.setTitle("Choosing a Model Size");
+            dialog.setHeaderText("Which model size should I pick?");
+            dialog.getDialogPane().getButtonTypes().add(ButtonType.CLOSE);
+            dialog.setResizable(true);
+
+            VBox content = new VBox(12);
+            content.setPadding(new Insets(10));
+            content.setPrefWidth(480);
+
+            Label intro = new Label(
+                    "In basic mode, you choose between three model sizes. All three "
+                    + "use the same proven UNet architecture -- they differ only in "
+                    + "capacity (how much the model can learn).");
+            intro.setWrapText(true);
+            content.getChildren().add(intro);
+
+            content.getChildren().add(createModelEntry(
+                    "Small (ResNet-18)",
+                    "Fastest training and inference. Uses the least GPU memory (~2-3 GB). "
+                    + "Good starting point when you have a small dataset (< 50 training "
+                    + "tiles) or want quick iterations to test your annotations. "
+                    + "May underperform on complex tasks with many classes.",
+                    null, null));
+
+            content.getChildren().add(createModelEntry(
+                    "Medium (ResNet-34) -- Recommended",
+                    "Best balance of speed and accuracy for most tasks. Moderate GPU "
+                    + "memory (~3-5 GB). This is the default and works well for "
+                    + "most histology segmentation tasks. Start here unless you "
+                    + "have a reason to choose otherwise.",
+                    null, null));
+
+            content.getChildren().add(createModelEntry(
+                    "Large (ResNet-50)",
+                    "Most learning capacity. Needs more GPU memory (~5-8 GB) and "
+                    + "benefits from larger datasets (100+ training tiles). "
+                    + "Choose this when Medium is not capturing enough detail, "
+                    + "or for complex tasks with many tissue classes.",
+                    null, null));
+
+            content.getChildren().add(createSectionHeader("Tips"));
+            Label tips = new Label(
+                    "- Start with Medium. Only switch if results are unsatisfactory.\n"
+                    + "- More training data generally matters more than a larger model.\n"
+                    + "- If training is very slow, try Small first to verify your "
+                    + "annotations are correct, then retrain with Medium.\n"
+                    + "- Switch to 'All Settings' mode for access to histology-pretrained "
+                    + "encoders, foundation models, and additional architectures.");
+            tips.setWrapText(true);
+            content.getChildren().add(tips);
+
+            ScrollPane scrollPane = new ScrollPane(content);
+            scrollPane.setFitToWidth(true);
+            scrollPane.setPrefHeight(400);
+            dialog.getDialogPane().setContent(scrollPane);
+            dialog.getDialogPane().setPrefWidth(520);
+            dialog.showAndWait();
+        }
+
+        /**
          * Shows a guide dialog explaining available model architectures and
          * encoders with links to their associated papers.
          */
@@ -5800,6 +5885,26 @@ public class TrainingDialog {
                     + "requires more VRAM and training time.",
                     null, null));
 
+            content.getChildren().add(createModelEntry(
+                    "Tiny UNet (Lightweight, No Pretrained Weights)",
+                    "A minimal UNet variant with configurable depth and width. "
+                    + "Trains from scratch (no pretrained encoder) so it works with any "
+                    + "number of input channels. Four size presets: Nano (~10K params, "
+                    + "for simple 2-class tasks), Tiny (~138K, default), Compact (~36K), "
+                    + "and Small (~305K). Good for quick experiments or when standard "
+                    + "encoders are too large for your GPU.",
+                    null, null));
+
+            content.getChildren().add(createModelEntry(
+                    "Fast Pretrained (Small RGB Models)",
+                    "Lightweight UNet with mobile-optimized ImageNet encoders. "
+                    + "Designed for fast training and inference with small GPU memory "
+                    + "footprint. Two encoder options: EfficientNet-Lite0 (~4.2M params, "
+                    + "recommended) and MobileNetV3-Small (~2.0M params, fastest). "
+                    + "Good middle ground between Tiny UNet (no pretraining) and full "
+                    + "UNet (heavier encoders).",
+                    null, null));
+
             // --- Standard Encoders ---
             content.getChildren().add(createSectionHeader("Standard Encoders (ImageNet-pretrained)"));
 
@@ -5818,11 +5923,20 @@ public class TrainingDialog {
                     "https://arxiv.org/abs/1512.03385"));
 
             content.getChildren().add(createModelEntry(
-                    "EfficientNet-B0 / B3 / B4",
-                    "Lightweight and fast. Good for low-VRAM GPUs or when inference speed "
-                    + "is critical. B0 is the smallest (5.3M params), B4 largest (19M params).",
+                    "EfficientNet-B0 / B1 / B2",
+                    "Compound-scaled networks, lighter than ResNets. Good for "
+                    + "low-VRAM GPUs or when inference speed is critical. B0 is the "
+                    + "smallest (5.3M params), B2 the largest (9.2M params).",
                     "Tan & Le 2019",
                     "https://arxiv.org/abs/1905.11946"));
+
+            content.getChildren().add(createModelEntry(
+                    "MobileNet-V2",
+                    "Very lightweight encoder designed for mobile/edge deployment. "
+                    + "Fastest inference of the standard encoders (~3.5M params). "
+                    + "Good when inference speed is the top priority.",
+                    "Sandler et al. 2018",
+                    "https://arxiv.org/abs/1801.04381"));
 
             // --- Histology Encoders ---
             content.getChildren().add(createSectionHeader(
@@ -5947,10 +6061,13 @@ public class TrainingDialog {
             // --- Recommendation ---
             content.getChildren().add(createSectionHeader("Quick Recommendation"));
             Label recommendation = new Label(
-                    "For H&E histology: UNet + Lunit SwAV or Kather100K encoder.\n"
+                    "For most tasks: UNet + ResNet-34 (start here).\n"
+                    + "For H&E histology: UNet + Lunit SwAV or Kather100K encoder.\n"
                     + "For fluorescence/multi-channel: UNet + ResNet-34.\n"
                     + "For limited labeled data: UNet + foundation model (H-optimus-0).\n"
-                    + "For fastest inference: UNet + EfficientNet-B0.");
+                    + "For fastest training: Fast Pretrained + EfficientNet-Lite0.\n"
+                    + "For fastest inference: UNet + EfficientNet-B0 or MobileNet-V2.\n"
+                    + "For quick experiments: Tiny UNet (no download, any channel count).");
             recommendation.setWrapText(true);
             recommendation.setStyle("-fx-font-style: italic;");
             content.getChildren().add(recommendation);

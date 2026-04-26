@@ -188,6 +188,9 @@ public class TrainingAreaIssuesDialog {
         this.thresholdSliderRef = thresholdSlider;
 
         Label thresholdLabel = new Label(String.format("Min Loss: %.2f", dataMinLoss));
+        thresholdLabel.setTooltip(TooltipHelper.create(
+                "Show only tiles with loss above this threshold.\n"
+                + "Increase to focus on the most problematic tiles."));
         thresholdSlider.valueProperty().addListener((obs, oldVal, newVal) -> {
             thresholdLabel.setText(String.format("Min Loss: %.2f", newVal.doubleValue()));
             updateFilter(splitFilter.getValue(), newVal.doubleValue());
@@ -197,8 +200,11 @@ public class TrainingAreaIssuesDialog {
         splitFilter.setOnAction(e -> updateFilter(splitFilter.getValue(),
                 thresholdSlider.getValue()));
 
+        Label filterLabel = new Label("Filter:");
+        filterLabel.setTooltip(TooltipHelper.create(
+                "Filter tiles by dataset split and minimum loss threshold."));
         HBox filterBox = new HBox(10,
-                new Label("Filter:"), splitFilter,
+                filterLabel, splitFilter,
                 thresholdLabel, thresholdSlider);
         filterBox.setAlignment(Pos.CENTER_LEFT);
 
@@ -302,6 +308,9 @@ public class TrainingAreaIssuesDialog {
 
         // Zoom slider
         Label zoomLabel = new Label("Zoom: 1x");
+        zoomLabel.setTooltip(TooltipHelper.create(
+                "Zoom level for the preview pane.\n"
+                + "Higher zoom helps identify which pixels have high loss."));
         Slider zoomSlider = new Slider(1, 8, 1);
         zoomSlider.setShowTickLabels(true);
         zoomSlider.setShowTickMarks(true);
@@ -333,6 +342,9 @@ public class TrainingAreaIssuesDialog {
         disagreeImageView.setFitHeight(256);
 
         Label opacityLabel = new Label("Overlay: 60%");
+        opacityLabel.setTooltip(TooltipHelper.create(
+                "Overlay transparency. Lower shows more of the original tile;\n"
+                + "higher shows more of the loss/disagreement overlay."));
         Slider opacitySlider = new Slider(0, 100, 60);
         opacitySlider.setPrefWidth(200);
         opacitySlider.setShowTickLabels(true);
@@ -921,6 +933,10 @@ public class TrainingAreaIssuesDialog {
         // Confidence threshold slider
         Label confLabel = new Label("Confidence: 80%");
         confLabel.setStyle("-fx-font-size: 11px;");
+        confLabel.setTooltip(TooltipHelper.create(
+                "Minimum model confidence to accept a prediction.\n"
+                + "Higher = more conservative (only fix obvious errors).\n"
+                + "0.80 is a good starting point."));
         confidenceSlider = new Slider(0.50, 0.99, 0.80);
         confidenceSlider.setShowTickLabels(true);
         confidenceSlider.setShowTickMarks(true);

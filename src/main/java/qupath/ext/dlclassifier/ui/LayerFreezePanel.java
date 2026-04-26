@@ -83,6 +83,10 @@ public class LayerFreezePanel extends VBox {
         HBox presetBox = new HBox(10);
         presetBox.setAlignment(Pos.CENTER_LEFT);
         Label presetLabel = new Label("Retraining:");
+        presetLabel.setTooltip(TooltipHelper.create(
+                "How much of the pretrained model to keep vs. retrain.\n" +
+                "Choose a preset based on your dataset size,\n" +
+                "or select Custom to toggle individual layers."));
         presetCombo = new ComboBox<>();
         presetCombo.getItems().addAll(
                 "Keep most, retrain a little -- small dataset (<500 tiles)",
