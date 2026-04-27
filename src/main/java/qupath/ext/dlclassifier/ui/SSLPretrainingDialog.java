@@ -125,8 +125,9 @@ public class SSLPretrainingDialog {
 
     private SSLPretrainingDialog() {
         // --- Method selection ---
-        methodCombo = new ComboBox<>(FXCollections.observableArrayList("SimCLR", "BYOL"));
-        methodCombo.setValue("SimCLR");
+        methodCombo = new ComboBox<>(FXCollections.observableArrayList(
+                "BYOL", "SimCLR (image pairs)"));
+        methodCombo.setValue("BYOL");
         methodCombo.setMaxWidth(Double.MAX_VALUE);
         TooltipHelper.install(methodCombo,
                 "Self-supervised pretraining method.\n\n" +
@@ -160,7 +161,7 @@ public class SSLPretrainingDialog {
 
         // Show/hide temperature based on method
         methodCombo.valueProperty().addListener((obs, old, newVal) -> {
-            boolean isSimCLR = "SimCLR".equals(newVal);
+            boolean isSimCLR = newVal != null && newVal.startsWith("SimCLR");
             temperatureSpinner.setVisible(isSimCLR);
             temperatureSpinner.setManaged(isSimCLR);
             temperatureLabel.setVisible(isSimCLR);
@@ -326,7 +327,7 @@ public class SSLPretrainingDialog {
                         .format(java.time.format.DateTimeFormatter.ofPattern("yyyyMMdd_HHmmss"));
                 outputDirField.setText(projectDir.resolve("ssl_pretrained")
                         .resolve(backboneCombo.getValue() + "_"
-                                + methodCombo.getValue().toLowerCase() + "_" + timestamp)
+                                + getSelectedMethod() + "_" + timestamp)
                         .toString());
             } catch (Exception e) {
                 logger.debug("Could not set default output dir: {}", e.getMessage());
@@ -756,7 +757,7 @@ public class SSLPretrainingDialog {
 
     private SSLPretrainingConfig buildConfig() {
         Map<String, Object> config = new HashMap<>();
-        config.put("method", methodCombo.getValue().toLowerCase());
+        config.put("method", getSelectedMethod());
         config.put("encoder_name", backboneCombo.getValue());
         config.put("epochs", epochsSpinner.getValue());
         config.put("batch_size", batchSizeSpinner.getValue());
@@ -879,6 +880,13 @@ public class SSLPretrainingDialog {
                 nImages + " image(s) selected, " + nClasses + " annotation class(es) selected");
     }
 
+    /** Returns "simclr" or "byol" from the display combo value. */
+    private String getSelectedMethod() {
+        String val = methodCombo.getValue();
+        if (val == null) return "byol";
+        return val.startsWith("SimCLR") ? "simclr" : "byol";
+    }
+
     private void updateVramEstimate() {
         if (vramEstimateLabel == null || gpuTotalMb <= 0) {
             if (vramEstimateLabel != null) vramEstimateLabel.setText("");
@@ -888,11 +896,11 @@ public class SSLPretrainingDialog {
             String backbone = backboneCombo.getValue();
             int tileSize = extractionTileSpinner.getValue();
             int batchSize = batchSizeSpinner.getValue();
-            String method = methodCombo.getValue();
+            String method = getSelectedMethod();
 
             double modelMb = estimateModelSizeMb(backbone);
             // BYOL has ~2x encoder memory (online + target networks)
-            double modelFactor = "BYOL".equals(method) ? 2.0 : 1.0;
+            double modelFactor = "byol".equals(method) ? 2.0 : 1.0;
             // SSL: model + optimizer (3x) + activations (~4x CNN, halved for AMP)
             double actMultiplier = 4.0 * 0.6; // assume mixed precision
             double areaScale = (double)(tileSize * tileSize) / (256.0 * 256.0);
@@ -950,7 +958,7 @@ public class SSLPretrainingDialog {
     }
 
     private void updateBatchSizeDefault(String method) {
-        if ("SimCLR".equals(method)) {
+        if (method != null && method.startsWith("SimCLR")) {
             batchSizeSpinner.getValueFactory().setValue(64);
         } else {
             batchSizeSpinner.getValueFactory().setValue(32);
@@ -968,7 +976,7 @@ public class SSLPretrainingDialog {
                             .format(java.time.format.DateTimeFormatter.ofPattern("yyyyMMdd_HHmmss"));
                     outputDirField.setText(parent.resolve(
                             backboneCombo.getValue() + "_"
-                                    + methodCombo.getValue().toLowerCase() + "_" + timestamp)
+                                    + getSelectedMethod() + "_" + timestamp)
                             .toString());
                 }
             } catch (Exception ignored) {}
