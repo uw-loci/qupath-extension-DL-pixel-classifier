@@ -243,7 +243,7 @@ class SSLImageDataset(Dataset):
         """Quick header check -- rejects files that are not valid images."""
         try:
             with open(path, 'rb') as f:
-                header = f.read(8)
+                header = f.read(12)
             if len(header) < 4:
                 return False
             suffix = path.suffix.lower()
