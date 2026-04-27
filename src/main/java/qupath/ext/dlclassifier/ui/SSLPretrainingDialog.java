@@ -121,6 +121,7 @@ public class SSLPretrainingDialog {
     private final Label datasetInfoLabel;
 
     // Output controls
+    private final TextField runNameField;
     private final TextField outputDirField;
 
     private SSLPretrainingDialog() {
@@ -311,6 +312,15 @@ public class SSLPretrainingDialog {
         datasetInfoLabel.setWrapText(true);
 
         // --- Output controls ---
+        runNameField = new TextField();
+        runNameField.setPromptText("Run name (e.g., SSL-Test-1)...");
+        runNameField.setPrefWidth(250);
+        TooltipHelper.install(runNameField,
+                "Name used to label this pretraining run.\n" +
+                "Shown in the progress dialog header and saved in\n" +
+                "metadata.json so you can tell runs apart later.\n" +
+                "Defaults to <backbone>-<method>-<timestamp>.");
+
         outputDirField = new TextField();
         outputDirField.setPromptText("Output directory for encoder weights...");
         outputDirField.setPrefWidth(250);
@@ -319,23 +329,23 @@ public class SSLPretrainingDialog {
                 "and metadata.json will be saved.\n" +
                 "Defaults to a timestamped folder in the project directory.");
 
+        runNameField.setText(buildDefaultRunName());
+
         var qupath = QuPathGUI.getInstance();
         if (qupath != null && qupath.getProject() != null) {
             try {
                 Path projectDir = qupath.getProject().getPath().getParent();
-                String timestamp = java.time.LocalDateTime.now()
-                        .format(java.time.format.DateTimeFormatter.ofPattern("yyyyMMdd_HHmmss"));
                 outputDirField.setText(projectDir.resolve("ssl_pretrained")
-                        .resolve(backboneCombo.getValue() + "_"
-                                + getSelectedMethod() + "_" + timestamp)
+                        .resolve(runNameField.getText())
                         .toString());
             } catch (Exception e) {
                 logger.debug("Could not set default output dir: {}", e.getMessage());
             }
         }
-        // Update output dir when backbone or method changes
-        backboneCombo.valueProperty().addListener((obs, old, newVal) -> updateOutputDir());
-        methodCombo.valueProperty().addListener((obs, old, newVal) -> updateOutputDir());
+        // Update default run name + output dir when backbone or method changes
+        backboneCombo.valueProperty().addListener((obs, old, newVal) -> updateDefaults());
+        methodCombo.valueProperty().addListener((obs, old, newVal) -> updateDefaults());
+        runNameField.textProperty().addListener((obs, old, newVal) -> updateOutputDir());
 
         // Populate project images list
         populateProjectImages();
@@ -729,6 +739,17 @@ public class SSLPretrainingDialog {
     private TitledPane buildOutputSection(Dialog<?> dialog) {
         GridPane grid = new GridPane();
         grid.setHgap(10); grid.setVgap(8); grid.setPadding(new Insets(10));
+
+        Label runNameLabel = new Label("Run name:");
+        TooltipHelper.install(
+                "Name used to label this pretraining run.\n" +
+                "Shown in the progress dialog header and saved in\n" +
+                "metadata.json so you can tell runs apart later.",
+                runNameLabel, runNameField);
+        grid.add(runNameLabel, 0, 0);
+        grid.add(runNameField, 1, 0, 2, 1);
+        GridPane.setHgrow(runNameField, Priority.ALWAYS);
+
         Button browseBtn = new Button("Browse...");
         browseBtn.setOnAction(e -> {
             DirectoryChooser dc = new DirectoryChooser();
@@ -749,10 +770,10 @@ public class SSLPretrainingDialog {
                 "and metadata.json will be saved.\n" +
                 "Defaults to a timestamped folder in the project directory.",
                 outputDirLabel, outputDirField);
-        grid.add(outputDirLabel, 0, 0);
-        grid.add(outputDirField, 1, 0);
+        grid.add(outputDirLabel, 0, 1);
+        grid.add(outputDirField, 1, 1);
         GridPane.setHgrow(outputDirField, Priority.ALWAYS);
-        grid.add(browseBtn, 2, 0);
+        grid.add(browseBtn, 2, 1);
         TitledPane pane = new TitledPane("Output", grid);
         pane.setExpanded(true); pane.setCollapsible(false);
         return pane;
@@ -771,6 +792,9 @@ public class SSLPretrainingDialog {
         config.put("temperature", temperatureSpinner.getValue());
         config.put("projection_dim", projectionDimSpinner.getValue());
         config.put("tile_size", extractionTileSpinner.getValue());
+        String runName = runNameField.getText() == null ? "" : runNameField.getText().trim();
+        if (runName.isEmpty()) runName = buildDefaultRunName();
+        config.put("run_name", runName);
 
         // Domain-adaptive pretraining: pass source model path if set
         String sourceModel = sourceModelField.getText();
@@ -970,6 +994,16 @@ public class SSLPretrainingDialog {
         }
     }
 
+    private String buildDefaultRunName() {
+        String timestamp = java.time.LocalDateTime.now()
+                .format(java.time.format.DateTimeFormatter.ofPattern("yyyyMMdd_HHmmss"));
+        return "SSL-" + backboneCombo.getValue() + "-" + getSelectedMethod() + "-" + timestamp;
+    }
+
+    private void updateDefaults() {
+        runNameField.setText(buildDefaultRunName());
+    }
+
     private void updateOutputDir() {
         String current = outputDirField.getText();
         if (current.contains("ssl_pretrained" + File.separator)) {
@@ -977,12 +1011,9 @@ public class SSLPretrainingDialog {
                 Path parent = Path.of(current).getParent();
                 if (parent != null && parent.getFileName() != null
                         && parent.toString().contains("ssl_pretrained")) {
-                    String timestamp = java.time.LocalDateTime.now()
-                            .format(java.time.format.DateTimeFormatter.ofPattern("yyyyMMdd_HHmmss"));
-                    outputDirField.setText(parent.resolve(
-                            backboneCombo.getValue() + "_"
-                                    + getSelectedMethod() + "_" + timestamp)
-                            .toString());
+                    String runName = runNameField.getText();
+                    if (runName == null || runName.isBlank()) runName = buildDefaultRunName();
+                    outputDirField.setText(parent.resolve(runName).toString());
                 }
             } catch (Exception ignored) {}
         }

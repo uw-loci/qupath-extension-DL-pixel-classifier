@@ -111,14 +111,28 @@ public class ProgressMonitorController {
     }
 
     /**
-     * Creates a new progress monitor with fine-grained control over displayed elements.
+     * Creates a new progress monitor. Pause/Stop controls follow showClassMetrics by default.
      *
      * @param title            the window title
      * @param showLossChart    whether to show the loss chart
-     * @param showClassMetrics whether to show class-specific UI (IoU chart, pause/resume,
+     * @param showClassMetrics whether to show class-specific UI (IoU chart,
      *                         val loss legend). False for pretraining which has no classes.
      */
     public ProgressMonitorController(String title, boolean showLossChart, boolean showClassMetrics) {
+        this(title, showLossChart, showClassMetrics, showClassMetrics);
+    }
+
+    /**
+     * Creates a new progress monitor with explicit control over Pause/Stop UI.
+     *
+     * @param title             the window title
+     * @param showLossChart     whether to show the loss chart
+     * @param showClassMetrics  whether to show class-specific UI (IoU chart, val loss)
+     * @param showPauseControls whether to show Pause and Complete-Training buttons
+     *                          (true for both supervised training and SSL/MAE pretraining)
+     */
+    public ProgressMonitorController(String title, boolean showLossChart,
+                                     boolean showClassMetrics, boolean showPauseControls) {
         stage = new Stage();
         stage.initOwner(QuPathGUI.getInstance().getStage());
         stage.initStyle(StageStyle.DECORATED);
@@ -317,11 +331,14 @@ public class ProgressMonitorController {
         // Buttons
         HBox buttonBox = new HBox(10);
         buttonBox.setAlignment(Pos.CENTER_RIGHT);
-        if (showLossChart && showClassMetrics) {
+        if (showLossChart && showPauseControls) {
             buttonBox.getChildren().add(pauseButton);
             buttonBox.getChildren().add(completeTrainingButton);
-            buttonBox.getChildren().add(continueTrainingButton);
-            buttonBox.getChildren().add(reviewButton);
+            // continue/review buttons are only meaningful with class metrics
+            if (showClassMetrics) {
+                buttonBox.getChildren().add(continueTrainingButton);
+                buttonBox.getChildren().add(reviewButton);
+            }
         }
         buttonBox.getChildren().add(cancelButton);
         root.getChildren().add(buttonBox);
@@ -1062,7 +1079,7 @@ public class ProgressMonitorController {
      * @return new progress monitor configured for pretraining
      */
     public static ProgressMonitorController forPretraining() {
-        return new ProgressMonitorController("MAE Pretraining", true, false);
+        return new ProgressMonitorController("MAE Pretraining", true, false, true);
     }
 
     /**
@@ -1072,7 +1089,7 @@ public class ProgressMonitorController {
      * @return new progress monitor configured for SSL pretraining
      */
     public static ProgressMonitorController forSSLPretraining() {
-        return new ProgressMonitorController("SSL Pretraining", true, false);
+        return new ProgressMonitorController("SSL Pretraining", true, false, true);
     }
 
 }

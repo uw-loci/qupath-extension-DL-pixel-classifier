@@ -1273,7 +1273,10 @@ public class TrainingWorkflow {
 
                             // Update status on first real epoch
                             if (lastLoggedEpoch.get() < 0) {
-                                progress.setStatus("Training (" + trainingProgress.totalEpochs() + " epochs)...");
+                                String runLabel = (classifierName != null && !classifierName.isEmpty())
+                                        ? " " + classifierName : "";
+                                progress.setStatus("Training" + runLabel
+                                        + " (" + trainingProgress.totalEpochs() + " epochs)...");
                             }
 
                             // Always update progress bar and detail text (lightweight, keeps UI responsive)

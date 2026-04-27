@@ -121,6 +121,7 @@ public class MAEPretrainingDialog {
     private final Label datasetInfoLabel;
 
     // Output controls
+    private final TextField runNameField;
     private final TextField outputDirField;
 
     private MAEPretrainingDialog() {
@@ -244,26 +245,40 @@ public class MAEPretrainingDialog {
         datasetInfoLabel.setWrapText(true);
 
         // Output controls
+        runNameField = new TextField();
+        runNameField.setPromptText("Run name (e.g., MAE-Test-1)...");
+        runNameField.setPrefWidth(250);
+        TooltipHelper.install(runNameField,
+                "Name used to label this pretraining run.\n" +
+                "Shown in the progress dialog header and saved in\n" +
+                "metadata.json so you can tell runs apart later.\n" +
+                "Defaults to MAE-<config>-<timestamp>.");
+
         outputDirField = new TextField();
         outputDirField.setPromptText("Output directory for encoder weights...");
         outputDirField.setPrefWidth(250);
+
+        runNameField.setText(buildDefaultRunName());
 
         var qupath = QuPathGUI.getInstance();
         if (qupath != null && qupath.getProject() != null) {
             try {
                 Path projectDir = qupath.getProject().getPath().getParent();
-                String timestamp = java.time.LocalDateTime.now()
-                        .format(java.time.format.DateTimeFormatter.ofPattern("yyyyMMdd_HHmmss"));
                 outputDirField.setText(projectDir.resolve("mae_pretrained")
-                        .resolve(modelConfigCombo.getValue() + "_" + timestamp).toString());
+                        .resolve(runNameField.getText()).toString());
             } catch (Exception e) {
                 logger.debug("Could not set default output dir from project: {}", e.getMessage());
             }
         }
         modelConfigCombo.valueProperty().addListener((obs, old, newVal) -> {
+            runNameField.setText(buildDefaultRunName());
+        });
+        runNameField.textProperty().addListener((obs, old, newVal) -> {
             String current = outputDirField.getText();
-            if (current.contains("mae_pretrained" + File.separator) && old != null) {
-                outputDirField.setText(current.replace(old + "_", newVal + "_"));
+            if (current != null && current.contains("mae_pretrained" + File.separator)
+                    && old != null && !old.isEmpty()) {
+                outputDirField.setText(current.replace(File.separator + old,
+                        File.separator + (newVal == null ? "" : newVal)));
             }
         });
 
@@ -487,6 +502,16 @@ public class MAEPretrainingDialog {
     private TitledPane buildOutputSection(Dialog<?> dialog) {
         GridPane grid = new GridPane();
         grid.setHgap(10); grid.setVgap(8); grid.setPadding(new Insets(10));
+
+        Label runNameLabel = new Label("Run name:");
+        TooltipHelper.install(runNameLabel,
+                "Name used to label this pretraining run.\n" +
+                "Shown in the progress dialog header and saved in\n" +
+                "metadata.json so you can tell runs apart later.");
+        grid.add(runNameLabel, 0, 0);
+        grid.add(runNameField, 1, 0, 2, 1);
+        GridPane.setHgrow(runNameField, Priority.ALWAYS);
+
         Button browseBtn = new Button("Browse...");
         browseBtn.setOnAction(e -> {
             DirectoryChooser dc = new DirectoryChooser();
@@ -504,13 +529,19 @@ public class MAEPretrainingDialog {
         TooltipHelper.install(outputDirLabel,
                 "Directory where the pretrained encoder weights will be saved.\n" +
                 "Defaults to a timestamped folder inside the project directory.");
-        grid.add(outputDirLabel, 0, 0);
-        grid.add(outputDirField, 1, 0);
+        grid.add(outputDirLabel, 0, 1);
+        grid.add(outputDirField, 1, 1);
         GridPane.setHgrow(outputDirField, Priority.ALWAYS);
-        grid.add(browseBtn, 2, 0);
+        grid.add(browseBtn, 2, 1);
         TitledPane pane = new TitledPane("Output", grid);
         pane.setExpanded(true); pane.setCollapsible(false);
         return pane;
+    }
+
+    private String buildDefaultRunName() {
+        String timestamp = java.time.LocalDateTime.now()
+                .format(java.time.format.DateTimeFormatter.ofPattern("yyyyMMdd_HHmmss"));
+        return "MAE-" + modelConfigCombo.getValue() + "-" + timestamp;
     }
 
     private MAEPretrainingConfig buildConfig() {
@@ -523,6 +554,9 @@ public class MAEPretrainingDialog {
         config.put("batch_size", batchSizeSpinner.getValue());
         config.put("learning_rate", learningRateSpinner.getValue());
         config.put("warmup_epochs", warmupEpochsSpinner.getValue());
+        String runName = runNameField.getText() == null ? "" : runNameField.getText().trim();
+        if (runName.isEmpty()) runName = buildDefaultRunName();
+        config.put("run_name", runName);
 
         Path outputDir;
         if (outputDirField.getText().isBlank()) {

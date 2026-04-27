@@ -871,6 +871,37 @@ class SSLPretrainingService:
         # --- Pause signal path ---
         pause_signal_path = config.get("pause_signal_path", None)
 
+        # --- Resume from a paused checkpoint, if requested ---
+        # Java's resumePretraining injects checkpoint_path + start_epoch into
+        # the config dict so we know to skip ahead and restore model/optim state.
+        checkpoint_path = config.get("checkpoint_path", None)
+        start_epoch = int(config.get("start_epoch", 0))
+        best_loss = float('inf')
+        best_state = None
+        best_epoch = 0
+        history = []
+        if checkpoint_path and Path(checkpoint_path).exists():
+            try:
+                ckpt = torch.load(str(checkpoint_path), map_location=self.device)
+                model.load_state_dict(ckpt["model_state_dict"])
+                optimizer.load_state_dict(ckpt["optimizer_state_dict"])
+                scheduler.load_state_dict(ckpt["scheduler_state_dict"])
+                best_loss = ckpt.get("best_loss", float('inf'))
+                best_state = ckpt.get("best_state", None)
+                history = ckpt.get("history", [])
+                start_epoch = max(start_epoch, int(ckpt.get("epoch", 0)))
+                logger.info(
+                    "Resumed SSL pretraining from %s at epoch %d (best_loss=%.6f)",
+                    checkpoint_path, start_epoch, best_loss)
+            except Exception as e:
+                logger.error(
+                    "Failed to load resume checkpoint %s: %s -- starting fresh",
+                    checkpoint_path, e)
+                start_epoch = 0
+                best_loss = float('inf')
+                best_state = None
+                history = []
+
         # --- Training loop ---
         _report("starting_training")
         import time as _time
@@ -885,16 +916,11 @@ class SSLPretrainingService:
         else:
             logger.info("BYOL ema_decay=%.4f, projection_dim=%d",
                          ema_decay, projection_dim)
-
-        best_loss = float('inf')
-        best_state = None
-        best_epoch = 0
-        history = []
         training_start_time = _time.monotonic()
 
         first_batch_done = False
         try:
-            for epoch in range(1, epochs + 1):
+            for epoch in range(start_epoch + 1, epochs + 1):
                 if cancel_flag and cancel_flag.is_set():
                     logger.info("Pretraining cancelled at epoch %d", epoch)
                     break
@@ -915,6 +941,11 @@ class SSLPretrainingService:
                     torch.save(ckpt, str(output_dir / "pause_checkpoint.pt"))
                     logger.info("Saved pause checkpoint to %s",
                                 output_dir / "pause_checkpoint.pt")
+                    # Consume the pause signal so a resume doesn't trip on it
+                    try:
+                        Path(pause_signal_path).unlink()
+                    except Exception:
+                        pass
                     self._cleanup_training_memory()
                     return {
                         "status": "paused",
@@ -1101,7 +1132,8 @@ class SSLPretrainingService:
                     tile_size, history, best_loss, best_epoch,
                     batch_size, effective_batch, learning_rate,
                     len(dataset), temperature, ema_decay,
-                    projection_dim, pretrained_model_path, norm_stats)
+                    projection_dim, pretrained_model_path, norm_stats,
+                    run_name=config.get("run_name", ""))
                 logger.info(
                     "Cancelled at epoch %d but saved best model "
                     "(epoch %d, loss=%.6f) to %s",
@@ -1144,12 +1176,20 @@ class SSLPretrainingService:
             tile_size, history, best_loss, best_epoch,
             batch_size, effective_batch, learning_rate,
             len(dataset), temperature, ema_decay,
-            projection_dim, pretrained_model_path, norm_stats)
+            projection_dim, pretrained_model_path, norm_stats,
+            run_name=config.get("run_name", ""))
 
         # Clean up crash-recovery checkpoint
         best_ckpt = output_dir / "best_in_progress.pt"
         if best_ckpt.exists():
             best_ckpt.unlink()
+        # Clean up pause checkpoint after successful completion
+        pause_ckpt = output_dir / "pause_checkpoint.pt"
+        if pause_ckpt.exists():
+            try:
+                pause_ckpt.unlink()
+            except Exception:
+                pass
 
         elapsed_total = _time.monotonic() - training_start_time
         logger.info(
@@ -1183,11 +1223,13 @@ class SSLPretrainingService:
         history, best_loss, best_epoch, batch_size, effective_batch,
         learning_rate, num_images, temperature, ema_decay,
         projection_dim, pretrained_model_path, norm_stats,
+        run_name=None,
     ):
         """Save metadata.json alongside model.pt."""
         metadata = {
             "model_type": "ssl_pretrained",
             "ssl_method": method,
+            "run_name": run_name or "",
             "architecture": {
                 "type": "smp",
                 "encoder_name": encoder_name,

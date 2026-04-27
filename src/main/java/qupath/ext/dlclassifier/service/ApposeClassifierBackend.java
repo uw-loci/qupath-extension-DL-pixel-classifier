@@ -427,17 +427,28 @@ public class ApposeClassifierBackend implements ClassifierBackend {
             Path dataPath,
             Path outputDir,
             Consumer<ClassifierClient.TrainingProgress> progressCallback,
-            Supplier<Boolean> cancelledCheck) throws IOException {
+            Supplier<Boolean> cancelledCheck,
+            Consumer<String> jobIdCallback) throws IOException {
 
         ApposeService appose = ApposeService.getInstance();
 
+        // Inject pause signal path into the config dict. Python reads
+        // pause_signal_path from config.get(...), then on detection saves
+        // pause_checkpoint.pt and returns status="paused".
+        String jobId = "appose-mae-" + System.currentTimeMillis();
+        Map<String, Object> configWithPause = new HashMap<>(config);
+        configWithPause.put("pause_signal_path", getPauseSignalPath(jobId).toString());
+
         Map<String, Object> inputs = new HashMap<>();
-        inputs.put("config", config);
+        inputs.put("config", configWithPause);
         inputs.put("data_path", dataPath.toString());
         inputs.put("output_dir", outputDir.toString());
 
-        logger.info("Starting MAE pretraining: config={}, data={}, output={}",
-                config.get("model_config"), dataPath, outputDir);
+        logger.info("Starting MAE pretraining: jobId={}, config={}, data={}, output={}",
+                jobId, config.get("model_config"), dataPath, outputDir);
+        if (jobIdCallback != null) {
+            jobIdCallback.accept(jobId);
+        }
 
         Task task = appose.createTask("pretrain_mae", inputs);
 
@@ -490,6 +501,20 @@ public class ApposeClassifierBackend implements ClassifierBackend {
             throw new IOException("MAE pretraining failed: " + task.error);
         }
 
+        return buildPretrainingResult(task, jobId, "mae", inputs, outputDir);
+    }
+
+    /**
+     * Reads pretraining task outputs and produces a TrainingResult, handling
+     * paused / cancelled / completed states uniformly across MAE and SSL.
+     * Persists checkpoint info in checkpointStore on pause so resume/finalize
+     * can find the saved state.
+     */
+    private ClassifierClient.TrainingResult buildPretrainingResult(
+            Task task, String jobId, String label,
+            Map<String, Object> inputs, Path outputDir) {
+        String status = task.outputs.containsKey("status")
+                ? String.valueOf(task.outputs.get("status")) : "completed";
         String encoderPath = task.outputs.containsKey("encoder_path")
                 ? task.outputs.get("encoder_path").toString() : "";
         int epochsCompleted = task.outputs.containsKey("epochs_completed")
@@ -497,11 +522,26 @@ public class ApposeClassifierBackend implements ClassifierBackend {
         double finalLoss = task.outputs.containsKey("final_loss")
                 ? ((Number) task.outputs.get("final_loss")).doubleValue() : 0.0;
 
-        logger.info("MAE pretraining complete: {} epochs, loss={}, path={}",
-                epochsCompleted, finalLoss, encoderPath);
+        if ("paused".equals(status)) {
+            // Python wrote pause_checkpoint.pt to outputDir; record it for resume/finalize.
+            Path checkpointPath = outputDir.resolve("pause_checkpoint.pt");
+            int totalEpochs = task.outputs.containsKey("total_epochs")
+                    ? ((Number) task.outputs.get("total_epochs")).intValue()
+                    : epochsCompleted;
+            storeCheckpointInfo(jobId, checkpointPath.toString(), epochsCompleted, inputs);
+            logger.info("{} pretraining paused: jobId={}, epoch={}/{}, checkpoint={}",
+                    label.toUpperCase(), jobId, epochsCompleted, totalEpochs, checkpointPath);
+            return new ClassifierClient.TrainingResult(
+                    jobId, null, finalLoss, 0.0, 0, 0.0,
+                    true, epochsCompleted, totalEpochs, checkpointPath.toString(),
+                    false, null, null, 0.0, true);
+        }
+
+        logger.info("{} pretraining {}: {} epochs, loss={}, path={}",
+                label.toUpperCase(), status, epochsCompleted, finalLoss, encoderPath);
 
         return new ClassifierClient.TrainingResult(
-                "mae-pretrain", encoderPath, finalLoss, 0.0, 0, 0.0);
+                jobId, encoderPath, finalLoss, 0.0, 0, 0.0);
     }
 
     /**
@@ -520,17 +560,25 @@ public class ApposeClassifierBackend implements ClassifierBackend {
             Path dataPath,
             Path outputDir,
             Consumer<ClassifierClient.TrainingProgress> progressCallback,
-            Supplier<Boolean> cancelledCheck) throws IOException {
+            Supplier<Boolean> cancelledCheck,
+            Consumer<String> jobIdCallback) throws IOException {
 
         ApposeService appose = ApposeService.getInstance();
 
+        String jobId = "appose-ssl-" + System.currentTimeMillis();
+        Map<String, Object> configWithPause = new HashMap<>(config);
+        configWithPause.put("pause_signal_path", getPauseSignalPath(jobId).toString());
+
         Map<String, Object> inputs = new HashMap<>();
-        inputs.put("config", config);
+        inputs.put("config", configWithPause);
         inputs.put("data_path", dataPath.toString());
         inputs.put("output_dir", outputDir.toString());
 
-        logger.info("Starting SSL pretraining: method={}, encoder={}, data={}, output={}",
-                config.get("method"), config.get("encoder_name"), dataPath, outputDir);
+        logger.info("Starting SSL pretraining: jobId={}, method={}, encoder={}, data={}, output={}",
+                jobId, config.get("method"), config.get("encoder_name"), dataPath, outputDir);
+        if (jobIdCallback != null) {
+            jobIdCallback.accept(jobId);
+        }
 
         Task task = appose.createTask("pretrain_ssl", inputs);
 
@@ -600,18 +648,142 @@ public class ApposeClassifierBackend implements ClassifierBackend {
             throw new IOException("SSL pretraining failed: " + task.error);
         }
 
-        String encoderPath = task.outputs.containsKey("encoder_path")
-                ? task.outputs.get("encoder_path").toString() : "";
-        int epochsCompleted = task.outputs.containsKey("epochs_completed")
-                ? ((Number) task.outputs.get("epochs_completed")).intValue() : 0;
-        double finalLoss = task.outputs.containsKey("final_loss")
-                ? ((Number) task.outputs.get("final_loss")).doubleValue() : 0.0;
+        return buildPretrainingResult(task, jobId, "ssl", inputs, outputDir);
+    }
 
-        logger.info("SSL pretraining complete: {} epochs, loss={}, path={}",
-                epochsCompleted, finalLoss, encoderPath);
+    /**
+     * Re-launches a previously paused pretraining run from its saved
+     * pause_checkpoint.pt. Reuses the original inputs but injects
+     * checkpoint_path and a fresh pause_signal_path.
+     *
+     * @param taskName        Appose script name ("pretrain_mae" or "pretrain_ssl")
+     * @param jobId           original (paused) job ID; used to look up checkpoint info
+     * @param outputDir       where the previous run was writing
+     * @param progressCallback receives progress updates
+     * @param cancelledCheck   cancellation poll
+     * @param jobIdCallback    invoked with the new resume job ID
+     */
+    public ClassifierClient.TrainingResult resumePretraining(
+            String taskName,
+            String jobId,
+            Path outputDir,
+            Consumer<ClassifierClient.TrainingProgress> progressCallback,
+            Supplier<Boolean> cancelledCheck,
+            Consumer<String> jobIdCallback) throws IOException {
 
-        return new ClassifierClient.TrainingResult(
-                "ssl-pretrain", encoderPath, finalLoss, 0.0, 0, 0.0);
+        CheckpointInfo checkpoint = checkpointStore.get(jobId);
+        if (checkpoint == null) {
+            throw new IOException("No pretraining checkpoint stored for job: " + jobId);
+        }
+
+        ApposeService appose = ApposeService.getInstance();
+
+        // Rebuild inputs from the original run, swapping in the new pause path
+        // and checkpoint path so the Python service knows to resume.
+        Map<String, Object> inputs = new HashMap<>(checkpoint.originalInputs());
+        @SuppressWarnings("unchecked")
+        Map<String, Object> previousConfig = (Map<String, Object>) inputs.get("config");
+        Map<String, Object> resumeConfig = new HashMap<>(
+                previousConfig != null ? previousConfig : new HashMap<>());
+
+        String newJobId = "appose-resume-" + System.currentTimeMillis();
+        resumeConfig.put("pause_signal_path", getPauseSignalPath(newJobId).toString());
+        resumeConfig.put("checkpoint_path", checkpoint.path());
+        resumeConfig.put("start_epoch", checkpoint.lastEpoch());
+        inputs.put("config", resumeConfig);
+
+        jobIdRedirects.put(jobId, newJobId);
+        logger.info("Resuming pretraining: task={}, newJobId={}, checkpoint={}, fromEpoch={}",
+                taskName, newJobId, checkpoint.path(), checkpoint.lastEpoch());
+        if (jobIdCallback != null) {
+            jobIdCallback.accept(newJobId);
+        }
+
+        Task task = appose.createTask(taskName, inputs);
+        task.listen(event -> {
+            if (event.responseType == ResponseType.UPDATE && event.message != null) {
+                try {
+                    JsonObject json = JsonParser.parseString(event.message).getAsJsonObject();
+                    Map<String, String> extraData = new HashMap<>();
+                    if (json.has("config") && json.get("config").isJsonObject()) {
+                        JsonObject cfg = json.getAsJsonObject("config");
+                        if (cfg.has("message"))
+                            extraData.put("message", cfg.get("message").getAsString());
+                    }
+                    ClassifierClient.TrainingProgress progress =
+                            new ClassifierClient.TrainingProgress(
+                                    json.has("epoch") ? json.get("epoch").getAsInt() : 0,
+                                    json.has("total_epochs") ? json.get("total_epochs").getAsInt() : 0,
+                                    json.has("train_loss") ? json.get("train_loss").getAsDouble() : 0.0,
+                                    json.has("val_loss") ? json.get("val_loss").getAsDouble() : 0.0,
+                                    0.0, 0.0, Map.of(), Map.of(),
+                                    json.has("device") ? json.get("device").getAsString() : "",
+                                    json.has("device_info") ? json.get("device_info").getAsString() : "",
+                                    json.has("status") ? json.get("status").getAsString() : "",
+                                    json.has("setup_phase") ? json.get("setup_phase").getAsString() : "",
+                                    extraData);
+                    if (progressCallback != null) {
+                        progressCallback.accept(progress);
+                    }
+                } catch (Exception e) {
+                    logger.debug("Failed to parse resume progress: {}", e.getMessage());
+                }
+            }
+        });
+
+        task.start();
+        while (!task.status.isFinished()) {
+            if (cancelledCheck != null && cancelledCheck.get()) {
+                task.cancel();
+                logger.info("Resumed pretraining cancelled by user");
+            }
+            try {
+                Thread.sleep(200);
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+                task.cancel();
+                throw new IOException("Resumed pretraining interrupted", e);
+            }
+        }
+        if (task.status == org.apposed.appose.Service.TaskStatus.FAILED) {
+            throw new IOException("Resumed pretraining failed: " + task.error);
+        }
+        return buildPretrainingResult(task, newJobId,
+                "pretrain_ssl".equals(taskName) ? "ssl" : "mae",
+                inputs, outputDir);
+    }
+
+    /**
+     * Finalizes a paused pretraining run by extracting the best encoder weights
+     * from pause_checkpoint.pt and writing them as the final model.pt + metadata.json.
+     *
+     * @param checkpointPath path to pause_checkpoint.pt
+     * @param outputDir      directory to write model.pt and metadata.json
+     * @return a TrainingResult whose modelPath points at the saved encoder
+     */
+    public ClassifierClient.TrainingResult finalizePretraining(
+            String checkpointPath, Path outputDir) throws IOException {
+        ApposeService appose = ApposeService.getInstance();
+        Map<String, Object> inputs = new HashMap<>();
+        inputs.put("checkpoint_path", checkpointPath);
+        inputs.put("output_dir", outputDir.toString());
+
+        ClassLoader extensionCL = ApposeService.class.getClassLoader();
+        ClassLoader originalCL = Thread.currentThread().getContextClassLoader();
+        Thread.currentThread().setContextClassLoader(extensionCL);
+        try {
+            Task task = appose.runTask("finalize_pretrain", inputs);
+            String encoderPath = task.outputs.containsKey("encoder_path")
+                    ? String.valueOf(task.outputs.get("encoder_path")) : "";
+            double bestLoss = task.outputs.containsKey("best_loss")
+                    ? ((Number) task.outputs.get("best_loss")).doubleValue() : 0.0;
+            return new ClassifierClient.TrainingResult(
+                    "pretrain-finalized", encoderPath, bestLoss, 0.0, 0, 0.0);
+        } catch (Exception e) {
+            throw new IOException("Failed to finalize pretraining: " + e.getMessage(), e);
+        } finally {
+            Thread.currentThread().setContextClassLoader(originalCL);
+        }
     }
 
     @Override

@@ -510,11 +510,66 @@ class MAEPretrainingService:
         best_state = None
         history = []
 
+        # --- Pause signal path + resume from checkpoint ---
+        pause_signal_path = config.get("pause_signal_path", None)
+        checkpoint_path = config.get("checkpoint_path", None)
+        start_epoch = int(config.get("start_epoch", 0))
+        if checkpoint_path and Path(checkpoint_path).exists():
+            try:
+                ckpt = torch.load(str(checkpoint_path), map_location=self.device)
+                model.load_state_dict(ckpt["model_state_dict"])
+                optimizer.load_state_dict(ckpt["optimizer_state_dict"])
+                scheduler.load_state_dict(ckpt["scheduler_state_dict"])
+                best_loss = ckpt.get("best_loss", float('inf'))
+                best_state = ckpt.get("best_state", None)
+                history = ckpt.get("history", [])
+                start_epoch = max(start_epoch, int(ckpt.get("epoch", 0)))
+                logger.info(
+                    "Resumed MAE pretraining from %s at epoch %d (best_loss=%.6f)",
+                    checkpoint_path, start_epoch, best_loss)
+            except Exception as e:
+                logger.error(
+                    "Failed to load resume checkpoint %s: %s -- starting fresh",
+                    checkpoint_path, e)
+                start_epoch = 0
+                best_loss = float('inf')
+                best_state = None
+                history = []
+
         first_batch_done = False
-        for epoch in range(1, epochs + 1):
+        for epoch in range(start_epoch + 1, epochs + 1):
             if cancel_flag and cancel_flag.is_set():
                 logger.info("Pretraining cancelled at epoch %d", epoch)
                 break
+
+            # Check pause signal -- save full state for resume / finalize
+            if pause_signal_path and Path(pause_signal_path).exists():
+                logger.info("Pause signal detected at epoch %d", epoch)
+                ckpt = {
+                    "model_state_dict": model.state_dict(),
+                    "optimizer_state_dict": optimizer.state_dict(),
+                    "scheduler_state_dict": scheduler.state_dict(),
+                    "epoch": epoch - 1,
+                    "best_loss": best_loss,
+                    "best_state": best_state,
+                    "history": history,
+                    "config": config,
+                }
+                torch.save(ckpt, str(output_dir / "pause_checkpoint.pt"))
+                logger.info("Saved MAE pause checkpoint to %s",
+                            output_dir / "pause_checkpoint.pt")
+                try:
+                    Path(pause_signal_path).unlink()
+                except Exception:
+                    pass
+                return {
+                    "status": "paused",
+                    "encoder_path": "",
+                    "epochs_completed": epoch - 1,
+                    "total_epochs": epochs,
+                    "final_loss": history[-1]["loss"] if history else 0.0,
+                    "best_loss": best_loss,
+                }
 
             model.train()
             epoch_loss = 0.0
@@ -637,10 +692,18 @@ class MAEPretrainingService:
                 "learning_rate": learning_rate,
                 "num_images": len(dataset),
             },
+            "run_name": config.get("run_name", ""),
             "normalization_stats": norm_stats,
         }
         with open(str(output_dir / "metadata.json"), 'w') as f:
             json.dump(metadata, f, indent=2)
+        # Clean up the pause checkpoint after a successful run
+        pause_ckpt = output_dir / "pause_checkpoint.pt"
+        if pause_ckpt.exists():
+            try:
+                pause_ckpt.unlink()
+            except Exception:
+                pass
 
         logger.info(
             "MAE pretraining complete: %d epochs, best_loss=%.6f -> %s",

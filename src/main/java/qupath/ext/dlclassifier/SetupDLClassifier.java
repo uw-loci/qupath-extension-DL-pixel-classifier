@@ -57,6 +57,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.ResourceBundle;
 import java.util.concurrent.CompletableFuture;
+import java.util.function.Consumer;
 
 /**
  * Entry point for the Deep Learning Pixel Classifier extension.
@@ -1441,27 +1442,37 @@ public class SetupDLClassifier implements QuPathExtension, GitHubProject {
             return;
         }
 
-        // Create progress monitor for pretraining (loss chart only, no class metrics)
+        // Create progress monitor for pretraining (loss chart + pause/stop)
         ProgressMonitorController progress = ProgressMonitorController.forPretraining();
         progress.show();
 
-        // Launch pretraining on daemon thread
-        final int[] lastLoggedEpoch = {-1};
+        // Tracks the currently-active pretraining job ID. Pause writes a signal
+        // file keyed on this ID; the field is updated on resume so subsequent
+        // pause/finalize calls hit the live worker.
+        final String[] currentJobId = {null};
+        final String runName = String.valueOf(config.config().getOrDefault("run_name", ""));
+        final int totalEpochs = ((Number) config.config().getOrDefault("epochs", 100)).intValue();
+
+        progress.setOnPause(v -> {
+            if (currentJobId[0] != null) {
+                try {
+                    apposeBackend.pauseTraining(currentJobId[0]);
+                    progress.log("Pause requested -- will pause after current epoch");
+                } catch (IOException ex) {
+                    logger.error("Failed to write pause signal", ex);
+                    progress.log("ERROR: failed to write pause signal: " + ex.getMessage());
+                }
+            }
+        });
 
         Thread pretrainThread = new Thread(() -> {
             try {
-                // In project mode, extract tiles into the temp dir first, then use
-                // that as dataPath. In folder mode, use dataPath as the user gave it.
                 Path effectiveDataPath = config.dataPath();
                 if (config.sourceMode() == MAEPretrainingDialog.SourceMode.PROJECT_IMAGES) {
                     progress.log("Extracting MAE tiles from " + config.projectImages().size()
                             + " project image(s) into " + projectTempTileDir);
                     progress.setStatus("Extracting MAE tiles...");
-                    try {
-                        extractMAETilesFromProject(config, projectTempTileDir, progress);
-                    } catch (IOException ex) {
-                        throw ex;
-                    }
+                    extractMAETilesFromProject(config, projectTempTileDir, progress);
                     effectiveDataPath = projectTempTileDir.resolve("train").resolve("images");
                     if (!Files.isDirectory(effectiveDataPath)) {
                         throw new IOException(
@@ -1473,11 +1484,13 @@ public class SetupDLClassifier implements QuPathExtension, GitHubProject {
                             + effectiveDataPath);
                 }
 
-                logger.info("Starting MAE pretraining: model={}, epochs={}, data={}",
+                logger.info("Starting MAE pretraining: run={}, model={}, epochs={}, data={}",
+                        runName,
                         config.config().get("model_config"),
                         config.config().get("epochs"),
                         effectiveDataPath);
-                progress.log("MAE pretraining starting...");
+                progress.log("MAE pretraining starting"
+                        + (runName.isEmpty() ? "" : " (run: " + runName + ")") + "...");
                 progress.log("Model: " + config.config().get("model_config")
                         + ", patch=" + config.config().get("patch_size")
                         + ", scales=" + config.config().get("level_scales"));
@@ -1489,81 +1502,24 @@ public class SetupDLClassifier implements QuPathExtension, GitHubProject {
                 progress.log("Output: " + config.outputDir());
                 final Path dataPathForRun = effectiveDataPath;
 
+                Consumer<ClassifierClient.TrainingProgress> progressCb =
+                        buildPretrainProgressCallback(progress, "Pretraining", runName,
+                                totalEpochs, new int[]{-1});
+
                 ClassifierClient.TrainingResult result = apposeBackend.startPretraining(
                         config.config(),
                         dataPathForRun,
                         config.outputDir(),
-                        maeProgress -> {
-                            // Setup phase updates (before training loop)
-                            if (maeProgress.isSetupPhase()) {
-                                if ("initializing".equals(maeProgress.status())) {
-                                    String deviceMsg = formatDeviceMessage(
-                                            maeProgress.device(), maeProgress.deviceInfo());
-                                    progress.log(deviceMsg);
-                                    progress.setStatus("Initializing for "
-                                            + maeProgress.totalEpochs() + " epoch run...");
-                                } else {
-                                    String phaseMsg = formatSetupPhase(
-                                            maeProgress.setupPhase());
-                                    progress.setStatus(phaseMsg);
-                                    progress.log(phaseMsg);
-                                }
-                                return;
-                            }
-
-                            // First real epoch - log start
-                            if (lastLoggedEpoch[0] < 0) {
-                                progress.log("Training loop started");
-                                progress.setStatus("Pretraining ("
-                                        + maeProgress.totalEpochs() + " epochs)...");
-                            }
-
-                            // Always update progress bar and status
-                            if (maeProgress.totalEpochs() > 0) {
-                                progress.setOverallProgress(
-                                        (double) maeProgress.epoch() / maeProgress.totalEpochs());
-                            }
-                            progress.setDetail(String.format(
-                                    "Epoch %d/%d  |  Loss: %.4f",
-                                    maeProgress.epoch(), maeProgress.totalEpochs(),
-                                    maeProgress.loss()));
-
-                            // Update loss chart
-                            progress.updateTrainingMetrics(
-                                    maeProgress.epoch(),
-                                    maeProgress.totalEpochs(),
-                                    maeProgress.loss(),
-                                    Double.NaN,
-                                    null, null);
-
-                            // Log every 10 epochs or first epoch
-                            int epoch = maeProgress.epoch();
-                            if (epoch == 1 || epoch % 10 == 0
-                                    || epoch == maeProgress.totalEpochs()) {
-                                progress.log(String.format(
-                                        "Epoch %d/%d: loss=%.6f",
-                                        epoch, maeProgress.totalEpochs(),
-                                        maeProgress.loss()));
-                                lastLoggedEpoch[0] = epoch;
-                            }
-                        },
-                        progress::isCancelled
+                        progressCb,
+                        progress::isCancelled,
+                        newJobId -> {
+                            currentJobId[0] = newJobId;
+                            progress.onTrainingJobStarted();
+                        }
                 );
 
-                // Success
-                String encoderPath = result.modelPath();
-                String message = String.format(
-                        "Encoder saved to:\n%s\n\n" +
-                        "Final reconstruction loss: %.4f\n\n" +
-                        "To use: In the training dialog, select MuViT and\n" +
-                        "choose 'Continue from model' to load this encoder.",
-                        encoderPath, result.finalLoss());
-                progress.complete(true, message);
-                logger.info("MAE pretraining complete: loss={}, path={}",
-                        result.finalLoss(), encoderPath);
-                Platform.runLater(() ->
-                        Dialogs.showInfoNotification(EXTENSION_NAME,
-                                "MAE pretraining complete! Encoder saved to:\n" + encoderPath));
+                handlePretrainResult("MAE", "pretrain_mae", apposeBackend, result, progress,
+                        config.outputDir(), runName, currentJobId, dataPathForRun);
 
             } catch (IOException e) {
                 if (progress.isCancelled()) {
@@ -1774,7 +1730,20 @@ public class SetupDLClassifier implements QuPathExtension, GitHubProject {
         ProgressMonitorController progress = ProgressMonitorController.forSSLPretraining();
         progress.show();
 
-        final int[] lastLoggedEpoch = {-1};
+        final String[] currentJobId = {null};
+        final String runName = String.valueOf(config.config().getOrDefault("run_name", ""));
+        final int totalEpochs = ((Number) config.config().getOrDefault("epochs", 100)).intValue();
+        progress.setOnPause(v -> {
+            if (currentJobId[0] != null) {
+                try {
+                    apposeBackend.pauseTraining(currentJobId[0]);
+                    progress.log("Pause requested -- will pause after current epoch");
+                } catch (IOException ex) {
+                    logger.error("Failed to write pause signal", ex);
+                    progress.log("ERROR: failed to write pause signal: " + ex.getMessage());
+                }
+            }
+        });
 
         Thread pretrainThread = new Thread(() -> {
             try {
@@ -1822,119 +1791,24 @@ public class SetupDLClassifier implements QuPathExtension, GitHubProject {
                 progress.log("Output: " + config.outputDir());
                 final Path dataPathForRun = effectiveDataPath;
 
+                Consumer<ClassifierClient.TrainingProgress> sslProgressCb =
+                        buildSSLPretrainProgressCallback(progress, runName,
+                                totalEpochs, new int[]{-1});
+
                 ClassifierClient.TrainingResult result = apposeBackend.startSSLPretraining(
                         config.config(),
                         dataPathForRun,
                         config.outputDir(),
-                        sslProgress -> {
-                            if (sslProgress.isSetupPhase()) {
-                                if ("initializing".equals(sslProgress.status())) {
-                                    String deviceMsg = formatDeviceMessage(
-                                            sslProgress.device(), sslProgress.deviceInfo());
-                                    progress.log(deviceMsg);
-                                    progress.setStatus("Initializing for "
-                                            + sslProgress.totalEpochs() + " epoch run...");
-                                } else {
-                                    String phase = sslProgress.setupPhase();
-                                    // VRAM/memory reports include a message in configSummary
-                                    String dataMsg = sslProgress.configSummary() != null
-                                            ? sslProgress.configSummary().get("message") : null;
-                                    if (dataMsg != null && !dataMsg.isEmpty()) {
-                                        progress.log(dataMsg);
-                                    }
-                                    String phaseMsg = formatSetupPhase(phase);
-                                    progress.setStatus(phaseMsg);
-                                    if (dataMsg == null || dataMsg.isEmpty()) {
-                                        progress.log(phaseMsg);
-                                    }
-                                }
-                                return;
-                            }
-
-                            if (lastLoggedEpoch[0] < 0) {
-                                progress.log("Training loop started");
-                                progress.setStatus("Pretraining ("
-                                        + sslProgress.totalEpochs() + " epochs)...");
-                            }
-
-                            if (sslProgress.totalEpochs() > 0) {
-                                progress.setOverallProgress(
-                                        (double) sslProgress.epoch() / sslProgress.totalEpochs());
-                            }
-
-                            // Build detail line with throughput and timing
-                            Map<String, String> timing = sslProgress.configSummary();
-                            double imgPerSec = 0;
-                            double remainingSec = 0;
-                            try {
-                                if (timing.containsKey("images_per_sec"))
-                                    imgPerSec = Double.parseDouble(timing.get("images_per_sec"));
-                                if (timing.containsKey("remaining_sec"))
-                                    remainingSec = Double.parseDouble(timing.get("remaining_sec"));
-                            } catch (NumberFormatException ignored) {}
-
-                            if (imgPerSec > 0 && remainingSec > 0) {
-                                progress.setDetail(String.format(
-                                        "Epoch %d/%d  |  Loss: %.4f  |  %.0f img/s  |  ~%s left",
-                                        sslProgress.epoch(), sslProgress.totalEpochs(),
-                                        sslProgress.loss(), imgPerSec,
-                                        formatSSLDuration((long)(remainingSec * 1000))));
-                            } else {
-                                progress.setDetail(String.format(
-                                        "Epoch %d/%d  |  Loss: %.4f",
-                                        sslProgress.epoch(), sslProgress.totalEpochs(),
-                                        sslProgress.loss()));
-                            }
-
-                            // Update loss chart (triggers ETA timer via recordEpochCompletion)
-                            progress.updateTrainingMetrics(
-                                    sslProgress.epoch(),
-                                    sslProgress.totalEpochs(),
-                                    sslProgress.loss(),
-                                    Double.NaN,
-                                    null, null);
-
-                            // Log every epoch (dense logging)
-                            int epoch = sslProgress.epoch();
-                            progress.log(String.format(
-                                    "Epoch %d/%d: loss=%.6f",
-                                    epoch, sslProgress.totalEpochs(),
-                                    sslProgress.loss()));
-                            lastLoggedEpoch[0] = epoch;
-                        },
-                        progress::isCancelled
+                        sslProgressCb,
+                        progress::isCancelled,
+                        newJobId -> {
+                            currentJobId[0] = newJobId;
+                            progress.onTrainingJobStarted();
+                        }
                 );
 
-                // Handle result (completed, cancelled_saved, or cancelled)
-                String encoderPath = result.modelPath();
-                boolean hasSavedModel = encoderPath != null && !encoderPath.isEmpty();
-
-                if (hasSavedModel) {
-                    // Build completion message with diagnostic hints
-                    StringBuilder message = new StringBuilder();
-                    message.append(String.format(
-                            "Encoder saved to:\n%s\n\nFinal loss: %.4f",
-                            encoderPath, result.finalLoss()));
-
-                    // Diagnostic hint: check if loss barely decreased
-                    if (result.finalLoss() > 0 && result.finalLoss() > result.finalLoss() * 0.95) {
-                        // Can't compare first vs last without history here,
-                        // but we can hint based on absolute values
-                    }
-
-                    message.append("\n\nTo use: In the training dialog, select UNet and\n" +
-                            "choose 'Use SSL pretrained encoder' to load this backbone.");
-                    progress.complete(true, message.toString());
-                    logger.info("SSL pretraining complete: loss={}, path={}",
-                            result.finalLoss(), encoderPath);
-                    Platform.runLater(() ->
-                            Dialogs.showInfoNotification(EXTENSION_NAME,
-                                    "SSL pretraining complete! Encoder saved to:\n"
-                                            + encoderPath));
-                } else {
-                    progress.complete(false, "SSL pretraining cancelled (no model saved).");
-                    logger.info("SSL pretraining cancelled, no model saved");
-                }
+                handlePretrainResult("SSL", "pretrain_ssl", apposeBackend, result, progress,
+                        config.outputDir(), runName, currentJobId, dataPathForRun);
 
             } catch (IOException e) {
                 if (progress.isCancelled()) {
@@ -2216,6 +2090,237 @@ public class SetupDLClassifier implements QuPathExtension, GitHubProject {
             case "training_batch" -> "Training...";
             default -> "Setting up (" + phase + ")...";
         };
+    }
+
+    /**
+     * Builds a progress callback for MAE pretraining. Tracks first-epoch logging
+     * and prefixes the status line with the run name when one was provided.
+     */
+    private Consumer<ClassifierClient.TrainingProgress> buildPretrainProgressCallback(
+            ProgressMonitorController progress, String verb, String runName,
+            int totalEpochs, int[] lastLoggedEpoch) {
+        String runLabel = (runName != null && !runName.isEmpty()) ? " " + runName : "";
+        return maeProgress -> {
+            if (maeProgress.isSetupPhase()) {
+                if ("initializing".equals(maeProgress.status())) {
+                    String deviceMsg = formatDeviceMessage(
+                            maeProgress.device(), maeProgress.deviceInfo());
+                    progress.log(deviceMsg);
+                    progress.setStatus("Initializing for "
+                            + maeProgress.totalEpochs() + " epoch run...");
+                } else {
+                    String phaseMsg = formatSetupPhase(maeProgress.setupPhase());
+                    progress.setStatus(phaseMsg);
+                    progress.log(phaseMsg);
+                }
+                return;
+            }
+            if (lastLoggedEpoch[0] < 0) {
+                progress.log("Training loop started");
+                progress.setStatus(verb + runLabel
+                        + " (" + maeProgress.totalEpochs() + " epochs)...");
+            }
+            if (maeProgress.totalEpochs() > 0) {
+                progress.setOverallProgress(
+                        (double) maeProgress.epoch() / maeProgress.totalEpochs());
+            }
+            progress.setDetail(String.format(
+                    "Epoch %d/%d  |  Loss: %.4f",
+                    maeProgress.epoch(), maeProgress.totalEpochs(), maeProgress.loss()));
+            progress.updateTrainingMetrics(
+                    maeProgress.epoch(), maeProgress.totalEpochs(),
+                    maeProgress.loss(), Double.NaN, null, null);
+            int epoch = maeProgress.epoch();
+            if (epoch == 1 || epoch % 10 == 0 || epoch == maeProgress.totalEpochs()) {
+                progress.log(String.format("Epoch %d/%d: loss=%.6f",
+                        epoch, maeProgress.totalEpochs(), maeProgress.loss()));
+                lastLoggedEpoch[0] = epoch;
+            }
+        };
+    }
+
+    /**
+     * Builds a progress callback for SSL pretraining. Same shape as MAE but
+     * forwards SSL-specific timing fields (images/sec, ETA) into the detail line.
+     */
+    private Consumer<ClassifierClient.TrainingProgress> buildSSLPretrainProgressCallback(
+            ProgressMonitorController progress, String runName,
+            int totalEpochs, int[] lastLoggedEpoch) {
+        String runLabel = (runName != null && !runName.isEmpty()) ? " " + runName : "";
+        return sslProgress -> {
+            if (sslProgress.isSetupPhase()) {
+                if ("initializing".equals(sslProgress.status())) {
+                    progress.log(formatDeviceMessage(
+                            sslProgress.device(), sslProgress.deviceInfo()));
+                    progress.setStatus("Initializing for "
+                            + sslProgress.totalEpochs() + " epoch run...");
+                } else {
+                    String phase = sslProgress.setupPhase();
+                    String dataMsg = sslProgress.configSummary() != null
+                            ? sslProgress.configSummary().get("message") : null;
+                    if (dataMsg != null && !dataMsg.isEmpty()) {
+                        progress.log(dataMsg);
+                    }
+                    String phaseMsg = formatSetupPhase(phase);
+                    progress.setStatus(phaseMsg);
+                    if (dataMsg == null || dataMsg.isEmpty()) {
+                        progress.log(phaseMsg);
+                    }
+                }
+                return;
+            }
+            if (lastLoggedEpoch[0] < 0) {
+                progress.log("Training loop started");
+                progress.setStatus("Pretraining" + runLabel
+                        + " (" + sslProgress.totalEpochs() + " epochs)...");
+            }
+            if (sslProgress.totalEpochs() > 0) {
+                progress.setOverallProgress(
+                        (double) sslProgress.epoch() / sslProgress.totalEpochs());
+            }
+            Map<String, String> timing = sslProgress.configSummary();
+            double imgPerSec = 0, remainingSec = 0;
+            try {
+                if (timing != null && timing.containsKey("images_per_sec"))
+                    imgPerSec = Double.parseDouble(timing.get("images_per_sec"));
+                if (timing != null && timing.containsKey("remaining_sec"))
+                    remainingSec = Double.parseDouble(timing.get("remaining_sec"));
+            } catch (NumberFormatException ignored) {}
+            if (imgPerSec > 0 && remainingSec > 0) {
+                progress.setDetail(String.format(
+                        "Epoch %d/%d  |  Loss: %.4f  |  %.0f img/s  |  ~%s left",
+                        sslProgress.epoch(), sslProgress.totalEpochs(),
+                        sslProgress.loss(), imgPerSec,
+                        formatSSLDuration((long)(remainingSec * 1000))));
+            } else {
+                progress.setDetail(String.format(
+                        "Epoch %d/%d  |  Loss: %.4f",
+                        sslProgress.epoch(), sslProgress.totalEpochs(), sslProgress.loss()));
+            }
+            progress.updateTrainingMetrics(
+                    sslProgress.epoch(), sslProgress.totalEpochs(),
+                    sslProgress.loss(), Double.NaN, null, null);
+            int epoch = sslProgress.epoch();
+            progress.log(String.format("Epoch %d/%d: loss=%.6f",
+                    epoch, sslProgress.totalEpochs(), sslProgress.loss()));
+            lastLoggedEpoch[0] = epoch;
+        };
+    }
+
+    /**
+     * Handles the result of a pretraining (or resumed pretraining) run.
+     * On pause, shows the paused state and wires Resume/Complete callbacks.
+     * On normal completion, shows the success message and offers a notification.
+     *
+     * @param label        "MAE" or "SSL" -- used in user-visible messages
+     * @param taskName     Appose task name for resume ("pretrain_mae" or "pretrain_ssl")
+     * @param backend      Appose backend
+     * @param result       result of the just-finished run
+     * @param progress     progress monitor
+     * @param outputDir    pretraining output directory (where pause_checkpoint.pt lives)
+     * @param runName      run name to show in resumed/pretraining headers
+     * @param currentJobId mutable holder for the active job ID
+     * @param dataPath     data path used for the original run (re-used on resume)
+     */
+    private void handlePretrainResult(String label, String taskName,
+                                      ApposeClassifierBackend backend,
+                                      ClassifierClient.TrainingResult result,
+                                      ProgressMonitorController progress,
+                                      Path outputDir, String runName,
+                                      String[] currentJobId, Path dataPath) {
+        if (result.isPaused()) {
+            int last = result.lastEpoch();
+            int total = result.totalEpochs();
+            progress.showPausedState(last, total);
+            progress.log(label + " pretraining paused at epoch " + last + "/" + total
+                    + ". Resume to continue or Complete Training to save best encoder.");
+
+            progress.setOnResume(v -> {
+                Thread resumeThread = new Thread(() -> {
+                    try {
+                        progress.showResumedState();
+                        Consumer<ClassifierClient.TrainingProgress> cb =
+                                "pretrain_ssl".equals(taskName)
+                                        ? buildSSLPretrainProgressCallback(
+                                                progress, runName, total, new int[]{-1})
+                                        : buildPretrainProgressCallback(
+                                                progress, "Pretraining", runName,
+                                                total, new int[]{-1});
+                        ClassifierClient.TrainingResult resumeResult =
+                                backend.resumePretraining(taskName, currentJobId[0], outputDir,
+                                        cb, progress::isCancelled,
+                                        newJobId -> {
+                                            currentJobId[0] = newJobId;
+                                            progress.onTrainingJobStarted();
+                                        });
+                        handlePretrainResult(label, taskName, backend, resumeResult,
+                                progress, outputDir, runName, currentJobId, dataPath);
+                    } catch (IOException ex) {
+                        logger.error("{} resume failed", label, ex);
+                        progress.log("ERROR: resume failed: " + ex.getMessage());
+                        progress.complete(false, label + " resume failed: " + ex.getMessage());
+                    }
+                }, "DLClassifier-" + label + "Resume");
+                resumeThread.setDaemon(true);
+                resumeThread.start();
+            });
+
+            progress.setOnCompleteEarly(v -> {
+                Thread finalizeThread = new Thread(() -> {
+                    try {
+                        progress.setStatus("Saving encoder...");
+                        progress.log("Finalizing: extracting best encoder from "
+                                + result.checkpointPath());
+                        ClassifierClient.TrainingResult finalResult =
+                                backend.finalizePretraining(result.checkpointPath(), outputDir);
+                        String encoderPath = finalResult.modelPath();
+                        progress.complete(true, String.format(
+                                "Encoder saved to:%n%s%n%nBest loss: %.4f",
+                                encoderPath, finalResult.finalLoss()));
+                        Platform.runLater(() ->
+                                Dialogs.showInfoNotification(EXTENSION_NAME,
+                                        label + " pretraining complete (early stop). Encoder saved to:\n"
+                                                + encoderPath));
+                    } catch (IOException ex) {
+                        logger.error("{} finalize failed", label, ex);
+                        progress.log("ERROR: finalize failed: " + ex.getMessage());
+                        progress.complete(false,
+                                label + " finalize failed: " + ex.getMessage());
+                    }
+                }, "DLClassifier-" + label + "Finalize");
+                finalizeThread.setDaemon(true);
+                finalizeThread.start();
+            });
+            return;
+        }
+
+        String encoderPath = result.modelPath();
+        boolean hasSavedModel = encoderPath != null && !encoderPath.isEmpty();
+        if (hasSavedModel) {
+            String message;
+            if ("MAE".equals(label)) {
+                message = String.format(
+                        "Encoder saved to:%n%s%n%nFinal reconstruction loss: %.4f%n%n"
+                                + "To use: In the training dialog, select MuViT and%n"
+                                + "choose 'Continue from model' to load this encoder.",
+                        encoderPath, result.finalLoss());
+            } else {
+                message = String.format(
+                        "Encoder saved to:%n%s%n%nFinal loss: %.4f%n%n"
+                                + "To use: In the training dialog, select UNet and%n"
+                                + "choose 'Use SSL pretrained encoder' to load this backbone.",
+                        encoderPath, result.finalLoss());
+            }
+            progress.complete(true, message);
+            logger.info("{} pretraining complete: loss={}, path={}",
+                    label, result.finalLoss(), encoderPath);
+            Platform.runLater(() ->
+                    Dialogs.showInfoNotification(EXTENSION_NAME,
+                            label + " pretraining complete! Encoder saved to:\n" + encoderPath));
+        } else {
+            progress.complete(false, label + " pretraining cancelled (no model saved).");
+            logger.info("{} pretraining cancelled, no model saved", label);
+        }
     }
 
 }
