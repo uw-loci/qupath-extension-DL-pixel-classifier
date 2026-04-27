@@ -1835,10 +1835,18 @@ public class SetupDLClassifier implements QuPathExtension, GitHubProject {
                                     progress.setStatus("Initializing for "
                                             + sslProgress.totalEpochs() + " epoch run...");
                                 } else {
-                                    String phaseMsg = formatSetupPhase(
-                                            sslProgress.setupPhase());
+                                    String phase = sslProgress.setupPhase();
+                                    // VRAM/memory reports include a message in configSummary
+                                    String dataMsg = sslProgress.configSummary() != null
+                                            ? sslProgress.configSummary().get("message") : null;
+                                    if (dataMsg != null && !dataMsg.isEmpty()) {
+                                        progress.log(dataMsg);
+                                    }
+                                    String phaseMsg = formatSetupPhase(phase);
                                     progress.setStatus(phaseMsg);
-                                    progress.log(phaseMsg);
+                                    if (dataMsg == null || dataMsg.isEmpty()) {
+                                        progress.log(phaseMsg);
+                                    }
                                 }
                                 return;
                             }

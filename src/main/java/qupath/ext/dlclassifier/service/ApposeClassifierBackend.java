@@ -534,21 +534,27 @@ public class ApposeClassifierBackend implements ClassifierBackend {
 
         Task task = appose.createTask("pretrain_ssl", inputs);
 
-        // Wire up progress reporting with timing data
+        // Wire up progress reporting with timing data and VRAM info
         task.listen(event -> {
             if (event.responseType == ResponseType.UPDATE && event.message != null) {
                 try {
                     JsonObject json = JsonParser.parseString(event.message).getAsJsonObject();
                     // Extract timing data into configSummary for the orchestration layer
-                    Map<String, String> timingData = new HashMap<>();
+                    Map<String, String> extraData = new HashMap<>();
                     if (json.has("elapsed_sec"))
-                        timingData.put("elapsed_sec", json.get("elapsed_sec").getAsString());
+                        extraData.put("elapsed_sec", json.get("elapsed_sec").getAsString());
                     if (json.has("remaining_sec"))
-                        timingData.put("remaining_sec", json.get("remaining_sec").getAsString());
+                        extraData.put("remaining_sec", json.get("remaining_sec").getAsString());
                     if (json.has("epoch_sec"))
-                        timingData.put("epoch_sec", json.get("epoch_sec").getAsString());
+                        extraData.put("epoch_sec", json.get("epoch_sec").getAsString());
                     if (json.has("images_per_sec"))
-                        timingData.put("images_per_sec", json.get("images_per_sec").getAsString());
+                        extraData.put("images_per_sec", json.get("images_per_sec").getAsString());
+                    // Extract setup phase data (VRAM estimates, peak memory)
+                    if (json.has("config") && json.get("config").isJsonObject()) {
+                        JsonObject cfg = json.getAsJsonObject("config");
+                        if (cfg.has("message"))
+                            extraData.put("message", cfg.get("message").getAsString());
+                    }
 
                     ClassifierClient.TrainingProgress progress =
                             new ClassifierClient.TrainingProgress(
@@ -563,7 +569,7 @@ public class ApposeClassifierBackend implements ClassifierBackend {
                                     json.has("device_info") ? json.get("device_info").getAsString() : "",
                                     json.has("status") ? json.get("status").getAsString() : "",
                                     json.has("setup_phase") ? json.get("setup_phase").getAsString() : "",
-                                    timingData
+                                    extraData
                             );
                     if (progressCallback != null) {
                         progressCallback.accept(progress);

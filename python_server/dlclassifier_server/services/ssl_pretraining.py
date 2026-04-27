@@ -819,6 +819,7 @@ class SSLPretrainingService:
         scaler = torch.amp.GradScaler("cuda", enabled=use_grad_scaler)
 
         # --- Pre-flight VRAM estimate ---
+        vram_msg = None
         try:
             if self._device_str == "cuda":
                 mem_info = self.gpu_manager.get_memory_info()
@@ -836,14 +837,21 @@ class SSLPretrainingService:
                 estimated_mb = (model_mb * model_factor
                                 * (1 + 3 + act_multiplier * area_scale * batch_size))
                 if estimated_mb > free_mb * 0.9:
-                    logger.warning(
-                        "VRAM estimate: %.0f MB needed vs %.0f MB free -- "
-                        "OOM likely. Reduce batch size or tile size.",
-                        estimated_mb, free_mb)
+                    vram_msg = (
+                        "WARNING: VRAM estimate %.0f MB needed vs %.0f MB free "
+                        "(%.0f MB total) -- OOM likely. "
+                        "Reduce batch size or tile size."
+                        % (estimated_mb, free_mb, total_mb))
+                    logger.warning(vram_msg)
                 else:
-                    logger.info(
-                        "VRAM estimate: %.0f MB needed, %.0f MB free -- OK",
-                        estimated_mb, free_mb)
+                    vram_msg = (
+                        "VRAM: ~%.0f MB needed, %.0f MB free (%.0f MB total)"
+                        % (estimated_mb, free_mb, total_mb))
+                    logger.info(vram_msg)
+                _report("vram_estimate", {"message": vram_msg,
+                                          "estimated_mb": estimated_mb,
+                                          "free_mb": free_mb,
+                                          "total_mb": total_mb})
         except Exception:
             pass  # Never let estimation break training
 
@@ -964,9 +972,21 @@ class SSLPretrainingService:
                             loss.item() * grad_accum_steps)
                         if self._device_str == "cuda":
                             peak_mb = self.gpu_manager.get_peak_allocated_mb()
+                            mem_info = self.gpu_manager.get_memory_info()
+                            total_mb = mem_info.get("total_mb", 0)
                             logger.info(
-                                "Peak GPU memory after first batch: %.0f MB",
-                                peak_mb)
+                                "Peak GPU memory after first batch: "
+                                "%.0f MB / %.0f MB (%.0f%% used)",
+                                peak_mb, total_mb,
+                                (peak_mb / total_mb * 100) if total_mb > 0 else 0)
+                            _report("peak_memory", {
+                                "message": "Peak VRAM: %.0f MB / %.0f MB (%.0f%%)"
+                                    % (peak_mb, total_mb,
+                                       (peak_mb / total_mb * 100)
+                                       if total_mb > 0 else 0),
+                                "peak_mb": peak_mb,
+                                "total_mb": total_mb,
+                            })
                         first_batch_done = True
 
                     # Optimizer step
