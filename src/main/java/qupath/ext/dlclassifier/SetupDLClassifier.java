@@ -35,6 +35,7 @@ import qupath.ext.dlclassifier.model.ChannelConfiguration;
 import qupath.ext.dlclassifier.utilities.CheckpointScanner;
 import qupath.ext.dlclassifier.utilities.CheckpointScanner.OrphanedCheckpoint;
 import qupath.ext.dlclassifier.ui.MAEPretrainingDialog;
+import qupath.ext.dlclassifier.ui.SSLPretrainingDialog;
 import qupath.ext.dlclassifier.ui.ProgressMonitorController;
 import qupath.ext.dlclassifier.ui.PythonConsoleWindow;
 import qupath.ext.dlclassifier.ui.SetupEnvironmentDialog;
@@ -528,6 +529,14 @@ public class SetupDLClassifier implements QuPathExtension, GitHubProject {
         maePretrainOption.setOnAction(e -> startMAEPretraining());
         maePretrainOption.visibleProperty().bind(environmentReady);
 
+        MenuItem sslPretrainOption = new MenuItem("SSL Pretrain Encoder...");
+        TooltipHelper.installOnMenuItem(sslPretrainOption,
+                "Self-supervised pretraining for CNN encoders (ResNet, EfficientNet).\n" +
+                "Uses SimCLR or BYOL on tiles from annotated regions.\n" +
+                "The resulting encoder can be loaded via 'Use SSL pretrained encoder'.");
+        sslPretrainOption.setOnAction(e -> startSSLPretraining());
+        sslPretrainOption.visibleProperty().bind(environmentReady);
+
         // Rebuild DL Environment - always visible so users can fix broken environments
         MenuItem rebuildItem = new MenuItem(res.getString("menu.rebuildEnvironment"));
         TooltipHelper.installOnMenuItem(rebuildItem,
@@ -578,7 +587,7 @@ public class SetupDLClassifier implements QuPathExtension, GitHubProject {
 
         utilitiesMenu.getItems().addAll(pythonConsoleOption, whereFilesOption,
                 systemInfoOption, new SeparatorMenuItem(),
-                freeGpuOption, maePretrainOption, cleanUpOption,
+                freeGpuOption, maePretrainOption, sslPretrainOption, cleanUpOption,
                 loadIssuesOption,
                 new SeparatorMenuItem(), rebuildItem);
 
@@ -1686,6 +1695,271 @@ public class SetupDLClassifier implements QuPathExtension, GitHubProject {
             removed++;
         }
         progress.log("Capped MAE tiles to " + cap + " (removed " + removed + ")");
+    }
+
+    // ==================== SSL Pretraining ====================
+
+    private void startSSLPretraining() {
+        Dialogs.showInfoNotification(EXTENSION_NAME,
+                "Connecting to classification backend...");
+
+        CompletableFuture.supplyAsync(() -> DLClassifierChecks.checkServerHealth())
+                .thenAcceptAsync(healthy -> {
+                    if (healthy) {
+                        showSSLPretrainingDialog();
+                    } else {
+                        String versionWarning = ApposeClassifierBackend.getVersionWarning();
+                        if (versionWarning != null && !versionWarning.isEmpty()) {
+                            Dialogs.showErrorNotification(EXTENSION_NAME,
+                                    "Python environment is out of date.\n" +
+                                    "Go to Rebuild Python Environment to update.");
+                        } else {
+                            Dialogs.showErrorNotification(EXTENSION_NAME,
+                                    "Cannot connect to classification backend.\n\n" +
+                                    "If this is the first launch, the Python environment\n" +
+                                    "may still be downloading. Check the QuPath log\n" +
+                                    "for progress and try again in a few minutes.");
+                        }
+                    }
+                }, Platform::runLater);
+    }
+
+    private void showSSLPretrainingDialog() {
+        var configOpt = SSLPretrainingDialog.showDialog();
+        if (configOpt.isEmpty()) return;
+
+        var config = configOpt.get();
+
+        try {
+            Files.createDirectories(config.outputDir());
+        } catch (IOException e) {
+            Dialogs.showErrorNotification(EXTENSION_NAME,
+                    "Cannot create output directory: " + e.getMessage());
+            return;
+        }
+
+        final Path projectTempTileDir;
+        if (config.sourceMode() == SSLPretrainingDialog.SourceMode.PROJECT_IMAGES) {
+            try {
+                projectTempTileDir = Files.createTempDirectory("ssl-patches-");
+            } catch (IOException e) {
+                Dialogs.showErrorNotification(EXTENSION_NAME,
+                        "Cannot create temp tile directory: " + e.getMessage());
+                return;
+            }
+        } else {
+            projectTempTileDir = null;
+        }
+
+        ClassifierBackend backend = BackendFactory.getBackend();
+        if (!(backend instanceof ApposeClassifierBackend apposeBackend)) {
+            Dialogs.showErrorNotification(EXTENSION_NAME,
+                    "SSL pretraining requires the Appose backend.");
+            return;
+        }
+
+        ProgressMonitorController progress = ProgressMonitorController.forSSLPretraining();
+        progress.show();
+
+        final int[] lastLoggedEpoch = {-1};
+
+        Thread pretrainThread = new Thread(() -> {
+            try {
+                Path effectiveDataPath = config.dataPath();
+                if (config.sourceMode() == SSLPretrainingDialog.SourceMode.PROJECT_IMAGES) {
+                    progress.log("Extracting SSL tiles from " + config.projectImages().size()
+                            + " project image(s) into " + projectTempTileDir);
+                    progress.setStatus("Extracting SSL tiles...");
+                    extractSSLTilesFromProject(config, projectTempTileDir, progress);
+                    effectiveDataPath = projectTempTileDir.resolve("train").resolve("images");
+                    if (!Files.isDirectory(effectiveDataPath)) {
+                        throw new IOException(
+                                "SSL tile extraction produced no tiles under "
+                                        + effectiveDataPath + ". Ensure selected images have "
+                                        + "annotations of the selected classes.");
+                    }
+                    progress.log("SSL tile extraction complete; using tiles from "
+                            + effectiveDataPath);
+                }
+
+                String method = (String) config.config().get("method");
+                String encoder = (String) config.config().get("encoder_name");
+                logger.info("Starting SSL pretraining: method={}, encoder={}, epochs={}, data={}",
+                        method, encoder, config.config().get("epochs"), effectiveDataPath);
+                progress.log("SSL pretraining starting...");
+                progress.log("Method: " + method + ", Backbone: " + encoder);
+                progress.log("Training: " + config.config().get("epochs")
+                        + " epochs, batch=" + config.config().get("batch_size")
+                        + ", lr=" + config.config().get("learning_rate"));
+                progress.log("Data: " + effectiveDataPath);
+                progress.log("Output: " + config.outputDir());
+                final Path dataPathForRun = effectiveDataPath;
+
+                ClassifierClient.TrainingResult result = apposeBackend.startSSLPretraining(
+                        config.config(),
+                        dataPathForRun,
+                        config.outputDir(),
+                        sslProgress -> {
+                            if (sslProgress.isSetupPhase()) {
+                                if ("initializing".equals(sslProgress.status())) {
+                                    String deviceMsg = formatDeviceMessage(
+                                            sslProgress.device(), sslProgress.deviceInfo());
+                                    progress.log(deviceMsg);
+                                    progress.setStatus("Initializing for "
+                                            + sslProgress.totalEpochs() + " epoch run...");
+                                } else {
+                                    String phaseMsg = formatSetupPhase(
+                                            sslProgress.setupPhase());
+                                    progress.setStatus(phaseMsg);
+                                    progress.log(phaseMsg);
+                                }
+                                return;
+                            }
+
+                            if (lastLoggedEpoch[0] < 0) {
+                                progress.log("Training loop started");
+                                progress.setStatus("Pretraining ("
+                                        + sslProgress.totalEpochs() + " epochs)...");
+                            }
+
+                            if (sslProgress.totalEpochs() > 0) {
+                                progress.setOverallProgress(
+                                        (double) sslProgress.epoch() / sslProgress.totalEpochs());
+                            }
+                            progress.setDetail(String.format(
+                                    "Epoch %d/%d  |  Loss: %.4f",
+                                    sslProgress.epoch(), sslProgress.totalEpochs(),
+                                    sslProgress.loss()));
+
+                            progress.updateTrainingMetrics(
+                                    sslProgress.epoch(),
+                                    sslProgress.totalEpochs(),
+                                    sslProgress.loss(),
+                                    Double.NaN,
+                                    null, null);
+
+                            int epoch = sslProgress.epoch();
+                            if (epoch == 1 || epoch % 10 == 0
+                                    || epoch == sslProgress.totalEpochs()) {
+                                progress.log(String.format(
+                                        "Epoch %d/%d: loss=%.6f",
+                                        epoch, sslProgress.totalEpochs(),
+                                        sslProgress.loss()));
+                                lastLoggedEpoch[0] = epoch;
+                            }
+                        },
+                        progress::isCancelled
+                );
+
+                String encoderPath = result.modelPath();
+                String message = String.format(
+                        "Encoder saved to:\n%s\n\n" +
+                        "Final loss: %.4f\n\n" +
+                        "To use: In the training dialog, select UNet and\n" +
+                        "choose 'Use SSL pretrained encoder' to load this backbone.",
+                        encoderPath, result.finalLoss());
+                progress.complete(true, message);
+                logger.info("SSL pretraining complete: loss={}, path={}",
+                        result.finalLoss(), encoderPath);
+                Platform.runLater(() ->
+                        Dialogs.showInfoNotification(EXTENSION_NAME,
+                                "SSL pretraining complete! Encoder saved to:\n" + encoderPath));
+
+            } catch (IOException e) {
+                if (progress.isCancelled()) {
+                    progress.complete(false, "SSL pretraining cancelled.");
+                    logger.info("SSL pretraining cancelled by user");
+                } else {
+                    logger.error("SSL pretraining failed", e);
+                    progress.log("ERROR: " + e.getMessage());
+                    progress.complete(false,
+                            "SSL pretraining failed: " + e.getMessage());
+                    Platform.runLater(() ->
+                            Dialogs.showErrorNotification(EXTENSION_NAME,
+                                    "SSL pretraining failed: " + e.getMessage()));
+                }
+            } finally {
+                if (projectTempTileDir != null) {
+                    try {
+                        deleteRecursive(projectTempTileDir);
+                        logger.info("Deleted SSL temp tile dir {}", projectTempTileDir);
+                    } catch (IOException ex) {
+                        logger.warn("Failed to delete SSL temp tile dir {}: {}",
+                                projectTempTileDir, ex.toString());
+                    }
+                }
+            }
+        }, "DLClassifier-SSLPretrain");
+        pretrainThread.setDaemon(true);
+        pretrainThread.start();
+    }
+
+    /**
+     * Extracts tiles from user-selected annotation classes for SSL pretraining.
+     * Same approach as MAE extraction but with configurable annotation classes.
+     */
+    private static void extractSSLTilesFromProject(
+            SSLPretrainingDialog.SSLPretrainingConfig config,
+            Path tempDir,
+            ProgressMonitorController progress) throws IOException {
+
+        List<qupath.lib.projects.ProjectImageEntry<java.awt.image.BufferedImage>> entries =
+                config.projectImages();
+        if (entries == null || entries.isEmpty()) {
+            throw new IOException("No project images selected for SSL extraction");
+        }
+
+        List<String> annotationClasses = config.annotationClasses();
+        if (annotationClasses == null || annotationClasses.isEmpty()) {
+            throw new IOException("No annotation classes selected for SSL extraction");
+        }
+
+        // Derive ChannelConfiguration from first image
+        qupath.ext.dlclassifier.model.ChannelConfiguration channelConfig;
+        try (var imageData = entries.get(0).readImageData().getServer()) {
+            int bitDepth = imageData.getPixelType().getBitsPerPixel();
+            int nCh = imageData.nChannels();
+            java.util.List<Integer> idx = new java.util.ArrayList<>();
+            java.util.List<String> names = new java.util.ArrayList<>();
+            for (int i = 0; i < nCh; i++) {
+                idx.add(i);
+                names.add(imageData.getChannel(i).getName());
+            }
+            channelConfig = qupath.ext.dlclassifier.model.ChannelConfiguration.builder()
+                    .selectedChannels(idx)
+                    .channelNames(names)
+                    .bitDepth(bitDepth)
+                    .normalizationStrategy(
+                            qupath.ext.dlclassifier.model.ChannelConfiguration
+                                    .NormalizationStrategy.PERCENTILE_99)
+                    .build();
+        } catch (Exception ex) {
+            throw new IOException("Failed to derive channel config: " + ex.getMessage(), ex);
+        }
+
+        qupath.ext.dlclassifier.utilities.AnnotationExtractor.ExportResult result =
+                qupath.ext.dlclassifier.utilities.AnnotationExtractor.exportFromProject(
+                        entries,
+                        config.extractionTileSize(),
+                        channelConfig,
+                        annotationClasses,
+                        tempDir,
+                        0.0,  // validation split -- all to train/
+                        3,    // line stroke width
+                        java.util.Collections.emptyMap(),
+                        config.extractionDownsample(),
+                        1, 0,
+                        java.util.Collections.emptySet(),
+                        java.util.Collections.emptySet());
+
+        int totalTiles = result.totalPatches();
+        progress.log("Extracted " + totalTiles + " tiles total from "
+                + annotationClasses.size() + " annotation class(es): " + annotationClasses);
+
+        int cap = config.maxTilesTotal();
+        if (cap > 0 && totalTiles > cap) {
+            capTilesTotal(tempDir, cap, progress);
+        }
     }
 
     private static void deleteRecursive(Path root) throws IOException {

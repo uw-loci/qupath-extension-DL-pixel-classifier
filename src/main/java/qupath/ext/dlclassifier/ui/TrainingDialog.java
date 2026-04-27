@@ -264,14 +264,18 @@ public class TrainingDialog {
         private RadioButton scratchRadio;
         private RadioButton backbonePretrainedRadio;
         private RadioButton maeEncoderRadio;
+        private RadioButton sslEncoderRadio;
         private RadioButton continueTrainingRadio;
         private VBox backbonePretrainedContent;
         private VBox maeEncoderContent;
+        private VBox sslEncoderContent;
         private VBox continueTrainingContent;
         private TextField maeEncoderPathField;
         private Label maeEncoderInfoLabel;
         private int maeEncoderInputChannels = -1;  // -1 = no MAE loaded
         private int maeEncoderTileSize = -1;        // -1 = unknown
+        private TextField sslEncoderPathField;
+        private Label sslEncoderInfoLabel;
         private LayerFreezePanel layerFreezePanel;
         private ClassifierBackend backend;
 
@@ -869,6 +873,82 @@ public class TrainingDialog {
             maeEncoderContent = new VBox(5, maeFileRow, maeEncoderInfoLabel);
             maeEncoderContent.setPadding(new Insets(0, 0, 0, 20));
 
+            // --- SSL pretrained encoder (SimCLR/BYOL) ---
+            sslEncoderRadio = new RadioButton(
+                    ClassifierHandler.WeightInitStrategy.SSL_ENCODER.getDisplayName());
+            sslEncoderRadio.setToggleGroup(weightInitGroup);
+            sslEncoderRadio.setUserData(ClassifierHandler.WeightInitStrategy.SSL_ENCODER);
+            TooltipHelper.install(sslEncoderRadio,
+                    "Load encoder weights from a self-supervised SimCLR/BYOL pretrained model.\n" +
+                    "Matching encoder layers are loaded; decoder/head are randomly initialized.\n" +
+                    "Use the 'SSL Pretrain Encoder' utility to create these weights.");
+
+            sslEncoderPathField = new TextField();
+            sslEncoderPathField.setEditable(false);
+            sslEncoderPathField.setPromptText("Select SSL encoder .pt file...");
+            sslEncoderPathField.setMaxWidth(Double.MAX_VALUE);
+            HBox.setHgrow(sslEncoderPathField, Priority.ALWAYS);
+
+            Button sslBrowseButton = new Button("Browse...");
+            sslBrowseButton.setOnAction(e -> {
+                FileChooser chooser = new FileChooser();
+                chooser.setTitle("Select SSL Pretrained Encoder (.pt)");
+                chooser.getExtensionFilters().add(
+                        new FileChooser.ExtensionFilter("PyTorch model", "*.pt"));
+                String currentPath = sslEncoderPathField.getText();
+                if (currentPath != null && !currentPath.isEmpty()) {
+                    java.io.File parent = new java.io.File(currentPath).getParentFile();
+                    if (parent != null && parent.isDirectory()) {
+                        chooser.setInitialDirectory(parent);
+                    }
+                } else {
+                    Project<?> project = QuPathGUI.getInstance().getProject();
+                    if (project != null) {
+                        try {
+                            java.nio.file.Path sslDir = project.getPath().getParent()
+                                    .resolve("ssl_pretrained");
+                            if (java.nio.file.Files.isDirectory(sslDir)) {
+                                chooser.setInitialDirectory(sslDir.toFile());
+                            } else {
+                                chooser.setInitialDirectory(
+                                        project.getPath().getParent().toFile());
+                            }
+                        } catch (Exception ex) {
+                            logger.debug("Could not resolve project SSL directory: {}",
+                                    ex.getMessage());
+                        }
+                    }
+                }
+                java.io.File file = chooser.showOpenDialog(dialog);
+                if (file != null) {
+                    sslEncoderPathField.setText(file.getAbsolutePath());
+                    loadSSLEncoderMetadata(file);
+                    updateValidation();
+                }
+            });
+
+            Button sslClearButton = new Button("Clear");
+            sslClearButton.setOnAction(e -> {
+                sslEncoderPathField.setText("");
+                sslEncoderInfoLabel.setText("");
+                sslEncoderInfoLabel.setVisible(false);
+                sslEncoderInfoLabel.setManaged(false);
+                updateValidation();
+            });
+
+            HBox sslFileRow = new HBox(5, sslEncoderPathField, sslBrowseButton, sslClearButton);
+            sslFileRow.setAlignment(Pos.CENTER_LEFT);
+            HBox.setHgrow(sslEncoderPathField, Priority.ALWAYS);
+
+            sslEncoderInfoLabel = new Label();
+            sslEncoderInfoLabel.setWrapText(true);
+            sslEncoderInfoLabel.setStyle("-fx-font-size: 11px; -fx-text-fill: #336699;");
+            sslEncoderInfoLabel.setVisible(false);
+            sslEncoderInfoLabel.setManaged(false);
+
+            sslEncoderContent = new VBox(5, sslFileRow, sslEncoderInfoLabel);
+            sslEncoderContent.setPadding(new Insets(0, 0, 0, 20));
+
             // --- Continue training from saved model ---
             continueTrainingRadio = new RadioButton(
                     ClassifierHandler.WeightInitStrategy.CONTINUE_TRAINING.getDisplayName());
@@ -936,6 +1016,10 @@ public class TrainingDialog {
             maeEncoderRadio.managedProperty().bind(advancedMode);
             maeEncoderContent.visibleProperty().bind(advancedMode);
             maeEncoderContent.managedProperty().bind(advancedMode);
+            sslEncoderRadio.visibleProperty().bind(advancedMode);
+            sslEncoderRadio.managedProperty().bind(advancedMode);
+            sslEncoderContent.visibleProperty().bind(advancedMode);
+            sslEncoderContent.managedProperty().bind(advancedMode);
             // In basic mode, hide the layer freeze panel within backbone content
             layerFreezePanel.visibleProperty().bind(advancedMode);
             layerFreezePanel.managedProperty().bind(advancedMode);
@@ -945,6 +1029,7 @@ public class TrainingDialog {
                     scratchRadio, scratchInfo,
                     backbonePretrainedRadio, backbonePretrainedContent,
                     maeEncoderRadio, maeEncoderContent,
+                    sslEncoderRadio, sslEncoderContent,
                     continueTrainingRadio, continueTrainingContent
             );
 
@@ -983,6 +1068,9 @@ public class TrainingDialog {
             setVisibleIfUnbound(maeEncoderContent,
                     selected == ClassifierHandler.WeightInitStrategy.MAE_ENCODER);
 
+            setVisibleIfUnbound(sslEncoderContent,
+                    selected == ClassifierHandler.WeightInitStrategy.SSL_ENCODER);
+
             setVisibleIfUnbound(continueTrainingContent,
                     selected == ClassifierHandler.WeightInitStrategy.CONTINUE_TRAINING);
 
@@ -992,11 +1080,13 @@ public class TrainingDialog {
             }
 
             // Lock/unlock handler UI (e.g., MuViT model size, patch size, level scales).
-            // Must stay locked for MAE_ENCODER (encoder weights require matching arch)
-            // and CONTINUE_TRAINING (saved model weights require matching arch).
+            // Must stay locked for MAE_ENCODER, SSL_ENCODER (encoder weights require
+            // matching arch), and CONTINUE_TRAINING (saved model weights require matching arch).
             boolean continuing = selected == ClassifierHandler.WeightInitStrategy.CONTINUE_TRAINING;
+            boolean sslSelected = selected == ClassifierHandler.WeightInitStrategy.SSL_ENCODER;
             if (currentHandlerUI != null) {
-                if (selected == ClassifierHandler.WeightInitStrategy.MAE_ENCODER || continuing) {
+                if (selected == ClassifierHandler.WeightInitStrategy.MAE_ENCODER
+                        || sslSelected || continuing) {
                     currentHandlerUI.setLocked(true);
                 } else {
                     currentHandlerUI.setLocked(false);
@@ -1008,14 +1098,20 @@ public class TrainingDialog {
                 maeEncoderInfoLabel.setVisible(false);
                 maeEncoderInfoLabel.setManaged(false);
             }
+            if (selected != ClassifierHandler.WeightInitStrategy.SSL_ENCODER
+                    && sslEncoderInfoLabel != null) {
+                sslEncoderInfoLabel.setText("");
+                sslEncoderInfoLabel.setVisible(false);
+                sslEncoderInfoLabel.setManaged(false);
+            }
 
             // Lock architecture, resolution, and context scale when continuing from
-            // a saved model or using an MAE encoder. The saved/pretrained weights
+            // a saved model or using an MAE/SSL encoder. The saved/pretrained weights
             // are tied to the exact architecture type.
             // Guard: these controls may not exist yet during initial construction.
             boolean maeSelected = selected == ClassifierHandler.WeightInitStrategy.MAE_ENCODER;
-            if (architectureCombo != null) architectureCombo.setDisable(continuing || maeSelected);
-            if (backboneCombo != null) backboneCombo.setDisable(continuing || maeSelected);
+            if (architectureCombo != null) architectureCombo.setDisable(continuing || maeSelected || sslSelected);
+            if (backboneCombo != null) backboneCombo.setDisable(continuing || maeSelected || sslSelected);
             boolean wholeImage = wholeImageCheck != null && wholeImageCheck.isSelected();
             if (tileSizeSpinner != null) tileSizeSpinner.setDisable(continuing || wholeImage);
             // Downsample stays enabled in whole-image mode so the user can adjust
@@ -1041,6 +1137,8 @@ public class TrainingDialog {
                     supported.contains(ClassifierHandler.WeightInitStrategy.BACKBONE_PRETRAINED));
             setRadioAvailable(maeEncoderRadio,
                     supported.contains(ClassifierHandler.WeightInitStrategy.MAE_ENCODER));
+            setRadioAvailable(sslEncoderRadio,
+                    supported.contains(ClassifierHandler.WeightInitStrategy.SSL_ENCODER));
             // Continue training is always shown but may be disabled
             setRadioAvailable(continueTrainingRadio,
                     supported.contains(ClassifierHandler.WeightInitStrategy.CONTINUE_TRAINING));
@@ -1186,6 +1284,78 @@ public class TrainingDialog {
                 maeEncoderInfoLabel.setText("");
                 maeEncoderInfoLabel.setVisible(false);
                 maeEncoderInfoLabel.setManaged(false);
+            }
+        }
+
+        /**
+         * Reads metadata.json alongside the SSL encoder .pt file to detect the
+         * backbone and lock the architecture/backbone combos to match.
+         */
+        private void loadSSLEncoderMetadata(java.io.File ptFile) {
+            java.io.File metadataFile = new java.io.File(ptFile.getParentFile(), "metadata.json");
+            if (!metadataFile.exists()) {
+                logger.warn("No metadata.json found alongside {}. "
+                        + "Architecture settings will not be locked.", ptFile.getName());
+                sslEncoderInfoLabel.setText("");
+                sslEncoderInfoLabel.setVisible(false);
+                sslEncoderInfoLabel.setManaged(false);
+                return;
+            }
+
+            try (java.io.Reader reader = java.nio.file.Files.newBufferedReader(
+                    metadataFile.toPath(), java.nio.charset.StandardCharsets.UTF_8)) {
+                JsonObject root = new Gson().fromJson(reader, JsonObject.class);
+                JsonObject arch = root.has("architecture")
+                        ? root.getAsJsonObject("architecture") : null;
+                if (arch == null) {
+                    logger.warn("SSL metadata.json has no 'architecture' key.");
+                    return;
+                }
+
+                String encoderName = arch.has("encoder_name")
+                        ? arch.get("encoder_name").getAsString() : null;
+                int inputChannels = arch.has("input_channels")
+                        ? arch.get("input_channels").getAsInt() : -1;
+                int tileSize = arch.has("tile_size")
+                        ? arch.get("tile_size").getAsInt() : -1;
+
+                String sslMethod = root.has("ssl_method")
+                        ? root.get("ssl_method").getAsString() : "unknown";
+
+                // Lock architecture to UNet and backbone to the pretrained encoder
+                if (architectureCombo != null && architectureCombo.getItems().contains("unet")) {
+                    architectureCombo.setValue("unet");
+                    architectureCombo.setDisable(true);
+                }
+                if (encoderName != null && backboneCombo != null
+                        && backboneCombo.getItems().contains(encoderName)) {
+                    backboneCombo.setValue(encoderName);
+                    backboneCombo.setDisable(true);
+                }
+                if (tileSize > 0 && tileSizeSpinner != null) {
+                    tileSizeSpinner.getValueFactory().setValue(tileSize);
+                }
+
+                // Build info label
+                StringBuilder info = new StringBuilder("Locked to SSL encoder:");
+                info.append(" ").append(sslMethod.toUpperCase());
+                if (encoderName != null) info.append(" ").append(encoderName);
+                if (inputChannels > 0)
+                    info.append(", ").append(inputChannels).append("ch");
+                if (tileSize > 0)
+                    info.append(" (pretrained at ").append(tileSize).append("px)");
+
+                sslEncoderInfoLabel.setText(info.toString());
+                sslEncoderInfoLabel.setVisible(true);
+                sslEncoderInfoLabel.setManaged(true);
+
+                logger.info("Loaded SSL encoder metadata: method={}, backbone={}, ch={}, tile={}",
+                        sslMethod, encoderName, inputChannels, tileSize);
+            } catch (Exception e) {
+                logger.warn("Failed to read SSL metadata.json: {}", e.getMessage());
+                sslEncoderInfoLabel.setText("");
+                sslEncoderInfoLabel.setVisible(false);
+                sslEncoderInfoLabel.setManaged(false);
             }
         }
 
@@ -2202,6 +2372,14 @@ public class TrainingDialog {
                     // parameter at the same aggressive supervised LR and the MAE
                     // features are destroyed in a handful of epochs -- the classic
                     // "fine-tuning catastrophic forgetting" failure.
+                    usePretrained = true;
+                    break;
+                case SSL_ENCODER:
+                    String sslPath = sslEncoderPathField.getText();
+                    if (sslPath != null && !sslPath.isEmpty()) {
+                        pretrainedPath = sslPath;
+                    }
+                    // Same discriminative LR reasoning as MAE_ENCODER above.
                     usePretrained = true;
                     break;
                 case CONTINUE_TRAINING:

@@ -1065,4 +1065,14 @@ public class ProgressMonitorController {
         return new ProgressMonitorController("MAE Pretraining", true, false);
     }
 
+    /**
+     * Creates a progress monitor configured for SSL pretraining.
+     * Shows loss chart but no class metrics (unsupervised).
+     *
+     * @return new progress monitor configured for SSL pretraining
+     */
+    public static ProgressMonitorController forSSLPretraining() {
+        return new ProgressMonitorController("SSL Pretraining", true, false);
+    }
+
 }

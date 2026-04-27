@@ -12,6 +12,7 @@ import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
+import java.util.Set;
 
 /**
  * Handler for UNet architecture pixel classifiers.
@@ -98,6 +99,14 @@ public class UNetHandler implements ClassifierHandler {
     public static final List<Integer> TILE_SIZES = List.of(
             128, 256, 384, 512, 768, 1024
     );
+
+    @Override
+    public Set<WeightInitStrategy> getSupportedWeightInitStrategies() {
+        return Set.of(WeightInitStrategy.SCRATCH,
+                      WeightInitStrategy.BACKBONE_PRETRAINED,
+                      WeightInitStrategy.SSL_ENCODER,
+                      WeightInitStrategy.CONTINUE_TRAINING);
+    }
 
     @Override
     public String getType() {

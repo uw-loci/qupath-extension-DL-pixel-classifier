@@ -504,6 +504,99 @@ public class ApposeClassifierBackend implements ClassifierBackend {
                 "mae-pretrain", encoderPath, finalLoss, 0.0, 0, 0.0);
     }
 
+    /**
+     * Run SSL (SimCLR/BYOL) self-supervised pretraining on SMP encoder backbone.
+     *
+     * @param config           SSL method and training hyperparameters
+     * @param dataPath         directory of unlabeled image tiles
+     * @param outputDir        where to save the pretrained encoder weights
+     * @param progressCallback receives progress updates during pretraining
+     * @param cancelledCheck   returns true if pretraining should be cancelled
+     * @return result containing encoder_path and training metrics
+     * @throws IOException if pretraining fails
+     */
+    public ClassifierClient.TrainingResult startSSLPretraining(
+            Map<String, Object> config,
+            Path dataPath,
+            Path outputDir,
+            Consumer<ClassifierClient.TrainingProgress> progressCallback,
+            Supplier<Boolean> cancelledCheck) throws IOException {
+
+        ApposeService appose = ApposeService.getInstance();
+
+        Map<String, Object> inputs = new HashMap<>();
+        inputs.put("config", config);
+        inputs.put("data_path", dataPath.toString());
+        inputs.put("output_dir", outputDir.toString());
+
+        logger.info("Starting SSL pretraining: method={}, encoder={}, data={}, output={}",
+                config.get("method"), config.get("encoder_name"), dataPath, outputDir);
+
+        Task task = appose.createTask("pretrain_ssl", inputs);
+
+        // Wire up progress reporting (same format as MAE pretraining)
+        task.listen(event -> {
+            if (event.responseType == ResponseType.UPDATE && event.message != null) {
+                try {
+                    JsonObject json = JsonParser.parseString(event.message).getAsJsonObject();
+                    ClassifierClient.TrainingProgress progress =
+                            new ClassifierClient.TrainingProgress(
+                                    json.has("epoch") ? json.get("epoch").getAsInt() : 0,
+                                    json.has("total_epochs") ? json.get("total_epochs").getAsInt() : 0,
+                                    json.has("train_loss") ? json.get("train_loss").getAsDouble() : 0.0,
+                                    json.has("val_loss") ? json.get("val_loss").getAsDouble() : 0.0,
+                                    json.has("accuracy") ? json.get("accuracy").getAsDouble() : 0.0,
+                                    json.has("mean_iou") ? json.get("mean_iou").getAsDouble() : 0.0,
+                                    Map.of(), Map.of(),
+                                    json.has("device") ? json.get("device").getAsString() : "",
+                                    json.has("device_info") ? json.get("device_info").getAsString() : "",
+                                    json.has("status") ? json.get("status").getAsString() : "",
+                                    json.has("setup_phase") ? json.get("setup_phase").getAsString() : "",
+                                    Map.of()
+                            );
+                    if (progressCallback != null) {
+                        progressCallback.accept(progress);
+                    }
+                } catch (Exception e) {
+                    logger.warn("Failed to parse SSL pretraining progress: {}", e.getMessage());
+                }
+            }
+        });
+
+        // Start task and poll for cancellation
+        task.start();
+        while (!task.status.isFinished()) {
+            if (cancelledCheck != null && cancelledCheck.get()) {
+                task.cancel();
+                logger.info("SSL pretraining cancelled by user");
+            }
+            try {
+                Thread.sleep(200);
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+                task.cancel();
+                throw new IOException("SSL pretraining interrupted", e);
+            }
+        }
+
+        if (task.status == org.apposed.appose.Service.TaskStatus.FAILED) {
+            throw new IOException("SSL pretraining failed: " + task.error);
+        }
+
+        String encoderPath = task.outputs.containsKey("encoder_path")
+                ? task.outputs.get("encoder_path").toString() : "";
+        int epochsCompleted = task.outputs.containsKey("epochs_completed")
+                ? ((Number) task.outputs.get("epochs_completed")).intValue() : 0;
+        double finalLoss = task.outputs.containsKey("final_loss")
+                ? ((Number) task.outputs.get("final_loss")).doubleValue() : 0.0;
+
+        logger.info("SSL pretraining complete: {} epochs, loss={}, path={}",
+                epochsCompleted, finalLoss, encoderPath);
+
+        return new ClassifierClient.TrainingResult(
+                "ssl-pretrain", encoderPath, finalLoss, 0.0, 0, 0.0);
+    }
+
     @Override
     public void pauseTraining(String jobId) throws IOException {
         // Follow redirect chain: after resume, the old jobId maps to a new one
