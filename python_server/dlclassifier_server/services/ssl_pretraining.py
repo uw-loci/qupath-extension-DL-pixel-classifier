@@ -1360,6 +1360,32 @@ class SSLPretrainingService:
                     "best_loss": 0.0,
                 }
 
+        # --- Run trajectory health check BEFORE saving ---
+        # Surface suspicious loss curves (collapse-shaped trajectories,
+        # implausibly low final loss, near-zero proj_std) so a "trained"
+        # encoder isn't silently presented as a success when it's likely
+        # a collapsed model. Loud log lines + a "warnings" field on the
+        # return dict so the Java side can show the user.
+        quality, warnings = self._assess_training_quality(
+            method=method,
+            history=history,
+            dataset_size=len(dataset),
+            batch_size=batch_size,
+        )
+        if warnings:
+            logger.warning("=" * 60)
+            logger.warning("SSL pretraining QUALITY WARNINGS (%s):", quality.upper())
+            for w in warnings:
+                logger.warning("  - %s", w)
+            logger.warning("Recommended actions:")
+            logger.warning("  - Inspect the encoder before using it for "
+                           "supervised training.")
+            logger.warning("  - For BYOL: lower batch size (64-128 for "
+                           "<50k tiles), drop ema_decay (start) to 0.99, "
+                           "shorten epochs, or switch to SimCLR.")
+            logger.warning("  - See per-epoch loss/proj_std in metadata.json.")
+            logger.warning("=" * 60)
+
         # --- Save best model ---
         _report("saving_model")
 
@@ -1397,10 +1423,11 @@ class SSLPretrainingService:
                 pass
 
         elapsed_total = _time.monotonic() - training_start_time
+        status_tag = "" if not warnings else " [REVIEW WARNINGS]"
         logger.info(
-            "%s pretraining complete: %d epochs (best at %d), "
+            "%s pretraining complete%s: %d epochs (best at %d), "
             "best_loss=%.6f, %.1f min total -> %s",
-            method.upper(), len(history), best_epoch,
+            method.upper(), status_tag, len(history), best_epoch,
             best_loss, elapsed_total / 60, output_dir)
 
         self.gpu_manager.clear_cache()
@@ -1413,7 +1440,114 @@ class SSLPretrainingService:
             "best_loss": best_loss,
             "best_epoch": best_epoch,
             "elapsed_sec": round(elapsed_total, 1),
+            "quality": quality,
+            "warnings": warnings,
         }
+
+    def _assess_training_quality(self, method, history, dataset_size, batch_size):
+        """Inspect the loss/proj_std trajectory for collapse-shaped runs.
+
+        Returns (quality_label, warnings_list). quality is one of
+        "ok", "warn", "likely_collapse". warnings is a list of plain-English
+        strings safe to log and surface to the UI.
+
+        Heuristics are tuned for BYOL on small histology datasets, where
+        the most common failure mode is the loss freefalling to ~0 after
+        ~10-20 epochs (the encoder has learned a constant). The proj_std
+        probe in the training loop already aborts hard collapses; this
+        check catches softer collapses that were near-but-not-below the
+        abort threshold, plus other "this looks wrong" patterns that
+        would otherwise be silently saved as a finished encoder.
+        """
+        warnings = []
+        if not history:
+            return "ok", warnings
+
+        losses = [h["loss"] for h in history if h.get("loss") is not None]
+        if len(losses) < 5:
+            return "ok", warnings
+
+        final_loss = losses[-1]
+        first_loss = losses[0]
+        min_loss = min(losses)
+        # proj_std is -1.0 when not computed (e.g. SimCLR or older runs).
+        proj_stds = [h.get("proj_std", -1.0) for h in history]
+        proj_stds = [s for s in proj_stds if s is not None and s >= 0.0]
+
+        is_byol = method.lower() == "byol"
+
+        # 1. Final loss implausibly low (BYOL only -- SimCLR loss is on
+        #    a different scale and naturally rides much lower).
+        if is_byol and final_loss < 0.05:
+            warnings.append(
+                f"Final BYOL loss is {final_loss:.4f}. Healthy BYOL on "
+                f"histology typically settles in 0.05-0.20; values below "
+                f"~0.02 are characteristic of representation collapse "
+                f"(encoder outputs a constant)."
+            )
+
+        # 2. Loss freefall in the second half: monotonic-ish decrease and
+        #    a final value much smaller than the mid-training loss is the
+        #    classic collapse signature.
+        if is_byol and len(losses) >= 10:
+            mid = losses[len(losses) // 2]
+            if mid > 0 and final_loss / mid < 0.15:
+                warnings.append(
+                    f"BYOL loss dropped from ~{mid:.3f} (mid-training) "
+                    f"to {final_loss:.4f} (final), a {(1 - final_loss/mid)*100:.0f}% "
+                    f"drop in the second half. This shape is typical of "
+                    f"BYOL representation collapse, not normal convergence."
+                )
+
+        # 3. Late-stage proj_std near the abort threshold even if abort
+        #    didn't fire. Use the last 5 epochs' median to ignore noise.
+        if proj_stds and len(proj_stds) >= 5:
+            tail = sorted(proj_stds[-5:])
+            tail_median = tail[len(tail) // 2]
+            if tail_median < 0.05:
+                warnings.append(
+                    f"Final embedding spread (proj_std median = "
+                    f"{tail_median:.4f}) is very low. Healthy encoders "
+                    f"have proj_std around 1/sqrt(D) ~ 0.06-0.1+; values "
+                    f"under 0.05 indicate the encoder is mapping inputs "
+                    f"to nearly the same vector."
+                )
+
+        # 4. Dataset/batch ratio sanity at end of training. If we hit
+        #    very low loss on a tiny per-epoch dataset, flag it.
+        steps_per_epoch = max(1, dataset_size // max(1, batch_size))
+        if is_byol and final_loss < 0.10 and steps_per_epoch < 50:
+            warnings.append(
+                f"Only ~{steps_per_epoch} batches per epoch "
+                f"({dataset_size} tiles / batch {batch_size}). BYOL "
+                f"target updates infrequently with so few steps, and "
+                f"the encoder can find the trivial solution before the "
+                f"target diverges. A loss this low on this little data "
+                f"is suspicious."
+            )
+
+        # 5. Best epoch is suspiciously early -- often a sign that BYOL
+        #    drove loss into the collapse regime and never recovered.
+        best_idx = losses.index(min_loss)
+        if is_byol and len(losses) >= 20 and best_idx < len(losses) // 4:
+            warnings.append(
+                f"Best loss occurred at epoch {best_idx + 1} of "
+                f"{len(losses)} -- very early. This often indicates the "
+                f"encoder collapsed soon after and never produced a "
+                f"better representation."
+            )
+
+        # Overall quality label
+        if not warnings:
+            return "ok", warnings
+        # If multiple BYOL collapse-shaped warnings fire, escalate.
+        collapse_signals = sum(
+            1 for w in warnings
+            if "collapse" in w.lower() or "constant" in w.lower()
+            or "trivial" in w.lower())
+        if collapse_signals >= 2:
+            return "likely_collapse", warnings
+        return "warn", warnings
 
     def _cleanup_training_memory(self):
         """Free GPU memory after training completes or fails."""

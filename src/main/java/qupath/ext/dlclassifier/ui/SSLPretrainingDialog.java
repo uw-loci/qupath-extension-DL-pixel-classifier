@@ -110,6 +110,12 @@ public class SSLPretrainingDialog {
     private Label vramEstimateLabel;
     private int gpuTotalMb = 0;
 
+    // Live config-quality warnings (collapse risk, batch/method mismatches)
+    private Label configWarningLabel;
+    // Approximate tile count from the most recent folder scan; unknown
+    // in project mode until extraction runs (-1 sentinel).
+    private int observedTileCount = -1;
+
     // Source-mode controls
     private final ToggleGroup sourceModeGroup = new ToggleGroup();
     private final RadioButton projectModeRadio;
@@ -139,11 +145,19 @@ public class SSLPretrainingDialog {
         methodCombo.setMaxWidth(Double.MAX_VALUE);
         TooltipHelper.install(methodCombo,
                 "Self-supervised pretraining method.\n\n" +
+                "Dataset-size guide (number of tiles, not images):\n" +
+                "  small  : < 20,000 tiles\n" +
+                "  medium : 20,000 - 200,000 tiles\n" +
+                "  large  : > 200,000 tiles\n" +
+                "These thresholds are also used by the other SSL tooltips.\n\n" +
                 "SimCLR: Contrastive learning -- learns by comparing\n" +
-                "augmented views of the same image. Benefits from larger\n" +
-                "batch sizes.\n\n" +
+                "augmented views of the same image. Needs many negative\n" +
+                "samples per step, so it benefits from larger batches\n" +
+                "(>= 128 ideal, 64 minimum) and is best on medium/large\n" +
+                "datasets.\n\n" +
                 "BYOL: Self-distillation -- no negative pairs needed.\n" +
-                "Works well with smaller datasets and batch sizes.");
+                "Works on small datasets (< 20,000 tiles) and small batches\n" +
+                "(16-32) where SimCLR would underperform or collapse.");
 
         // --- Backbone selection ---
         backboneCombo = new ComboBox<>(FXCollections.observableArrayList(SSL_BACKBONES));
@@ -154,7 +168,10 @@ public class SSLPretrainingDialog {
         TooltipHelper.install(backboneCombo,
                 "CNN encoder backbone to pretrain.\n" +
                 "Must match the backbone you plan to use for supervised training.\n" +
-                "ResNet-34 is a good default for medium-sized datasets.");
+                "ResNet-34 is a good default for medium datasets (20k-200k tiles).\n" +
+                "For small datasets (< 20k tiles), ResNet-18 may overfit less;\n" +
+                "for large datasets (> 200k tiles), ResNet-50 has more capacity\n" +
+                "but needs more epochs and GPU memory.");
 
         // --- Temperature (SimCLR only) ---
         temperatureSpinner = new Spinner<>(0.05, 1.0, 0.5, 0.05);
@@ -164,7 +181,9 @@ public class SSLPretrainingDialog {
         TooltipHelper.install(
                 "SimCLR temperature parameter.\n" +
                 "Lower values make the contrastive loss sharper.\n" +
-                "0.5 is a common default; try 0.1-0.2 for small datasets.",
+                "0.5 is a common default. Try 0.1-0.2 on small datasets\n" +
+                "(< 20,000 tiles) where the model needs sharper distinctions\n" +
+                "between the few examples it has.",
                 temperatureLabel, temperatureSpinner);
 
         // Show/hide temperature based on method
@@ -210,7 +229,11 @@ public class SSLPretrainingDialog {
         TooltipHelper.install(epochsSpinner,
                 "Number of complete passes through the training data.\n" +
                 "More epochs allow the model to learn more.\n" +
-                "Typical range: 50-200 depending on dataset size.");
+                "Rough guide:\n" +
+                "  small  (< 20k tiles)    : 200-400 epochs\n" +
+                "  medium (20k-200k tiles) : 100-200 epochs\n" +
+                "  large  (> 200k tiles)   : 50-100 epochs\n" +
+                "(Smaller datasets need more passes to see enough variety.)");
 
         batchSizeSpinner = new Spinner<>(2, 256, 64, 8);
         batchSizeSpinner.setEditable(true);
@@ -265,7 +288,9 @@ public class SSLPretrainingDialog {
         TooltipHelper.install(weightDecaySpinner,
                 "L2 weight decay applied to non-BN, non-bias parameters.\n" +
                 "BYOL: 1e-6 (paper default). SimCLR: 1e-4 typical.\n" +
-                "Higher values can trigger BYOL collapse on small datasets.");
+                "Higher values can trigger BYOL collapse on small datasets\n" +
+                "(< 20,000 tiles), where the EMA target has less variety to\n" +
+                "anchor against. Stay near 1e-6 below ~20k tiles.");
 
         emaDecaySpinner = new Spinner<>(0.9, 0.9999, 0.996, 0.001);
         emaDecaySpinner.setEditable(true);
@@ -274,8 +299,10 @@ public class SSLPretrainingDialog {
         TooltipHelper.install(
                 "BYOL target-network EMA decay at the START of training.\n" +
                 "Schedule cosines from this value up to 'EMA tau (end)'.\n" +
-                "0.996 is the BYOL paper default; lower (0.99) helps for\n" +
-                "small datasets where collapse risk is higher.",
+                "0.996 is the BYOL paper default; lower (0.99) helps on\n" +
+                "small datasets (< 20,000 tiles), where the target moves\n" +
+                "too slowly relative to how often the student sees each\n" +
+                "tile and collapse risk is higher.",
                 emaDecayLabel, emaDecaySpinner);
 
         emaDecayFinalSpinner = new Spinner<>(0.99, 1.0, 1.0, 0.001);
@@ -513,8 +540,14 @@ public class SSLPretrainingDialog {
         Label methodLabel = new Label("SSL Method:");
         TooltipHelper.install(
                 "Self-supervised pretraining method.\n\n" +
-                "SimCLR: Contrastive learning. Benefits from larger batches.\n" +
-                "BYOL: Self-distillation. Works well with smaller datasets.",
+                "Dataset-size guide (number of tiles):\n" +
+                "  small  : < 20,000 tiles\n" +
+                "  medium : 20,000 - 200,000 tiles\n" +
+                "  large  : > 200,000 tiles\n\n" +
+                "SimCLR: Contrastive learning. Best on medium/large datasets;\n" +
+                "needs batch size >= 64 (>= 128 ideal).\n" +
+                "BYOL: Self-distillation. Best on small datasets (< 20k tiles)\n" +
+                "and small batches (16-32) -- no negatives needed.",
                 methodLabel, methodCombo);
         grid.add(methodLabel, 0, 0);
         grid.add(methodCombo, 1, 0);
@@ -523,7 +556,9 @@ public class SSLPretrainingDialog {
         TooltipHelper.install(
                 "CNN encoder backbone to pretrain.\n" +
                 "Must match the backbone you plan to use for supervised training.\n" +
-                "ResNet-34 is a good default for medium-sized datasets.",
+                "ResNet-34 is a good default for medium datasets (20k-200k tiles).\n" +
+                "Use ResNet-18 on small datasets (< 20k tiles) to reduce overfitting,\n" +
+                "or ResNet-50 on large datasets (> 200k tiles) for more capacity.",
                 backboneLabel, backboneCombo);
         grid.add(backboneLabel, 0, 1);
         grid.add(backboneCombo, 1, 1);
@@ -646,8 +681,11 @@ public class SSLPretrainingDialog {
         Label epochsLabel = new Label("Epochs:");
         TooltipHelper.install(
                 "Number of complete passes through the training data.\n" +
-                "More epochs help, but diminishing returns past 200.\n" +
-                "Typical: 50-200 depending on dataset size.",
+                "Rough guide:\n" +
+                "  small  (< 20k tiles)    : 200-400 epochs\n" +
+                "  medium (20k-200k tiles) : 100-200 epochs\n" +
+                "  large  (> 200k tiles)   : 50-100 epochs\n" +
+                "Diminishing returns past 400 epochs in any case.",
                 epochsLabel, epochsSpinner);
         grid.add(epochsLabel, 0, 0);
         grid.add(epochsSpinner, 1, 0);
@@ -701,12 +739,28 @@ public class SSLPretrainingDialog {
         vramEstimateLabel.setStyle("-fx-font-size: 11px;");
         grid.add(vramEstimateLabel, 0, 9, 2, 1);
 
+        // Live "your config has known risks" warning panel. Empty when the
+        // current settings look safe; turns yellow with a bullet list when
+        // they match patterns that have produced collapsed/poor encoders
+        // before (BYOL with huge batch on small data, SimCLR with tiny
+        // batch, weight decay too high, etc).
+        configWarningLabel = new Label();
+        configWarningLabel.setWrapText(true);
+        configWarningLabel.setVisible(false);
+        configWarningLabel.setManaged(false);
+        grid.add(configWarningLabel, 0, 10, 2, 1);
+
         // Wire VRAM estimation listeners
-        backboneCombo.valueProperty().addListener((obs, old, newVal) -> updateVramEstimate());
-        batchSizeSpinner.valueProperty().addListener((obs, old, newVal) -> updateVramEstimate());
-        extractionTileSpinner.valueProperty().addListener((obs, old, newVal) -> updateVramEstimate());
-        methodCombo.valueProperty().addListener((obs, old, newVal) -> updateVramEstimate());
+        backboneCombo.valueProperty().addListener((obs, old, newVal) -> { updateVramEstimate(); updateConfigWarnings(); });
+        batchSizeSpinner.valueProperty().addListener((obs, old, newVal) -> { updateVramEstimate(); updateConfigWarnings(); });
+        extractionTileSpinner.valueProperty().addListener((obs, old, newVal) -> { updateVramEstimate(); updateConfigWarnings(); });
+        methodCombo.valueProperty().addListener((obs, old, newVal) -> { updateVramEstimate(); updateConfigWarnings(); });
+        epochsSpinner.valueProperty().addListener((obs, old, newVal) -> updateConfigWarnings());
+        emaDecaySpinner.valueProperty().addListener((obs, old, newVal) -> updateConfigWarnings());
+        weightDecaySpinner.valueProperty().addListener((obs, old, newVal) -> updateConfigWarnings());
+        maxTilesSpinner.valueProperty().addListener((obs, old, newVal) -> updateConfigWarnings());
         updateVramEstimate();
+        updateConfigWarnings();
 
         TitledPane pane = new TitledPane("Training Parameters", grid);
         pane.setExpanded(true); pane.setCollapsible(false);
@@ -776,9 +830,26 @@ public class SSLPretrainingDialog {
         extractionGrid.setPadding(new Insets(6, 0, 0, 0));
         Label extTileSizeLabel = new Label("Tile size:");
         TooltipHelper.install(
-                "Size of the image tiles extracted from each slide.\n" +
-                "256 is a common default for SSL pretraining.\n" +
-                "Should match or be close to the tile size used in training.",
+                "Size of the image tiles extracted from each slide (in pixels\n" +
+                "at the chosen downsample). 256 is a common default for SSL\n" +
+                "pretraining. Should match or be close to the tile size used\n" +
+                "in supervised training.\n\n" +
+                "Note: the dataset-size thresholds in other SSL tooltips\n" +
+                "(small/medium/large at 20k / 200k tiles) assume tiles in\n" +
+                "the 224-512 pixel range at the downsample you'll train at.\n" +
+                "Halving the tile size roughly quadruples the tile count\n" +
+                "for the same area but does NOT make the dataset 'larger'\n" +
+                "in any useful sense:\n" +
+                "  - Smaller tiles see less context per view, so the encoder\n" +
+                "    learns weaker features (shape, layout, multi-cell context\n" +
+                "    are all visible only at >= 224 pixels for typical histology).\n" +
+                "  - SSL augmentations (random crop, blur) need room to vary;\n" +
+                "    below ~128 pixels they degenerate.\n" +
+                "  - Tile count and tissue area together drive variety. Two\n" +
+                "    images chopped into 100k tiny tiles is still two images\n" +
+                "    of variety -- the model just sees them more often.\n" +
+                "Stick to 224-512 px tiles; if you have few slides, collect\n" +
+                "more rather than shrinking tiles.",
                 extTileSizeLabel, extractionTileSpinner);
         extractionGrid.add(extTileSizeLabel, 0, 0);
         extractionGrid.add(extractionTileSpinner, 1, 0);
@@ -1084,6 +1155,127 @@ public class SSLPretrainingDialog {
     }
 
     /**
+     * Inspect the current SSL config and surface warnings about combinations
+     * we've seen produce collapsed or low-quality encoders. Runs on every
+     * relevant control change, so users see the warning before clicking
+     * Start. Heuristics mirror the post-training quality check in
+     * {@code ssl_pretraining._assess_training_quality} but apply at
+     * configuration time -- when the user can still fix the problem.
+     */
+    private void updateConfigWarnings() {
+        if (configWarningLabel == null) return;
+        try {
+            String method = getSelectedMethod();
+            int batch = batchSizeSpinner.getValue();
+            int epochs = epochsSpinner.getValue();
+            double wd = weightDecaySpinner.getValue();
+            double emaStart = emaDecaySpinner.getValue();
+            // Tile count: folder mode = scanned, project mode = unknown
+            // until extraction. Use maxTiles as a soft upper bound so the
+            // warning isn't pessimistic for users who explicitly capped it.
+            int knownTiles = observedTileCount;
+            int maxTiles = maxTilesSpinner.getValue();
+            // Use whichever signal we actually have; -1 means "unknown".
+            int datasetSize = knownTiles > 0 ? knownTiles : -1;
+
+            java.util.List<String> warnings = new java.util.ArrayList<>();
+
+            boolean isBYOL = "byol".equals(method);
+            boolean isSimCLR = "simclr".equals(method);
+
+            // BYOL collapse-prone configurations
+            if (isBYOL) {
+                if (batch >= 256) {
+                    warnings.add("Batch " + batch + " with BYOL is unusually large. "
+                            + "On small datasets (< 50k tiles) this often causes "
+                            + "representation collapse: BYOL's EMA target updates "
+                            + "infrequently, and the encoder can find the trivial "
+                            + "constant-output solution. Try batch 64-128.");
+                }
+                if (datasetSize > 0 && datasetSize < 20_000 && emaStart >= 0.996) {
+                    warnings.add(String.format(
+                            "Small dataset (%,d tiles) with EMA tau (start) = %.3f "
+                            + "is collapse-prone. Lower EMA tau (start) to ~0.99 "
+                            + "so the target moves faster relative to dataset size.",
+                            datasetSize, emaStart));
+                }
+                if (wd > 1e-5) {
+                    warnings.add(String.format(
+                            "Weight decay = %.0e is high for BYOL. Above ~1e-5 "
+                            + "accelerates collapse on small datasets. The BYOL "
+                            + "paper recipe is 1e-6.", wd));
+                }
+                if (datasetSize > 0 && datasetSize < 20_000 && epochs >= 200) {
+                    warnings.add(String.format(
+                            "Small dataset (%,d tiles) with %d epochs gives BYOL "
+                            + "many chances to find the trivial solution. 100-200 "
+                            + "epochs is usually enough.",
+                            datasetSize, epochs));
+                }
+                // Steps-per-epoch sanity (unknown tile count uses maxTiles cap)
+                int forStepCount = datasetSize > 0 ? datasetSize : maxTiles;
+                int steps = Math.max(1, forStepCount / Math.max(1, batch));
+                if (steps < 50) {
+                    warnings.add(String.format(
+                            "Only ~%d batches per epoch (%,d tiles / batch %d). "
+                            + "BYOL needs many target-update steps per epoch to "
+                            + "stay stable; below ~50 the encoder often beats the "
+                            + "target to a constant. Lower the batch size.",
+                            steps, forStepCount, batch));
+                }
+            }
+
+            // SimCLR variance: needs many negatives per batch
+            if (isSimCLR && batch < 64) {
+                warnings.add("SimCLR batch " + batch + " is below the ~64 minimum "
+                        + "for stable contrastive training. Each batch needs many "
+                        + "negative pairs; small batches give noisy gradients and "
+                        + "weak features. Increase to 128+ or switch to BYOL.");
+            }
+            if (isSimCLR && datasetSize > 0 && datasetSize < 20_000) {
+                warnings.add(String.format(
+                        "SimCLR on %,d tiles is below its sweet spot. With < 20k "
+                        + "tiles, BYOL typically learns better features (no "
+                        + "negative pairs needed).",
+                        datasetSize));
+            }
+
+            // Universal: implausibly small dataset
+            if (datasetSize > 0 && datasetSize < 2_000) {
+                warnings.add(String.format(
+                        "Only %,d tiles -- SSL pretraining is unlikely to beat "
+                        + "ImageNet weights below ~2,000 tiles. Collect more "
+                        + "data or skip SSL and go straight to supervised training.",
+                        datasetSize));
+            }
+
+            if (warnings.isEmpty()) {
+                configWarningLabel.setVisible(false);
+                configWarningLabel.setManaged(false);
+                configWarningLabel.setText("");
+                return;
+            }
+
+            StringBuilder sb = new StringBuilder("Configuration warnings:");
+            for (String w : warnings) {
+                sb.append("\n  - ").append(w);
+            }
+            configWarningLabel.setText(sb.toString());
+            configWarningLabel.setStyle(
+                    "-fx-text-fill: #856404; -fx-background-color: #fff3cd; "
+                    + "-fx-padding: 6 8; -fx-background-radius: 3; "
+                    + "-fx-font-size: 11px;");
+            configWarningLabel.setVisible(true);
+            configWarningLabel.setManaged(true);
+        } catch (Exception e) {
+            // Never let warnings update break the dialog
+            configWarningLabel.setVisible(false);
+            configWarningLabel.setManaged(false);
+            logger.debug("Config warnings update failed: {}", e.getMessage());
+        }
+    }
+
+    /**
      * Estimates model parameter size in MB for SMP backbones.
      * SSL wraps the encoder in a projection head, but the encoder
      * dominates the memory footprint.
@@ -1147,14 +1339,18 @@ public class SSLPretrainingDialog {
                         .count();
                 Platform.runLater(() -> {
                     if (count == 0) {
+                        observedTileCount = 0;
+                        updateConfigWarnings();
                         datasetInfoLabel.setText("No image files found in this directory.");
                     } else {
                         datasetInfoLabel.setText(count + " image file(s) found.");
+                        observedTileCount = (int) Math.min(count, Integer.MAX_VALUE);
                         // Auto-suggest epochs
                         if (count < 50) epochsSpinner.getValueFactory().setValue(500);
                         else if (count < 200) epochsSpinner.getValueFactory().setValue(300);
                         else if (count < 1000) epochsSpinner.getValueFactory().setValue(100);
                         else epochsSpinner.getValueFactory().setValue(50);
+                        updateConfigWarnings();
                     }
                 });
             } catch (Exception e) {
@@ -1177,21 +1373,41 @@ public class SSLPretrainingDialog {
         Dialogs.showMessageDialog("SSL Pretraining Tips",
                 "Self-supervised pretraining trains the encoder backbone\n" +
                 "to learn useful visual features without labels.\n\n" +
-                "SimCLR: Best with large batch sizes (64+). The encoder\n" +
-                "learns to map augmented views of the same image close\n" +
-                "together in feature space.\n\n" +
-                "BYOL: Works well with smaller datasets and batch sizes.\n" +
-                "Uses a teacher-student framework with exponential moving\n" +
-                "average updates.\n\n" +
+                "Dataset-size scale used throughout the SSL dialog:\n" +
+                "  small  : < 20,000 tiles  (BYOL strongly recommended)\n" +
+                "  medium : 20,000 - 200,000 tiles  (either method works)\n" +
+                "  large  : > 200,000 tiles  (SimCLR shines if batch >= 128)\n" +
+                "These thresholds count tiles, not source images, and assume\n" +
+                "tiles are in the 224-512 pixel range at the downsample you\n" +
+                "will train at. Shrinking the tile size to bump up the count\n" +
+                "does NOT make the dataset 'larger' in any useful sense:\n" +
+                " - smaller tiles see less context, so the encoder learns\n" +
+                "   weaker features (typical histology context needs >= 224 px),\n" +
+                " - SSL augmentations (random crop, blur) need room to vary,\n" +
+                " - what matters is tissue area and visual variety, not the\n" +
+                "   raw tile count -- 100k tiny tiles from two slides is still\n" +
+                "   two slides of variety.\n" +
+                "If you have few slides, collect more or use a coarser\n" +
+                "downsample, don't shrink tiles below ~224 px.\n\n" +
+                "SimCLR: Best with large batch sizes (64+, ideally 128+).\n" +
+                "The encoder learns to map augmented views of the same\n" +
+                "image close together in feature space. Below ~20k tiles\n" +
+                "or below batch 64 it tends to underperform BYOL.\n\n" +
+                "BYOL: Works on small datasets (< 20k tiles) and small\n" +
+                "batches (16-32). Uses a teacher-student framework with\n" +
+                "exponential moving average updates -- no negative pairs,\n" +
+                "so it tolerates limited data.\n\n" +
                 "After pretraining, load the encoder weights in the\n" +
                 "Training dialog via 'Use SSL pretrained encoder'.\n" +
                 "The pretrained backbone gives better results than\n" +
                 "ImageNet weights for domain-specific data.\n\n" +
                 "Tips:\n" +
-                " - Use 200+ tiles for meaningful pretraining\n" +
+                " - Below ~2,000 tiles, SSL pretraining is unlikely to help\n" +
+                "   over plain ImageNet weights -- collect more first.\n" +
+                " - Aim for at least 5,000 - 10,000 tiles for a noticeable lift.\n" +
                 " - Select annotation classes that cover tissue regions\n" +
                 " - Match the backbone to what you'll use in training\n" +
-                " - 100-200 epochs is usually sufficient");
+                " - Epochs: 200-400 (small), 100-200 (medium), 50-100 (large)");
     }
 
     // ==================== Cell Factories ====================
