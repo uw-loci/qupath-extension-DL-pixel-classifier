@@ -79,10 +79,63 @@ class PerChannelIntensityJitter(A.ImageOnlyTransform):
         return ("brightness_limit", "contrast_limit")
 
 
+# Ruifrok & Johnston (2001) RGB <-> HED stain decomposition matrix for H&E.
+# Used by HEDStainJitter below. ASCII-only; no Unicode in code.
+_HED_RGB_FROM_HED = np.array([
+    [0.65, 0.70, 0.29],   # H
+    [0.07, 0.99, 0.11],   # E
+    [0.27, 0.57, 0.78],   # residual
+], dtype=np.float32)
+_HED_HED_FROM_RGB = np.linalg.inv(_HED_RGB_FROM_HED).astype(np.float32)
+
+
+class HEDStainJitter(A.ImageOnlyTransform):
+    """Stain-aware jitter for H&E in HED color space.
+
+    Decomposes RGB into hematoxylin/eosin/residual channels, perturbs each
+    channel by a random multiplicative + additive shift, recomposes RGB.
+    Models realistic stain variation across slides without breaking tissue
+    morphology (unlike generic hue jitter).
+
+    Args:
+        sigma: Per-channel multiplicative jitter std (typical 0.02-0.05).
+        bias: Per-channel additive jitter std (typical 0.005-0.02).
+    """
+
+    def __init__(self, sigma=0.05, bias=0.01,
+                 always_apply=False, p=0.8):
+        super().__init__(always_apply, p)
+        self.sigma = float(sigma)
+        self.bias = float(bias)
+
+    def apply(self, img, **params):
+        if img.ndim != 3 or img.shape[2] != 3:
+            return img
+        is_uint8 = img.dtype == np.uint8
+        rgb = img.astype(np.float32) / (255.0 if is_uint8 else 1.0)
+        # Avoid log(0)
+        rgb = np.clip(rgb, 1e-6, 1.0)
+        od = -np.log(rgb)
+        hed = od @ _HED_HED_FROM_RGB.T
+        alpha = 1.0 + np.random.uniform(-self.sigma, self.sigma, size=3).astype(np.float32)
+        beta = np.random.uniform(-self.bias, self.bias, size=3).astype(np.float32)
+        hed = hed * alpha + beta
+        od_out = hed @ _HED_RGB_FROM_HED.T
+        rgb_out = np.exp(-od_out)
+        rgb_out = np.clip(rgb_out, 0.0, 1.0)
+        if is_uint8:
+            return (rgb_out * 255.0).astype(np.uint8)
+        return rgb_out.astype(img.dtype)
+
+    def get_transform_init_args_names(self):
+        return ("sigma", "bias")
+
+
 def get_ssl_augmentation(
     tile_size: int = 256,
     intensity_mode: str = "brightfield",
     num_channels: int = 3,
+    stain_aug: bool = True,
 ) -> A.Compose:
     """Create strong augmentation pipeline for SSL pretraining.
 
@@ -113,13 +166,19 @@ def get_ssl_augmentation(
     # Intensity transforms depend on imaging modality and channel count
     intensity = []
     if intensity_mode == "brightfield" and num_channels == 3:
+        # H&E-tuned: lower hue (full hue rotation breaks stain semantics),
+        # very rare ToGray (collapses both stains -> trivial pretext task),
+        # plus optional stain-space jitter which is the right axis of
+        # variation for histology.
         intensity = [
             A.ColorJitter(
                 brightness=0.4, contrast=0.4,
-                saturation=0.2, hue=0.1, p=0.8),
-            A.ToGray(p=0.2),
+                saturation=0.2, hue=0.04, p=0.8),
+            A.ToGray(p=0.05),
             A.RandomGamma(gamma_limit=(70, 130), p=0.3),
         ]
+        if stain_aug:
+            intensity.append(HEDStainJitter(sigma=0.05, bias=0.01, p=0.8))
     elif intensity_mode == "fluorescence" or num_channels != 3:
         intensity = [
             PerChannelIntensityJitter(
@@ -613,15 +672,28 @@ class SSLPretrainingService:
         batch_size = int(config.get("batch_size", 64 if method == "simclr" else 32))
         grad_accum_steps = int(config.get("grad_accum_steps", 1))
         learning_rate = float(config.get("learning_rate", 3e-4))
-        weight_decay = float(config.get("weight_decay", 1e-4))
+        # Default WD: 1e-6 for BYOL (per the BYOL paper), 1e-4 for SimCLR.
+        # Overweight WD on BN/bias is one of the main BYOL collapse triggers
+        # on small datasets; param-group split below excludes BN/bias from WD.
+        wd_default = 1e-6 if method == "byol" else 1e-4
+        weight_decay = float(config.get("weight_decay", wd_default))
         warmup_epochs = int(config.get("warmup_epochs", 10))
         temperature = float(config.get("temperature", 0.5))
         ema_decay = float(config.get("ema_decay", 0.996))
+        # Schedule tau from a softer initial value to ema_decay_final over
+        # the run. Constant tau on small datasets converges to a degenerate
+        # target network; cosine ramp toward 1.0 is the BYOL-paper recipe.
+        ema_decay_final = float(config.get("ema_decay_final", 1.0))
         projection_dim = int(config.get("projection_dim", 256))
         hidden_dim = int(config.get("hidden_dim", 2048))
         tile_size = int(config.get("tile_size", 256))
         intensity_mode = config.get("intensity_mode", "brightfield")
+        stain_aug = bool(config.get("stain_aug", True))
         checkpoint_interval = int(config.get("checkpoint_interval", 50))
+        # Collapse guard: track projection-output std-dev each epoch and
+        # abort if it stays below this threshold for N consecutive epochs.
+        collapse_threshold = float(config.get("collapse_threshold", 0.01))
+        collapse_patience = int(config.get("collapse_patience", 3))
 
         if method not in ("simclr", "byol"):
             raise ValueError("Unsupported SSL method: %s" % method)
@@ -666,9 +738,10 @@ class SSLPretrainingService:
                 tile_size=tile_size,
                 intensity_mode=intensity_mode,
                 num_channels=num_channels,
+                stain_aug=stain_aug,
             )
-            logger.info("SSL augmentation: mode=%s, channels=%d",
-                         intensity_mode, num_channels)
+            logger.info("SSL augmentation: mode=%s, channels=%d, stain_aug=%s",
+                         intensity_mode, num_channels, stain_aug)
         else:
             logger.warning(
                 "albumentations unavailable -- using basic augmentation only")
@@ -793,11 +866,32 @@ class SSLPretrainingService:
             trainable_count / 1e6, self.device)
 
         # --- Optimizer ---
+        # Exclude BatchNorm and bias parameters from weight decay. These
+        # parameters do not benefit from L2 regularization, and applying WD
+        # to BN scales destabilizes the EMA target in BYOL on small data.
+        decay_params = []
+        no_decay_params = []
+        for name, param in model.named_parameters():
+            if not param.requires_grad:
+                continue
+            # Match BN scale/shift (running stats are buffers, not params)
+            # and any bias term across linear/conv layers.
+            lname = name.lower()
+            if param.ndim <= 1 or lname.endswith(".bias") or "bn" in lname \
+                    or "batchnorm" in lname or "norm." in lname:
+                no_decay_params.append(param)
+            else:
+                decay_params.append(param)
+        logger.info(
+            "Optimizer param groups: %d decay (wd=%.2e), %d no-decay",
+            len(decay_params), weight_decay, len(no_decay_params))
         optimizer = torch.optim.AdamW(
-            model.parameters(),
+            [
+                {"params": decay_params, "weight_decay": weight_decay},
+                {"params": no_decay_params, "weight_decay": 0.0},
+            ],
             lr=learning_rate,
             betas=(0.9, 0.95),
-            weight_decay=weight_decay,
         )
 
         # Cosine schedule with linear warmup
@@ -808,6 +902,18 @@ class SSLPretrainingService:
             return 0.5 * (1.0 + np.cos(np.pi * progress))
 
         scheduler = torch.optim.lr_scheduler.LambdaLR(optimizer, lr_lambda)
+
+        # BYOL EMA decay schedule: cosine ramp from `ema_decay` (initial)
+        # to `ema_decay_final` (typically 1.0) over the run. Index is the
+        # 1-based epoch number used in the training loop.
+        def get_ema_decay(epoch_1based: int) -> float:
+            if method != "byol":
+                return ema_decay
+            if epochs <= 1:
+                return ema_decay_final
+            progress = max(0.0, min(1.0, (epoch_1based - 1) / (epochs - 1)))
+            return ema_decay_final - (ema_decay_final - ema_decay) * 0.5 \
+                * (1.0 + float(np.cos(np.pi * progress)))
 
         # --- Mixed precision ---
         use_amp = self._device_str == "cuda"
@@ -914,9 +1020,13 @@ class SSLPretrainingService:
             logger.info("SimCLR temperature=%.3f, projection_dim=%d",
                          temperature, projection_dim)
         else:
-            logger.info("BYOL ema_decay=%.4f, projection_dim=%d",
-                         ema_decay, projection_dim)
+            logger.info(
+                "BYOL ema_decay schedule: %.4f -> %.4f, projection_dim=%d",
+                ema_decay, ema_decay_final, projection_dim)
         training_start_time = _time.monotonic()
+
+        # Collapse-guard state
+        collapse_streak = 0
 
         first_batch_done = False
         try:
@@ -964,6 +1074,7 @@ class SSLPretrainingService:
                 model.train()
                 epoch_loss = 0.0
                 n_batches = 0
+                last_view1 = None
 
                 optimizer.zero_grad(set_to_none=True)
 
@@ -1037,12 +1148,44 @@ class SSLPretrainingService:
 
                         # BYOL: EMA update after each optimizer step
                         if method == "byol":
-                            model.update_target(ema_decay)
+                            model.update_target(get_ema_decay(epoch))
 
                     epoch_loss += loss.item() * grad_accum_steps
                     n_batches += 1
+                    last_view1 = view1
 
                 scheduler.step()
+
+                # --- Collapse guard ---
+                # Measure per-feature std-dev of L2-normalized projections
+                # on the last batch. A healthy SSL model spreads samples
+                # across the unit sphere -> std around 1/sqrt(D).
+                # Collapsed model maps everything to one point -> std ~ 0.
+                proj_std = None
+                if last_view1 is not None:
+                    try:
+                        was_training = model.training
+                        model.eval()
+                        with torch.no_grad():
+                            inner = model
+                            # Unwrap torch.compile if present
+                            if hasattr(inner, "_orig_mod"):
+                                inner = inner._orig_mod
+                            if method == "byol":
+                                feat = inner.pool(
+                                    inner.online_encoder(last_view1)[-1]
+                                ).flatten(1)
+                                z = inner.online_projector(feat)
+                            else:
+                                # SimCLRModel.forward returns z directly
+                                z = inner(last_view1)
+                            z = F.normalize(z, dim=1)
+                            proj_std = float(z.std(dim=0).mean().item())
+                        if was_training:
+                            model.train()
+                    except Exception as e:
+                        logger.debug("Projection-std probe failed: %s", e)
+                        proj_std = None
 
                 # --- Epoch metrics ---
                 epoch_end = _time.monotonic()
@@ -1061,7 +1204,26 @@ class SSLPretrainingService:
                     "loss": avg_loss,
                     "lr": current_lr,
                     "epoch_sec": round(epoch_duration, 2),
+                    "proj_std": proj_std if proj_std is not None else -1.0,
                 })
+
+                # Update collapse streak and decide whether to abort
+                if proj_std is not None and proj_std < collapse_threshold:
+                    collapse_streak += 1
+                    logger.warning(
+                        "Collapse warning epoch %d: proj_std=%.6f < %.6f "
+                        "(streak %d/%d)",
+                        epoch, proj_std, collapse_threshold,
+                        collapse_streak, collapse_patience)
+                else:
+                    collapse_streak = 0
+                if collapse_streak >= collapse_patience:
+                    logger.error(
+                        "Aborting: representation collapse detected "
+                        "(proj_std < %.6f for %d consecutive epochs). "
+                        "Use checkpoint_epoch_<earlier>.pt for downstream.",
+                        collapse_threshold, collapse_patience)
+                    break
 
                 # Best model tracking with disk persistence
                 if avg_loss < best_loss:
@@ -1089,10 +1251,11 @@ class SSLPretrainingService:
                         pass
 
                 # Dense epoch logging with timing
+                proj_std_str = ("%.4f" % proj_std) if proj_std is not None else "n/a"
                 logger.info(
-                    "Epoch %d/%d: loss=%.6f, lr=%.2e "
+                    "Epoch %d/%d: loss=%.6f, lr=%.2e, proj_std=%s "
                     "(%.1fs, %.1f img/s, ~%.0fs remaining)",
-                    epoch, epochs, avg_loss, current_lr,
+                    epoch, epochs, avg_loss, current_lr, proj_std_str,
                     epoch_duration, images_per_sec, remaining_sec)
 
                 # Periodic checkpoint

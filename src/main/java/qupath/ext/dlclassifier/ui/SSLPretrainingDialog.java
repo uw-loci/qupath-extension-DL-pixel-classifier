@@ -98,6 +98,12 @@ public class SSLPretrainingDialog {
     private final Spinner<Integer> batchSizeSpinner;
     private final Spinner<Double> learningRateSpinner;
     private final Spinner<Integer> warmupEpochsSpinner;
+    private final Spinner<Double> weightDecaySpinner;
+    private final Spinner<Double> emaDecaySpinner;
+    private final Spinner<Double> emaDecayFinalSpinner;
+    private final Label emaDecayLabel;
+    private final Label emaDecayFinalLabel;
+    private final CheckBox stainAugCheckBox;
 
     // Live VRAM estimation
     private Label vramEstimateLabel;
@@ -239,6 +245,73 @@ public class SSLPretrainingDialog {
                 "Number of epochs to linearly ramp up the learning rate.\n" +
                 "Prevents early instability. 10 is typical for SSL.");
 
+        // BYOL paper recommends ~1.5e-6; SimCLR tolerates 1e-4. BatchNorm
+        // and bias parameters are excluded from weight decay automatically.
+        var wdFactory = new SpinnerValueFactory.DoubleSpinnerValueFactory(
+                0.0, 1e-2, 1e-6, 1e-6);
+        wdFactory.setConverter(new javafx.util.StringConverter<Double>() {
+            @Override public String toString(Double v) {
+                return v == null ? "" : String.format("%.2e", v);
+            }
+            @Override public Double fromString(String s) {
+                try { return Double.parseDouble(s); }
+                catch (Exception e) { return 1e-6; }
+            }
+        });
+        weightDecaySpinner = new Spinner<>(wdFactory);
+        weightDecaySpinner.setEditable(true);
+        weightDecaySpinner.setPrefWidth(120);
+        TooltipHelper.install(weightDecaySpinner,
+                "L2 weight decay applied to non-BN, non-bias parameters.\n" +
+                "BYOL: 1e-6 (paper default). SimCLR: 1e-4 typical.\n" +
+                "Higher values can trigger BYOL collapse on small datasets.");
+
+        emaDecaySpinner = new Spinner<>(0.9, 0.9999, 0.996, 0.001);
+        emaDecaySpinner.setEditable(true);
+        emaDecaySpinner.setPrefWidth(100);
+        emaDecayLabel = new Label("EMA tau (start):");
+        TooltipHelper.install(
+                "BYOL target-network EMA decay at the START of training.\n" +
+                "Schedule cosines from this value up to 'EMA tau (end)'.\n" +
+                "0.996 is the BYOL paper default; lower (0.99) helps for\n" +
+                "small datasets where collapse risk is higher.",
+                emaDecayLabel, emaDecaySpinner);
+
+        emaDecayFinalSpinner = new Spinner<>(0.99, 1.0, 1.0, 0.001);
+        emaDecayFinalSpinner.setEditable(true);
+        emaDecayFinalSpinner.setPrefWidth(100);
+        emaDecayFinalLabel = new Label("EMA tau (end):");
+        TooltipHelper.install(
+                "BYOL target-network EMA decay at the END of training.\n" +
+                "1.0 freezes the target near the end (BYOL paper recipe).\n" +
+                "Set equal to start to disable scheduling.",
+                emaDecayFinalLabel, emaDecayFinalSpinner);
+
+        // Hide EMA controls in SimCLR mode (only BYOL uses them).
+        boolean isBYOLInit = "BYOL".equalsIgnoreCase(methodCombo.getValue());
+        emaDecayLabel.setVisible(isBYOLInit);
+        emaDecayLabel.setManaged(isBYOLInit);
+        emaDecaySpinner.setVisible(isBYOLInit);
+        emaDecaySpinner.setManaged(isBYOLInit);
+        emaDecayFinalLabel.setVisible(isBYOLInit);
+        emaDecayFinalLabel.setManaged(isBYOLInit);
+        emaDecayFinalSpinner.setVisible(isBYOLInit);
+        emaDecayFinalSpinner.setManaged(isBYOLInit);
+        methodCombo.valueProperty().addListener((obs, oldV, newV) -> {
+            boolean isBYOL = "BYOL".equalsIgnoreCase(newV);
+            emaDecayLabel.setVisible(isBYOL); emaDecayLabel.setManaged(isBYOL);
+            emaDecaySpinner.setVisible(isBYOL); emaDecaySpinner.setManaged(isBYOL);
+            emaDecayFinalLabel.setVisible(isBYOL); emaDecayFinalLabel.setManaged(isBYOL);
+            emaDecayFinalSpinner.setVisible(isBYOL); emaDecayFinalSpinner.setManaged(isBYOL);
+        });
+
+        stainAugCheckBox = new CheckBox("HED stain jitter (H&E)");
+        stainAugCheckBox.setSelected(true);
+        TooltipHelper.install(stainAugCheckBox,
+                "Apply stain-aware augmentation in HED color space for H&E.\n" +
+                "Models realistic stain variation without breaking morphology.\n" +
+                "Disable for non-H&E brightfield (e.g. IHC, special stains).");
+
         // --- Source mode radios ---
         projectModeRadio = new RadioButton("Project images (extract tiles from annotations)");
         projectModeRadio.setToggleGroup(sourceModeGroup);
@@ -288,12 +361,14 @@ public class SSLPretrainingDialog {
                 "1 = full resolution, 2 = half, 4 = quarter.\n" +
                 "Match the downsample you use for supervised training.");
 
-        maxTilesSpinner = new Spinner<>(100, 200000, 5000, 500);
+        maxTilesSpinner = new Spinner<>(100, 500000, 50000, 1000);
         maxTilesSpinner.setEditable(true);
         maxTilesSpinner.setPrefWidth(100);
         TooltipHelper.install(maxTilesSpinner,
                 "Maximum tiles to keep across all selected images.\n" +
-                "Prevents a single large WSI from overwhelming the pool.");
+                "Prevents a single large WSI from overwhelming the pool.\n" +
+                "SSL benefits from diversity: 50k+ tiles is recommended.\n" +
+                "Tiny pools (<10k) risk BYOL representation collapse on long runs.");
 
         projectSummaryLabel.setStyle("-fx-font-size: 11px; -fx-text-fill: #666;");
         projectSummaryLabel.setWrapText(true);
@@ -591,11 +666,26 @@ public class SSLPretrainingDialog {
         grid.add(warmupLabel, 0, 3);
         grid.add(warmupEpochsSpinner, 1, 3);
 
+        Label weightDecayLabel = new Label("Weight decay:");
+        TooltipHelper.install(
+                "L2 weight decay (excluding BN and bias parameters).",
+                weightDecayLabel, weightDecaySpinner);
+        grid.add(weightDecayLabel, 0, 4);
+        grid.add(weightDecaySpinner, 1, 4);
+
+        grid.add(emaDecayLabel, 0, 5);
+        grid.add(emaDecaySpinner, 1, 5);
+
+        grid.add(emaDecayFinalLabel, 0, 6);
+        grid.add(emaDecayFinalSpinner, 1, 6);
+
+        grid.add(stainAugCheckBox, 0, 7, 2, 1);
+
         // Live VRAM estimate
         vramEstimateLabel = new Label();
         vramEstimateLabel.setWrapText(true);
         vramEstimateLabel.setStyle("-fx-font-size: 11px;");
-        grid.add(vramEstimateLabel, 0, 4, 2, 1);
+        grid.add(vramEstimateLabel, 0, 8, 2, 1);
 
         // Wire VRAM estimation listeners
         backboneCombo.valueProperty().addListener((obs, old, newVal) -> updateVramEstimate());
@@ -792,6 +882,10 @@ public class SSLPretrainingDialog {
         config.put("temperature", temperatureSpinner.getValue());
         config.put("projection_dim", projectionDimSpinner.getValue());
         config.put("tile_size", extractionTileSpinner.getValue());
+        config.put("weight_decay", weightDecaySpinner.getValue());
+        config.put("ema_decay", emaDecaySpinner.getValue());
+        config.put("ema_decay_final", emaDecayFinalSpinner.getValue());
+        config.put("stain_aug", stainAugCheckBox.isSelected());
         String runName = runNameField.getText() == null ? "" : runNameField.getText().trim();
         if (runName.isEmpty()) runName = buildDefaultRunName();
         config.put("run_name", runName);
