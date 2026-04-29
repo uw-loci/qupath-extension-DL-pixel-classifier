@@ -648,20 +648,69 @@ class InferenceService:
 
             if model_type == "onnx":
                 # Runtime shape check for static-shape ONNX. If the batch
-                # shape doesn't match the baked-in shape, fall back to the
-                # dynamic model.onnx variant by evicting this cached session
-                # and marking this model to skip static on future loads.
-                # See Phase 3b notes in
-                # claude-reports/2026-04-17_input-size-divisibility.md.
+                # shape doesn't match the baked-in shape, prefer to PAD the
+                # input up to the expected H/W (reflect pad) and crop the
+                # output back -- this works regardless of whether the
+                # bundled "dynamic" model.onnx is actually dynamic. The old
+                # code relied on falling back to model.onnx, but for users
+                # whose model.onnx was also exported with fixed shapes (or
+                # whose dynamic variant has a different baked-in size) the
+                # fallback raised the same InvalidArgument and inference
+                # failed with "Got: 356 Expected: 512".
+                #
+                # Channel-count mismatches still trigger the dynamic-reload
+                # fallback below, since pad/crop can't fix them.
                 static_shape = getattr(
                     model, "_dlclassifier_onnx_static_shape", None)
+                pad_h_top = pad_w_left = 0
+                pad_h_bot = pad_w_right = 0
+                onnx_pad_applied = False
                 if static_shape is not None:
                     _, c0, h0, w0 = static_shape
                     _, cb, hb, wb = batch_np.shape
-                    if (cb, hb, wb) != (c0, h0, w0):
+                    spatial_only_mismatch = (
+                        cb == c0 and (hb, wb) != (h0, w0)
+                        and hb <= h0 and wb <= w0)
+                    if spatial_only_mismatch:
+                        # Center pad so reflection on both sides of the tile
+                        # is roughly symmetric and the output crop region
+                        # stays aligned with the input ROI.
+                        pad_h_total = h0 - hb
+                        pad_w_total = w0 - wb
+                        pad_h_top = pad_h_total // 2
+                        pad_h_bot = pad_h_total - pad_h_top
+                        pad_w_left = pad_w_total // 2
+                        pad_w_right = pad_w_total - pad_w_left
+                        # Reflect-pad H,W; leave N,C alone. Reflect requires
+                        # the pad to be < dim size; fall back to edge mode
+                        # for very small tiles (which shouldn't normally
+                        # happen but keeps inference robust).
+                        try:
+                            batch_np = np.pad(
+                                batch_np,
+                                ((0, 0), (0, 0),
+                                 (pad_h_top, pad_h_bot),
+                                 (pad_w_left, pad_w_right)),
+                                mode="reflect")
+                        except ValueError:
+                            batch_np = np.pad(
+                                batch_np,
+                                ((0, 0), (0, 0),
+                                 (pad_h_top, pad_h_bot),
+                                 (pad_w_left, pad_w_right)),
+                                mode="edge")
+                        onnx_pad_applied = True
+                        logger.info(
+                            "ONNX static shape %s; padding input %s -> "
+                            "(%d, %d) and cropping output back",
+                            (c0, h0, w0), (cb, hb, wb), h0, w0)
+                    elif (cb, hb, wb) != (c0, h0, w0):
+                        # Channel mismatch (or input strictly larger than
+                        # baked-in size) -- can't pad/crop. Try dynamic.
                         logger.info(
                             "Batch shape %s differs from static ONNX shape "
-                            "%s -- falling back to dynamic model.onnx",
+                            "%s in non-spatial dims -- falling back to "
+                            "dynamic model.onnx",
                             (cb, hb, wb), (c0, h0, w0))
                         for key, val in list(self._model_cache.items()):
                             if val is model_tuple:
@@ -703,6 +752,37 @@ class InferenceService:
                                 model_tuple = self._load_model(key)
                                 model_type, model = model_tuple
                                 break
+                        # Re-apply the pad/crop dance against the new
+                        # session in case "model.onnx" was also exported
+                        # with fixed shapes (observed in user traces).
+                        new_static = getattr(
+                            model, "_dlclassifier_onnx_static_shape", None)
+                        if new_static is not None and not onnx_pad_applied:
+                            _, c0, h0, w0 = new_static
+                            _, cb, hb, wb = batch_np.shape
+                            if (cb == c0 and (hb, wb) != (h0, w0)
+                                    and hb <= h0 and wb <= w0):
+                                pad_h_total = h0 - hb
+                                pad_w_total = w0 - wb
+                                pad_h_top = pad_h_total // 2
+                                pad_h_bot = pad_h_total - pad_h_top
+                                pad_w_left = pad_w_total // 2
+                                pad_w_right = pad_w_total - pad_w_left
+                                try:
+                                    batch_np = np.pad(
+                                        batch_np,
+                                        ((0, 0), (0, 0),
+                                         (pad_h_top, pad_h_bot),
+                                         (pad_w_left, pad_w_right)),
+                                        mode="reflect")
+                                except ValueError:
+                                    batch_np = np.pad(
+                                        batch_np,
+                                        ((0, 0), (0, 0),
+                                         (pad_h_top, pad_h_bot),
+                                         (pad_w_left, pad_w_right)),
+                                        mode="edge")
+                                onnx_pad_applied = True
                         input_name = model.get_inputs()[0].name
                         outputs = model.run(
                             None, {input_name: batch_np})
@@ -716,6 +796,16 @@ class InferenceService:
                             exc_info=True)
                         raise
                 batch_logits = outputs[0]  # (N, C, H, W)
+                if onnx_pad_applied:
+                    # Crop spatial dims of the logits back to the original
+                    # tile size so downstream softmax + reflection-pad
+                    # cropping operate on the right shape.
+                    out_h = batch_logits.shape[2] - pad_h_top - pad_h_bot
+                    out_w = batch_logits.shape[3] - pad_w_left - pad_w_right
+                    batch_logits = batch_logits[
+                        :, :,
+                        pad_h_top:pad_h_top + out_h,
+                        pad_w_left:pad_w_left + out_w]
             else:
                 # PyTorch inference with optional AMP
                 batch_tensor = torch.from_numpy(batch_np).to(self.device)
