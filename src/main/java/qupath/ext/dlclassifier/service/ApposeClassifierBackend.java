@@ -429,6 +429,18 @@ public class ApposeClassifierBackend implements ClassifierBackend {
             Consumer<ClassifierClient.TrainingProgress> progressCallback,
             Supplier<Boolean> cancelledCheck,
             Consumer<String> jobIdCallback) throws IOException {
+        return startPretraining(config, dataPath, outputDir,
+                progressCallback, cancelledCheck, jobIdCallback, null);
+    }
+
+    public ClassifierClient.TrainingResult startPretraining(
+            Map<String, Object> config,
+            Path dataPath,
+            Path outputDir,
+            Consumer<ClassifierClient.TrainingProgress> progressCallback,
+            Supplier<Boolean> cancelledCheck,
+            Consumer<String> jobIdCallback,
+            Supplier<String> cancelSaveModeSupplier) throws IOException {
 
         ApposeService appose = ApposeService.getInstance();
 
@@ -438,6 +450,7 @@ public class ApposeClassifierBackend implements ClassifierBackend {
         String jobId = "appose-mae-" + System.currentTimeMillis();
         Map<String, Object> configWithPause = new HashMap<>(config);
         configWithPause.put("pause_signal_path", getPauseSignalPath(jobId).toString());
+        configWithPause.put("cancel_signal_path", getCancelSignalPath(jobId).toString());
 
         Map<String, Object> inputs = new HashMap<>();
         inputs.put("config", configWithPause);
@@ -454,7 +467,8 @@ public class ApposeClassifierBackend implements ClassifierBackend {
         // (worker dies on dispatch -> Java throws -> finally block deletes the
         // temp tile dir while Appose's silent auto-retry is still running).
         return runPretrainingWithThreadDeathRetry(appose, "pretrain_mae", inputs,
-                jobId, "mae", outputDir, progressCallback, cancelledCheck);
+                jobId, "mae", outputDir, progressCallback, cancelledCheck,
+                cancelSaveModeSupplier, getCancelSignalPath(jobId));
     }
 
     /**
@@ -558,12 +572,25 @@ public class ApposeClassifierBackend implements ClassifierBackend {
             Consumer<ClassifierClient.TrainingProgress> progressCallback,
             Supplier<Boolean> cancelledCheck,
             Consumer<String> jobIdCallback) throws IOException {
+        return startSSLPretraining(config, dataPath, outputDir,
+                progressCallback, cancelledCheck, jobIdCallback, null);
+    }
+
+    public ClassifierClient.TrainingResult startSSLPretraining(
+            Map<String, Object> config,
+            Path dataPath,
+            Path outputDir,
+            Consumer<ClassifierClient.TrainingProgress> progressCallback,
+            Supplier<Boolean> cancelledCheck,
+            Consumer<String> jobIdCallback,
+            Supplier<String> cancelSaveModeSupplier) throws IOException {
 
         ApposeService appose = ApposeService.getInstance();
 
         String jobId = "appose-ssl-" + System.currentTimeMillis();
         Map<String, Object> configWithPause = new HashMap<>(config);
         configWithPause.put("pause_signal_path", getPauseSignalPath(jobId).toString());
+        configWithPause.put("cancel_signal_path", getCancelSignalPath(jobId).toString());
 
         Map<String, Object> inputs = new HashMap<>();
         inputs.put("config", configWithPause);
@@ -583,7 +610,8 @@ public class ApposeClassifierBackend implements ClassifierBackend {
         // BatchNorm-on-batch-of-1 crash). Mirrors the supervised retry at
         // executeTrainingTask().
         return runPretrainingWithThreadDeathRetry(appose, "pretrain_ssl", inputs,
-                jobId, "ssl", outputDir, progressCallback, cancelledCheck);
+                jobId, "ssl", outputDir, progressCallback, cancelledCheck,
+                cancelSaveModeSupplier, getCancelSignalPath(jobId));
     }
 
     /**
@@ -603,10 +631,27 @@ public class ApposeClassifierBackend implements ClassifierBackend {
             Path outputDir,
             Consumer<ClassifierClient.TrainingProgress> progressCallback,
             Supplier<Boolean> cancelledCheck) throws IOException {
+        return runPretrainingWithThreadDeathRetry(appose, taskName, inputs,
+                jobId, label, outputDir, progressCallback, cancelledCheck,
+                null, null);
+    }
+
+    private ClassifierClient.TrainingResult runPretrainingWithThreadDeathRetry(
+            ApposeService appose,
+            String taskName,
+            Map<String, Object> inputs,
+            String jobId,
+            String label,
+            Path outputDir,
+            Consumer<ClassifierClient.TrainingProgress> progressCallback,
+            Supplier<Boolean> cancelledCheck,
+            Supplier<String> cancelSaveModeSupplier,
+            Path cancelSignalPath) throws IOException {
 
         for (int attempt = 0; attempt < 2; attempt++) {
             Task task = appose.createTask(taskName, inputs);
             boolean[] pythonStarted = {false};
+            boolean[] cancelSignalWritten = {false};
 
             task.listen(event -> {
                 if (event.responseType == ResponseType.UPDATE && event.message != null) {
@@ -656,11 +701,51 @@ public class ApposeClassifierBackend implements ClassifierBackend {
             task.start();
             while (!task.status.isFinished()) {
                 if (cancelledCheck != null && cancelledCheck.get()) {
+                    // Write the chosen save mode ("best" / "last" / "none")
+                    // to the cancel signal file BEFORE telling Appose to
+                    // cancel. Python's watcher polls this path and reads
+                    // the mode string when handling cancellation, so the
+                    // user's pick from the JavaFX dialog is honored. We
+                    // only write once per task to avoid spamming the
+                    // filesystem on every poll cycle. If no supplier is
+                    // wired (older callers), we still touch the file with
+                    // "best" so Python's polling has a faster signal than
+                    // Appose's task.cancel_requested round-trip.
+                    if (!cancelSignalWritten[0] && cancelSignalPath != null) {
+                        String mode = "best";
+                        if (cancelSaveModeSupplier != null) {
+                            try {
+                                String supplied = cancelSaveModeSupplier.get();
+                                if (supplied != null && !supplied.isBlank()) {
+                                    mode = supplied;
+                                }
+                            } catch (Exception ex) {
+                                logger.debug("cancelSaveModeSupplier threw {}; "
+                                        + "defaulting mode=best", ex.toString());
+                            }
+                        }
+                        try {
+                            Files.writeString(cancelSignalPath, mode);
+                            logger.info(
+                                    "{} pretraining cancel signal written: "
+                                    + "mode={} path={}",
+                                    label.toUpperCase(), mode, cancelSignalPath);
+                            cancelSignalWritten[0] = true;
+                        } catch (IOException io) {
+                            logger.warn("Failed to write cancel signal {}: {}",
+                                    cancelSignalPath, io.toString());
+                        }
+                    }
                     task.cancel();
                     logger.info("{} pretraining cancelled by user", label.toUpperCase());
                 }
                 try {
-                    Thread.sleep(200);
+                    // Tighter polling than the previous 200 ms reduces the
+                    // worst-case lag between cancel click and the cancel
+                    // signal being visible to Python. Python's watcher
+                    // polls at 100 ms now too, so end-to-end click->break
+                    // is bounded by ~200 ms plus the current batch.
+                    Thread.sleep(100);
                 } catch (InterruptedException e) {
                     Thread.currentThread().interrupt();
                     task.cancel();
@@ -851,6 +936,19 @@ public class ApposeClassifierBackend implements ClassifierBackend {
      */
     private Path getPauseSignalPath(String jobId) {
         return Path.of(System.getProperty("java.io.tmpdir"), "dl-pause-" + jobId);
+    }
+
+    /**
+     * Returns the file path used as a cancel signal for the given pretraining
+     * job. Java writes the chosen save mode ("best", "last", "none") to this
+     * file when the user cancels; Python's watcher polls the path and reads
+     * the content to decide whether to save the best epoch, the last epoch,
+     * or skip saving entirely. Without this signal the Python side can only
+     * see Appose's task.cancel_requested boolean and cannot tell which mode
+     * the user picked in the JavaFX dialog.
+     */
+    private Path getCancelSignalPath(String jobId) {
+        return Path.of(System.getProperty("java.io.tmpdir"), "dl-cancel-" + jobId);
     }
 
     @Override

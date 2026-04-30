@@ -106,21 +106,45 @@ def progress_callback(epoch, total, loss, lr):
         logger.debug("Failed to send progress update: %s", e)
 
 
-# Cancellation bridge
+# Cancellation bridge -- see pretrain_ssl.py for shape rationale.
 cancel_flag = threading.Event()
+cancel_state = {"mode": "best"}
+import os as _cancel_os
+cancel_signal_path = config.get("cancel_signal_path", "") if isinstance(config, dict) else ""
 
 
 def watch_cancel():
+    """Poll Java's cancel signal at 100ms; reads save mode from the file."""
     while not cancel_flag.is_set():
-        if task.cancel_requested:
-            cancel_flag.set()
-            logger.info("MAE pretraining cancellation requested")
-            break
-        time.sleep(0.5)
+        try:
+            if cancel_signal_path and _cancel_os.path.exists(cancel_signal_path):
+                try:
+                    with open(cancel_signal_path, "r", encoding="utf-8") as fh:
+                        raw = fh.read().strip().lower()
+                    if raw in ("best", "last", "none"):
+                        cancel_state["mode"] = raw
+                except Exception:
+                    pass
+                cancel_flag.set()
+                logger.info(
+                    "MAE pretraining cancellation requested (mode=%s, "
+                    "via signal file)", cancel_state["mode"])
+                break
+            if task.cancel_requested:
+                cancel_flag.set()
+                logger.info(
+                    "MAE pretraining cancellation requested (mode=%s, "
+                    "via task.cancel_requested)", cancel_state["mode"])
+                break
+        except Exception as e:
+            logger.debug("watch_cancel poll error: %s", e)
+        time.sleep(0.1)
 
 
 cancel_watcher = threading.Thread(target=watch_cancel, daemon=True)
 cancel_watcher.start()
+
+config["_cancel_save_mode_state"] = cancel_state
 
 try:
     result = mae_service.pretrain(
@@ -142,3 +166,5 @@ task.outputs["encoder_path"] = result.get("encoder_path", "")
 task.outputs["epochs_completed"] = result.get("epochs_completed", 0)
 task.outputs["final_loss"] = result.get("final_loss", 0.0)
 task.outputs["best_loss"] = result.get("best_loss", 0.0)
+task.outputs["quality"] = result.get("quality", "ok")
+task.outputs["warnings"] = result.get("warnings", [])

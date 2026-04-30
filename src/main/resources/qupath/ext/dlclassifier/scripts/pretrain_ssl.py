@@ -118,20 +118,62 @@ def progress_callback(epoch, total, loss, lr,
 
 
 # Cancellation bridge
+# - cancel_flag: threading.Event the training loop polls
+# - cancel_save_mode: dict shared with the loop carrying the user's
+#   choice from the JavaFX cancel dialog ("best", "last", "none").
+#   Default is "best" so any cancel-without-mode-signal still saves a
+#   checkpoint instead of producing nothing.
+# - cancel_signal_path: file written by Java when the user cancels;
+#   its content is the mode string. Polling this in addition to
+#   task.cancel_requested gives the watcher a faster, mode-aware path
+#   than Appose's request boolean (which is also slower to propagate).
 cancel_flag = threading.Event()
+cancel_state = {"mode": "best"}
+import os as _cancel_os
+cancel_signal_path = config.get("cancel_signal_path", "") if isinstance(config, dict) else ""
 
 
 def watch_cancel():
+    """Poll Java's cancel signal at 100ms; tighter than the prior 500ms.
+
+    The watcher runs until cancel is detected; it does NOT clear cancel
+    on its own. When the cancel signal file is present, its content is
+    treated as the save mode.
+    """
     while not cancel_flag.is_set():
-        if task.cancel_requested:
-            cancel_flag.set()
-            logger.info("SSL pretraining cancellation requested")
-            break
-        time.sleep(0.5)
+        try:
+            if cancel_signal_path and _cancel_os.path.exists(cancel_signal_path):
+                try:
+                    with open(cancel_signal_path, "r", encoding="utf-8") as fh:
+                        raw = fh.read().strip().lower()
+                    if raw in ("best", "last", "none"):
+                        cancel_state["mode"] = raw
+                except Exception:
+                    pass
+                cancel_flag.set()
+                logger.info(
+                    "SSL pretraining cancellation requested (mode=%s, "
+                    "via signal file)", cancel_state["mode"])
+                break
+            if task.cancel_requested:
+                cancel_flag.set()
+                logger.info(
+                    "SSL pretraining cancellation requested (mode=%s, "
+                    "via task.cancel_requested)", cancel_state["mode"])
+                break
+        except Exception as e:
+            logger.debug("watch_cancel poll error: %s", e)
+        time.sleep(0.1)
 
 
 cancel_watcher = threading.Thread(target=watch_cancel, daemon=True)
 cancel_watcher.start()
+
+# Make the chosen save mode visible to the training service so it can
+# honor "last" (save current state) and "none" (skip save) from the
+# JavaFX cancel dialog. The service reads this on the cancellation
+# branch; for "best" (default) behavior is unchanged from before.
+config["_cancel_save_mode_state"] = cancel_state
 
 try:
     result = ssl_service.pretrain(
@@ -153,3 +195,5 @@ task.outputs["encoder_path"] = result.get("encoder_path", "")
 task.outputs["epochs_completed"] = result.get("epochs_completed", 0)
 task.outputs["final_loss"] = result.get("final_loss", 0.0)
 task.outputs["best_loss"] = result.get("best_loss", 0.0)
+task.outputs["quality"] = result.get("quality", "ok")
+task.outputs["warnings"] = result.get("warnings", [])

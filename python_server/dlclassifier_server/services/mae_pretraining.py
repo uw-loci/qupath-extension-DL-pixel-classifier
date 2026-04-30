@@ -627,6 +627,17 @@ class MAEPretrainingService:
                 epoch_loss += loss.item() * grad_accum_steps
                 n_batches += 1
 
+            # If cancel arrived mid-epoch, skip the rest of the epoch
+            # bookkeeping (scheduler, history append, best-state update,
+            # progress callback) and exit. Without this, a cancel mid-
+            # batch still produces a full "Epoch X/Y: loss=..." log line
+            # plus a phantom history entry built from a partial epoch.
+            if cancel_flag and cancel_flag.is_set():
+                logger.info(
+                    "Cancel detected mid-epoch %d; exiting without "
+                    "completing epoch bookkeeping", epoch)
+                break
+
             scheduler.step()
 
             avg_loss = epoch_loss / max(1, n_batches)
@@ -660,6 +671,134 @@ class MAEPretrainingService:
                 ckpt_path = output_dir / ("checkpoint_epoch_%d.pt" % epoch)
                 torch.save(model.state_dict(), str(ckpt_path))
                 logger.info("Saved checkpoint: %s", ckpt_path)
+
+        # --- Handle cancellation with save ---
+        # The JavaFX cancel dialog asks the user which weights to keep
+        # (best/last/none). The pretrain script forwards the answer via
+        # config["_cancel_save_mode_state"]; default "best" matches
+        # pre-existing behavior so a window-close cancel still saves.
+        was_cancelled = bool(cancel_flag and cancel_flag.is_set())
+        if was_cancelled:
+            cancel_mode = "best"
+            try:
+                cancel_mode = (
+                    config.get("_cancel_save_mode_state", {}).get(
+                        "mode", "best") or "best"
+                ).lower()
+            except Exception:
+                cancel_mode = "best"
+            if cancel_mode not in ("best", "last", "none"):
+                cancel_mode = "best"
+            logger.info(
+                "MAE cancel handler: save mode = %s (%d epochs completed, "
+                "best_state %s)",
+                cancel_mode, len(history),
+                "available" if best_state is not None else "missing")
+
+            # Discard path: write nothing, return cancelled status.
+            if cancel_mode == "none":
+                logger.info("Cancel mode 'none': skipping encoder save")
+                self.gpu_manager.clear_cache()
+                return {
+                    "status": "cancelled",
+                    "encoder_path": "",
+                    "epochs_completed": len(history),
+                    "final_loss": history[-1]["loss"] if history else 0.0,
+                    "best_loss": (best_loss if best_state is not None
+                                  else 0.0),
+                    "quality": "cancelled",
+                    "warnings": [
+                        f"MAE pretraining was cancelled at epoch "
+                        f"{len(history)} of {epochs}; no encoder saved "
+                        f"per the user's selection."
+                    ],
+                }
+
+            # 'last' or 'best' but nothing trained -> no save.
+            if not history or (cancel_mode == "best" and best_state is None):
+                logger.info(
+                    "Cancelled with no completed epochs / no best state")
+                self.gpu_manager.clear_cache()
+                return {
+                    "status": "cancelled",
+                    "encoder_path": "",
+                    "epochs_completed": 0,
+                    "final_loss": 0.0,
+                    "best_loss": 0.0,
+                    "quality": "cancelled",
+                    "warnings": [
+                        f"MAE pretraining was cancelled before any epoch "
+                        f"completed; no encoder saved."
+                    ],
+                }
+
+            # Save path: 'last' uses current weights, 'best' loads best_state.
+            if cancel_mode == "last":
+                save_state = model.state_dict()
+                save_label = "last epoch's weights"
+                save_epoch = len(history)
+                save_loss = history[-1]["loss"] if history else 0.0
+            else:  # 'best'
+                model.load_state_dict(best_state)
+                save_state = model.state_dict()
+                save_label = "best epoch's weights"
+                save_epoch = max(
+                    (h["epoch"] for h in history
+                     if h.get("loss", float('inf')) <= best_loss + 1e-12),
+                    default=len(history))
+                save_loss = best_loss
+
+            encoder_path = str(output_dir / "model.pt")
+            torch.save(save_state, encoder_path)
+            metadata = {
+                "model_type": "muvit_mae",
+                "architecture": {
+                    "type": "muvit",
+                    "model_config": model_config,
+                    "patch_size": patch_size,
+                    "level_scales": level_scales,
+                    "rope_mode": rope_mode,
+                    "num_layers": cfg["num_layers"],
+                    "num_layers_decoder": num_layers_decoder,
+                    "input_channels": num_channels,
+                    "tile_size": tile_size,
+                },
+                "pretraining": {
+                    "epochs": len(history),
+                    "mask_ratio": mask_ratio,
+                    "final_loss": history[-1]["loss"] if history else 0.0,
+                    "best_loss": best_loss,
+                    "batch_size": batch_size,
+                    "learning_rate": learning_rate,
+                    "num_images": len(dataset),
+                    "cancelled": True,
+                    "cancel_save_mode": cancel_mode,
+                },
+                "run_name": config.get("run_name", ""),
+                "normalization_stats": norm_stats,
+            }
+            with open(str(output_dir / "metadata.json"), 'w') as f:
+                json.dump(metadata, f, indent=2)
+            logger.info(
+                "Cancelled at epoch %d, saved %s (epoch %d, loss=%.6f) "
+                "to %s",
+                len(history), save_label, save_epoch, save_loss,
+                encoder_path)
+            self.gpu_manager.clear_cache()
+            return {
+                "status": "cancelled_saved",
+                "encoder_path": encoder_path,
+                "epochs_completed": len(history),
+                "final_loss": history[-1]["loss"] if history else 0.0,
+                "best_loss": best_loss,
+                "quality": "cancelled",
+                "warnings": [
+                    f"MAE pretraining was cancelled at epoch "
+                    f"{len(history)} of {epochs}. The encoder reflects "
+                    f"the {save_label} (epoch {save_epoch}), not a fully "
+                    f"trained model."
+                ],
+            }
 
         # --- Save ---
         _report("saving_model")

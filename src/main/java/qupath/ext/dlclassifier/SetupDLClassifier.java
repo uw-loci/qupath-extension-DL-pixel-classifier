@@ -1515,7 +1515,8 @@ public class SetupDLClassifier implements QuPathExtension, GitHubProject {
                         newJobId -> {
                             currentJobId[0] = newJobId;
                             progress.onTrainingJobStarted();
-                        }
+                        },
+                        () -> cancelSaveModeToString(progress.getCancelSaveMode())
                 );
 
                 handlePretrainResult("MAE", "pretrain_mae", apposeBackend, result, progress,
@@ -1804,7 +1805,8 @@ public class SetupDLClassifier implements QuPathExtension, GitHubProject {
                         newJobId -> {
                             currentJobId[0] = newJobId;
                             progress.onTrainingJobStarted();
-                        }
+                        },
+                        () -> cancelSaveModeToString(progress.getCancelSaveMode())
                 );
 
                 handlePretrainResult("SSL", "pretrain_ssl", apposeBackend, result, progress,
@@ -2382,6 +2384,23 @@ public class SetupDLClassifier implements QuPathExtension, GitHubProject {
         } else {
             progress.complete(false, label + " pretraining cancelled (no model saved).");
             logger.info("{} pretraining cancelled, no model saved", label);
+        }
+    }
+
+    /**
+     * Maps the JavaFX cancel-dialog enum to the lowercase string Python's
+     * SSL/MAE pretraining service expects in the cancel signal file.
+     * Null/unknown maps to "best" so a stale or unwired path still saves
+     * the best-epoch encoder rather than producing nothing.
+     */
+    private static String cancelSaveModeToString(
+            qupath.ext.dlclassifier.ui.ProgressMonitorController.CancelSaveMode mode) {
+        if (mode == null) return "best";
+        switch (mode) {
+            case BEST_EPOCH: return "best";
+            case LAST_EPOCH: return "last";
+            case DO_NOT_SAVE: return "none";
+            default: return "best";
         }
     }
 

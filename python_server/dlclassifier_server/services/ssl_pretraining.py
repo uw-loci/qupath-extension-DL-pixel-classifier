@@ -1300,6 +1300,19 @@ class SSLPretrainingService:
                     if len(last_view1_batches) > proj_probe_size:
                         last_view1_batches.pop(0)
 
+                # If cancel arrived mid-epoch, skip the rest of the
+                # epoch bookkeeping (scheduler, collapse probe, metrics,
+                # history append, progress log) and break the outer loop
+                # immediately. Without this, a cancel mid-batch still
+                # causes a full epoch's worth of "Epoch X/Y: loss=..."
+                # output to fire after the user requested cancel, which
+                # makes the UI feel unresponsive.
+                if cancel_flag and cancel_flag.is_set():
+                    logger.info(
+                        "Cancel detected mid-epoch %d; exiting without "
+                        "completing epoch bookkeeping", epoch)
+                    break
+
                 scheduler.step()
 
                 # --- Collapse guard ---
@@ -1461,49 +1474,67 @@ class SSLPretrainingService:
             self._cleanup_training_memory()
 
         # --- Handle cancellation with save ---
+        # Save-mode is set by the JavaFX cancel dialog and forwarded via
+        # the cancel signal file (best/last/none). The pretrain script
+        # stores the resolved mode in config["_cancel_save_mode_state"];
+        # default "best" matches pre-existing behavior when the user
+        # cancels without going through the dialog (e.g. window-close).
         was_cancelled = cancel_flag and cancel_flag.is_set()
         if was_cancelled:
-            if best_state is not None:
-                # Save best model even on cancellation
-                encoder_path = str(output_dir / "model.pt")
-                torch.save({"model_state_dict": best_state}, encoder_path)
-                self._save_metadata(
-                    output_dir, method, encoder_name, num_channels,
-                    tile_size, history, best_loss, best_epoch,
-                    batch_size, effective_batch, learning_rate,
-                    len(dataset), temperature, ema_decay,
-                    projection_dim, pretrained_model_path, norm_stats,
-                    run_name=config.get("run_name", ""))
-                logger.info(
-                    "Cancelled at epoch %d but saved best model "
-                    "(epoch %d, loss=%.6f) to %s",
-                    len(history), best_epoch, best_loss, encoder_path)
-                # Run the same quality heuristics on the cancelled run.
-                # A user who cancels because the loss looked wrong should
-                # see the diagnostic ("loss near random" / "BYOL collapse-
-                # shaped") just like a clean-completion run -- otherwise
-                # they save a bad encoder thinking they "captured" useful
-                # weights from an early stop.
-                cq, cwarn = self._assess_training_quality(
-                    method=method,
-                    history=history,
-                    dataset_size=len(dataset),
-                    batch_size=batch_size,
-                )
-                cwarn.insert(0,
-                    f"Run was cancelled by the user at epoch "
-                    f"{len(history)} of {epochs}. The encoder reflects "
-                    f"the best epoch's weights, not a fully trained model.")
+            cancel_mode = "best"
+            try:
+                cancel_mode = (
+                    config.get("_cancel_save_mode_state", {}).get(
+                        "mode", "best") or "best"
+                ).lower()
+            except Exception:
+                cancel_mode = "best"
+            if cancel_mode not in ("best", "last", "none"):
+                cancel_mode = "best"
+            logger.info(
+                "Cancel handler: save mode = %s (%d epochs completed, "
+                "best_state %s)",
+                cancel_mode, len(history),
+                "available" if best_state is not None else "missing")
+
+            # No-save path: user explicitly chose Discard.
+            if cancel_mode == "none":
+                logger.info("Cancel mode 'none': skipping encoder save")
                 return {
-                    "status": "cancelled_saved",
-                    "encoder_path": encoder_path,
+                    "status": "cancelled",
+                    "encoder_path": "",
                     "epochs_completed": len(history),
                     "final_loss": history[-1]["loss"] if history else 0.0,
-                    "best_loss": best_loss,
-                    "quality": cq if cq != "ok" else "cancelled",
-                    "warnings": cwarn,
+                    "best_loss": best_loss if best_state is not None else 0.0,
+                    "quality": "cancelled",
+                    "warnings": [
+                        f"Run was cancelled by the user at epoch "
+                        f"{len(history)} of {epochs}; no encoder saved "
+                        f"per the user's selection."
+                    ],
                 }
-            else:
+
+            # 'last' is only meaningful if we actually trained at least one
+            # batch. With zero history, fall back to the no-save path.
+            if cancel_mode == "last" and not history:
+                logger.info(
+                    "Cancel mode 'last' but no epochs completed; "
+                    "nothing to save")
+                return {
+                    "status": "cancelled",
+                    "encoder_path": "",
+                    "epochs_completed": 0,
+                    "final_loss": 0.0,
+                    "best_loss": 0.0,
+                    "quality": "cancelled",
+                    "warnings": [
+                        f"Run was cancelled before any epoch completed; "
+                        f"nothing to save."
+                    ],
+                }
+
+            # 'best' with no best_state is also a no-save path.
+            if cancel_mode == "best" and best_state is None:
                 logger.info("Cancelled with no completed epochs")
                 return {
                     "status": "cancelled",
@@ -1517,6 +1548,59 @@ class SSLPretrainingService:
                         f"completed; no encoder saved."
                     ],
                 }
+
+            # Save path: pick which weights to write.
+            if cancel_mode == "last":
+                save_state = self._extract_encoder_state(model, method)
+                save_epoch = len(history)
+                save_loss = history[-1]["loss"] if history else 0.0
+                save_label = "last epoch's weights"
+            else:  # "best"
+                save_state = best_state
+                save_epoch = best_epoch
+                save_loss = best_loss
+                save_label = "best epoch's weights"
+
+            encoder_path = str(output_dir / "model.pt")
+            torch.save({"model_state_dict": save_state}, encoder_path)
+            self._save_metadata(
+                output_dir, method, encoder_name, num_channels,
+                tile_size, history, best_loss, best_epoch,
+                batch_size, effective_batch, learning_rate,
+                len(dataset), temperature, ema_decay,
+                projection_dim, pretrained_model_path, norm_stats,
+                run_name=config.get("run_name", ""))
+            logger.info(
+                "Cancelled at epoch %d, saved %s (epoch %d, loss=%.6f) "
+                "to %s",
+                len(history), save_label, save_epoch, save_loss,
+                encoder_path)
+            # Run the same quality heuristics on the cancelled run.
+            # A user who cancels because the loss looked wrong should
+            # see the diagnostic ("loss near random" / "BYOL collapse-
+            # shaped") just like a clean-completion run -- otherwise
+            # they save a bad encoder thinking they "captured" useful
+            # weights from an early stop.
+            cq, cwarn = self._assess_training_quality(
+                method=method,
+                history=history,
+                dataset_size=len(dataset),
+                batch_size=batch_size,
+            )
+            cwarn.insert(0,
+                f"Run was cancelled by the user at epoch "
+                f"{len(history)} of {epochs}. The encoder reflects the "
+                f"{save_label} (epoch {save_epoch}), not a fully trained "
+                f"model.")
+            return {
+                "status": "cancelled_saved",
+                "encoder_path": encoder_path,
+                "epochs_completed": len(history),
+                "final_loss": history[-1]["loss"] if history else 0.0,
+                "best_loss": best_loss,
+                "quality": cq if cq != "ok" else "cancelled",
+                "warnings": cwarn,
+            }
 
         # --- Run trajectory health check BEFORE saving ---
         # Surface suspicious loss curves (collapse-shaped trajectories,
