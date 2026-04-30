@@ -16,7 +16,7 @@ plugins {
 qupathExtension {
     name = "qupath-extension-dl-pixel-classifier"
     group = "io.github.uw-loci"
-    version = "0.7.7"
+    version = "0.7.8-dev"
     description = "Deep learning pixel classifier for QuPath supporting multi-channel images."
     automaticModule = "io.github.uw-loci.extension.dlclassifier"
 }
