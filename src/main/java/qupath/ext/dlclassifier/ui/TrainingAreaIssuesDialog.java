@@ -2,6 +2,7 @@ package qupath.ext.dlclassifier.ui;
 
 import javafx.application.Platform;
 import javafx.beans.property.*;
+import javafx.beans.value.ChangeListener;
 import javafx.collections.FXCollections;
 import javafx.collections.ObservableList;
 import javafx.collections.transformation.FilteredList;
@@ -29,6 +30,7 @@ import qupath.ext.dlclassifier.service.TrainingIssuesOverlayController;
 import qupath.ext.dlclassifier.service.TrainingIssuesOverlayController.OverlayMode;
 import qupath.ext.dlclassifier.service.TrainingIssuesSessionStore;
 import qupath.lib.gui.QuPathGUI;
+import qupath.lib.images.ImageData;
 import qupath.lib.gui.viewer.overlays.BufferedImageOverlay;
 import qupath.lib.regions.ImagePlane;
 import qupath.lib.regions.ImageRegion;
@@ -90,6 +92,13 @@ public class TrainingAreaIssuesDialog {
     private final ComboBox<String> overlaySelector;
     private static final String OVERLAY_DISAGREEMENT = "Disagreement";
     private static final String OVERLAY_LOSS_HEATMAP = "Loss Heatmap";
+
+    // Watches QuPath's active image so we can clear the overlay/selection
+    // when the user (or any non-dialog action) navigates away from the image
+    // the currently-selected tile belongs to. Without this, the overlay
+    // stays anchored to the old tile's coordinates and renders on top of
+    // the new image. Registered on dialog show, removed on dialog hide.
+    private ChangeListener<ImageData<BufferedImage>> imageSwitchListener;
 
     // Annotation adjustment
     private AnnotationAdjuster annotationAdjuster;
@@ -449,14 +458,55 @@ public class TrainingAreaIssuesDialog {
 
         // Release the custom pixel-layer overlay slot and restore the
         // production DL overlay (if it had been running) when the dialog closes.
-        stage.setOnHidden(e -> overlayController.dispose());
+        stage.setOnHidden(e -> {
+            overlayController.dispose();
+            uninstallImageSwitchListener();
+        });
     }
 
     /**
      * Shows the dialog.
      */
     public void show() {
-        Platform.runLater(() -> stage.show());
+        Platform.runLater(() -> {
+            installImageSwitchListener();
+            stage.show();
+        });
+    }
+
+    /**
+     * Listens for changes to QuPath's active image. When the active image
+     * differs from the source image of the currently selected tile, deselect
+     * so the table-selection listener clears the overlay and preview state.
+     * <p>
+     * Dialog-driven switches via {@link #navigateToTile(TileRow)} land on the
+     * row's source image, so the name comparison naturally suppresses the
+     * deselect for those. Anything else -- the user picks a different entry
+     * in the project pane, scripts open another image, etc. -- triggers the
+     * deselect.
+     */
+    private void installImageSwitchListener() {
+        QuPathGUI qupath = QuPathGUI.getInstance();
+        if (qupath == null || imageSwitchListener != null) return;
+        imageSwitchListener = (obs, oldData, newData) -> {
+            if (newData == null) return;
+            TileRow selected = table.getSelectionModel().getSelectedItem();
+            if (selected == null) return;
+            String newName = newData.getServer() != null
+                    ? newData.getServer().getMetadata().getName() : null;
+            if (newName == null) return;
+            if (!newName.equals(selected.getSourceImage())) {
+                Platform.runLater(() -> table.getSelectionModel().clearSelection());
+            }
+        };
+        qupath.imageDataProperty().addListener(imageSwitchListener);
+    }
+
+    private void uninstallImageSwitchListener() {
+        QuPathGUI qupath = QuPathGUI.getInstance();
+        if (qupath == null || imageSwitchListener == null) return;
+        qupath.imageDataProperty().removeListener(imageSwitchListener);
+        imageSwitchListener = null;
     }
 
     /**
