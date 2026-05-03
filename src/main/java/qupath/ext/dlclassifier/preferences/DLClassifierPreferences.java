@@ -162,6 +162,15 @@ public final class DLClassifierPreferences {
     private static final BooleanProperty advancedMode = PathPrefs.createPersistentPreference(
             "dlclassifier.advancedMode", false);
 
+    // Developer-mode toggle that exposes pretraining options not recommended
+    // for end users (currently SimCLR/BYOL self-supervised pretraining).
+    // SSL pretraining is collapse-prone and was the wrong tool for the
+    // primary fly-wing use case; hidden by default while the path is kept
+    // intact for developers / research use.
+    private static final BooleanProperty showDeveloperPretrainingOptions =
+            PathPrefs.createPersistentPreference(
+                    "dlclassifier.showDeveloperPretrainingOptions", false);
+
     private static final IntegerProperty defaultGradientAccumulation = PathPrefs.createPersistentPreference(
             "dlclassifier.defaultGradientAccumulation", 1);
 
@@ -448,6 +457,17 @@ public final class DLClassifierPreferences {
                 .name("Menu Indicator Dot Color")
                 .category(CATEGORY)
                 .description("Color of the indicator dot shown in the Extensions menu. " +
+                        "Takes effect after restarting QuPath.")
+                .build());
+
+        items.add(new PropertyItemBuilder<>(
+                showDeveloperPretrainingOptions, Boolean.class)
+                .name("Show Developer Pretraining Options")
+                .category(CATEGORY)
+                .description("Show experimental self-supervised pretraining " +
+                        "(SimCLR/BYOL) in the menu. Hidden by default because " +
+                        "SSL pretraining is unstable on small datasets and " +
+                        "rarely the right tool for end-user workflows. " +
                         "Takes effect after restarting QuPath.")
                 .build());
     }
@@ -921,6 +941,18 @@ public final class DLClassifierPreferences {
 
     public static BooleanProperty advancedModeProperty() {
         return advancedMode;
+    }
+
+    public static boolean isShowDeveloperPretrainingOptions() {
+        return showDeveloperPretrainingOptions.get();
+    }
+
+    public static void setShowDeveloperPretrainingOptions(boolean enabled) {
+        showDeveloperPretrainingOptions.set(enabled);
+    }
+
+    public static BooleanProperty showDeveloperPretrainingOptionsProperty() {
+        return showDeveloperPretrainingOptions;
     }
 
     public static int getDefaultGradientAccumulation() {

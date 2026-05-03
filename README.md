@@ -40,8 +40,9 @@ Each bullet leads with what you can *do*; the algorithm or architecture name is 
 - **Reuse a previous model's settings** for fast retraining iterations, with class auto-matching
 
 ### Pretrain and adapt to your data
-- **Pretrain on your own unlabeled tiles** before training a classifier -- self-supervised learning on CNN backbones (SimCLR / BYOL) or on MuViT (MAE), using tiles drawn from annotation classes you choose
-- **Adapt an existing trained model to a new microscope, stain, or compression** -- domain-adaptive pretraining seeds SSL from a prior encoder. See [Domain Adaptation Guide](docs/DOMAIN_ADAPTATION_GUIDE.md)
+- **MAE pretraining for MuViT** -- masked-autoencoder self-supervised pretraining on your own unlabeled tiles, using tiles drawn from annotation classes you choose
+- **Adapt an existing trained model to a new microscope, stain, or compression** -- domain-adaptive pretraining seeds MAE from a prior encoder. See [Domain Adaptation Guide](docs/DOMAIN_ADAPTATION_GUIDE.md)
+- **Developer-only:** SimCLR / BYOL self-supervised pretraining for CNN backbones is available behind the "Show Developer Pretraining Options" preference. SSL pretraining is collapse-prone on small datasets and is rarely the right tool for end-user workflows; MAE is the recommended path for most users
 
 ### Run inference
 - **Pick your output** -- per-pixel measurements, detection objects, or classification overlays

@@ -581,11 +581,26 @@ public class SetupDLClassifier implements QuPathExtension, GitHubProject {
         loadIssuesOption.setOnAction(e -> openSavedTrainingIssuesDialog());
         loadIssuesOption.disableProperty().bind(environmentReady.not());
 
-        utilitiesMenu.getItems().addAll(pythonConsoleOption, whereFilesOption,
-                systemInfoOption, new SeparatorMenuItem(),
-                freeGpuOption, maePretrainOption, sslPretrainOption, cleanUpOption,
-                loadIssuesOption,
-                new SeparatorMenuItem(), rebuildItem);
+        // SSL pretraining is collapse-prone and rarely the right tool for
+        // end-user workflows -- hidden by default. Toggle the
+        // 'Show Developer Pretraining Options' preference to expose it.
+        // Captured at install time; takes effect after restarting QuPath.
+        boolean showSslOption =
+                DLClassifierPreferences.isShowDeveloperPretrainingOptions();
+
+        if (showSslOption) {
+            utilitiesMenu.getItems().addAll(pythonConsoleOption, whereFilesOption,
+                    systemInfoOption, new SeparatorMenuItem(),
+                    freeGpuOption, maePretrainOption, sslPretrainOption, cleanUpOption,
+                    loadIssuesOption,
+                    new SeparatorMenuItem(), rebuildItem);
+        } else {
+            utilitiesMenu.getItems().addAll(pythonConsoleOption, whereFilesOption,
+                    systemInfoOption, new SeparatorMenuItem(),
+                    freeGpuOption, maePretrainOption, cleanUpOption,
+                    loadIssuesOption,
+                    new SeparatorMenuItem(), rebuildItem);
+        }
 
         // === BUILD FINAL MENU ===
         extensionMenu.getItems().addAll(
