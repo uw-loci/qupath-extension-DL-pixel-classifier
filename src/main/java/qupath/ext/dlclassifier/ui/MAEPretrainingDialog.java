@@ -10,6 +10,7 @@ import javafx.scene.layout.HBox;
 import javafx.scene.layout.Priority;
 import javafx.scene.layout.VBox;
 import javafx.stage.DirectoryChooser;
+import javafx.stage.FileChooser;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import qupath.ext.dlclassifier.classifier.handlers.MuViTHandler;
@@ -123,6 +124,9 @@ public class MAEPretrainingDialog {
     // Output controls
     private final TextField runNameField;
     private final TextField outputDirField;
+
+    // Continue-from-checkpoint (domain-adaptive MAE)
+    private final TextField pretrainedMaePathField = new TextField();
 
     private MAEPretrainingDialog() {
         // Model controls
@@ -310,6 +314,7 @@ public class MAEPretrainingDialog {
         content.getChildren().add(tipsLink);
 
         content.getChildren().add(buildModelSection());
+        content.getChildren().add(buildContinueSection(dialog));
         content.getChildren().add(buildTrainingSection());
         content.getChildren().add(buildDataSection(dialog));
         content.getChildren().add(buildOutputSection(dialog));
@@ -504,6 +509,62 @@ public class MAEPretrainingDialog {
         return pane;
     }
 
+    private TitledPane buildContinueSection(Dialog<?> dialog) {
+        GridPane grid = new GridPane();
+        grid.setHgap(10); grid.setVgap(8); grid.setPadding(new Insets(10));
+
+        pretrainedMaePathField.setPromptText(
+                "(optional) path to existing MAE encoder .pt file...");
+        pretrainedMaePathField.setPrefWidth(300);
+        TooltipHelper.install(pretrainedMaePathField,
+                "Continue MAE pretraining from an existing checkpoint.\n" +
+                "Leave blank to train from scratch.\n" +
+                "Use this for domain-adaptive MAE: continue an existing\n" +
+                "encoder on tiles from a new acquisition for a few epochs\n" +
+                "to specialize it before supervised training.\n" +
+                "Mismatched keys are skipped (strict=False); the matching-key\n" +
+                "count is logged at the start of training.");
+
+        Button browseBtn = new Button("Browse...");
+        browseBtn.setOnAction(e -> {
+            FileChooser fc = new FileChooser();
+            fc.setTitle("Select existing MAE encoder checkpoint");
+            fc.getExtensionFilters().add(
+                    new FileChooser.ExtensionFilter(
+                            "PyTorch checkpoint (*.pt)", "*.pt"));
+            if (!pretrainedMaePathField.getText().isBlank()) {
+                File current = new File(pretrainedMaePathField.getText());
+                if (current.getParentFile() != null
+                        && current.getParentFile().isDirectory()) {
+                    fc.setInitialDirectory(current.getParentFile());
+                }
+            }
+            File file = fc.showOpenDialog(
+                    dialog.getDialogPane().getScene().getWindow());
+            if (file != null) {
+                pretrainedMaePathField.setText(file.getAbsolutePath());
+            }
+        });
+
+        Button clearBtn = new Button("Clear");
+        clearBtn.setOnAction(e -> pretrainedMaePathField.clear());
+
+        Label label = new Label("Continue from MAE encoder:");
+        TooltipHelper.install(label,
+                "Optional. Leave blank to train from scratch.");
+        grid.add(label, 0, 0);
+        grid.add(pretrainedMaePathField, 1, 0);
+        grid.add(browseBtn, 2, 0);
+        grid.add(clearBtn, 3, 0);
+        GridPane.setHgrow(pretrainedMaePathField, Priority.ALWAYS);
+
+        TitledPane pane = new TitledPane(
+                "Continue from existing encoder (optional)", grid);
+        pane.setExpanded(false);
+        pane.setCollapsible(true);
+        return pane;
+    }
+
     private TitledPane buildOutputSection(Dialog<?> dialog) {
         GridPane grid = new GridPane();
         grid.setHgap(10); grid.setVgap(8); grid.setPadding(new Insets(10));
@@ -562,6 +623,12 @@ public class MAEPretrainingDialog {
         String runName = runNameField.getText() == null ? "" : runNameField.getText().trim();
         if (runName.isEmpty()) runName = buildDefaultRunName();
         config.put("run_name", runName);
+
+        // Domain-adaptive MAE: continue from an existing encoder if specified.
+        String pretrainedMae = pretrainedMaePathField.getText();
+        if (pretrainedMae != null && !pretrainedMae.trim().isEmpty()) {
+            config.put("pretrained_mae_path", pretrainedMae.trim());
+        }
 
         Path outputDir;
         if (outputDirField.getText().isBlank()) {

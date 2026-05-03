@@ -41,7 +41,7 @@ Each bullet leads with what you can *do*; the algorithm or architecture name is 
 
 ### Pretrain and adapt to your data
 - **MAE pretraining for MuViT** -- masked-autoencoder self-supervised pretraining on your own unlabeled tiles, using tiles drawn from annotation classes you choose
-- **Adapt an existing trained model to a new microscope, stain, or compression** -- domain-adaptive pretraining seeds MAE from a prior encoder. See [Domain Adaptation Guide](docs/DOMAIN_ADAPTATION_GUIDE.md)
+- **Adapt an existing trained model to a new microscope, stain, or compression** -- domain-adaptive pretraining seeds MAE from a prior encoder, or AdaBN ("Calibrate model to current image") recomputes BatchNorm stats on a new acquisition in seconds with zero retraining. See [Domain Adaptation Guide](docs/DOMAIN_ADAPTATION_GUIDE.md)
 - **Developer-only:** SimCLR / BYOL self-supervised pretraining for CNN backbones is available behind the "Show Developer Pretraining Options" preference. SSL pretraining is collapse-prone on small datasets and is rarely the right tool for end-user workflows; MAE is the recommended path for most users
 
 ### Run inference

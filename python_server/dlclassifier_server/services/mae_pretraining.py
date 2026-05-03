@@ -464,6 +464,63 @@ class MAEPretrainingService:
         logger.info("MAE model: %.1fM parameters (%.1fM trainable), device=%s",
                      param_count / 1e6, trainable_count / 1e6, self.device)
 
+        # --- Optional: continue from an existing MAE encoder ---
+        # Domain-adaptive MAE: the user can point at a previous MAE
+        # checkpoint and continue pretraining on a new tile mix to
+        # specialize the encoder before supervised training. The state
+        # dict is loaded with strict=False so architectures that differ
+        # only in non-pretrained heads still load cleanly; mismatched
+        # keys are reported.
+        pretrained_mae_path = config.get("pretrained_mae_path", "")
+        if pretrained_mae_path:
+            ckpt_path = Path(pretrained_mae_path)
+            if not ckpt_path.exists():
+                logger.warning(
+                    "pretrained_mae_path=%s does not exist -- starting "
+                    "from random init.", ckpt_path)
+            else:
+                try:
+                    src_state = torch.load(
+                        str(ckpt_path), map_location=self.device)
+                    # Accept either bare state_dict or a wrapper dict
+                    # (we save bare in pretrain finalize, but a paused
+                    # checkpoint wraps it under model_state_dict).
+                    if isinstance(src_state, dict) \
+                            and "model_state_dict" in src_state:
+                        src_state = src_state["model_state_dict"]
+                    if not isinstance(src_state, dict):
+                        raise ValueError(
+                            "checkpoint is not a state_dict or wrapper")
+                    target_state = model.state_dict()
+                    matched = {}
+                    shape_mismatch = []
+                    for k, v in src_state.items():
+                        if k in target_state and \
+                                target_state[k].shape == v.shape:
+                            matched[k] = v
+                        elif k in target_state:
+                            shape_mismatch.append(k)
+                    missing_keys, unexpected_keys = model.load_state_dict(
+                        matched, strict=False)
+                    logger.info(
+                        "Continued from MAE checkpoint %s: %d/%d tensors "
+                        "matched, %d shape mismatch, %d unexpected keys",
+                        ckpt_path, len(matched), len(target_state),
+                        len(shape_mismatch), len(unexpected_keys))
+                    if shape_mismatch:
+                        logger.info(
+                            "Shape mismatches (skipped): %s",
+                            shape_mismatch[:5])
+                    if missing_keys:
+                        logger.info(
+                            "Missing keys (kept as random init): %d "
+                            "[examples: %s]",
+                            len(missing_keys), missing_keys[:3])
+                except Exception as e:
+                    logger.error(
+                        "Failed to load pretrained_mae_path=%s: %s -- "
+                        "starting from random init.", ckpt_path, e)
+
         # --- Optimizer: AdamW with (0.9, 0.95) as per MAE convention ---
         optimizer = torch.optim.AdamW(
             model.parameters(),

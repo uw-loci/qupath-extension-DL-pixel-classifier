@@ -150,3 +150,17 @@ The domain adaptation scenario above (different microscope, same biology) is the
 For more details on when to use each method (SimCLR vs BYOL), see [Best Practices: SSL Pretraining](BEST_PRACTICES.md#ssl-pretraining-simclr--byol).
 
 For parameter descriptions, see [Parameters: SSL Pretraining](PARAMETERS.md#ssl-pretraining-parameters).
+
+---
+
+## Continue from existing MAE encoder (domain-adaptive MAE)
+
+`MAE Pretrain Encoder...` has an optional "Continue from existing encoder" path picker. If you point it at a `.pt` from a previous MAE run, the new run starts from those weights instead of random init. Mismatched keys are skipped (`strict=False`) and the matching-key count is logged at start of training.
+
+**When to use:** Take an existing MAE encoder, continue MAE pretraining on a mix of your original tiles and target-domain tiles for 5-20 epochs, then hand the resulting encoder to UNet supervised training. This is the cheapest way to tune an encoder for a different acquisition.
+
+## Calibrate model to current image (AdaBN)
+
+Once a model is trained, the `Calibrate model to current image...` menu item recomputes the encoder's BatchNorm running statistics on a sample of tiles drawn from the currently-open image. No retraining, no labels. The output is a new model with `_adabn` suffix; the original is preserved.
+
+**When to use:** When a trained model produces visibly worse predictions on a new acquisition (different white balance, exposure, sensor gain) but the underlying tissue/feature content is the same. AdaBN typically closes most of the cross-batch performance gap and finishes in seconds.
