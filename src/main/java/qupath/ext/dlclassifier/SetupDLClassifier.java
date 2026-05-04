@@ -1990,8 +1990,8 @@ public class SetupDLClassifier implements QuPathExtension, GitHubProject {
      * the {@code _adabn} suffix; the source model is untouched.
      */
     private void startAdaBNCalibration() {
-        QuPathGUI qupath = QuPathGUI.getInstance();
-        ImageData<BufferedImage> imageData = qupath.getImageData();
+        QuPathGUI qupathGui = QuPathGUI.getInstance();
+        ImageData<BufferedImage> imageData = qupathGui.getImageData();
         if (imageData == null) {
             Dialogs.showWarningNotification(EXTENSION_NAME,
                     "AdaBN needs an open image to sample tiles from.");
