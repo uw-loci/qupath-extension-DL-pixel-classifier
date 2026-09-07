@@ -69,7 +69,9 @@ public class AnnotationAdjuster {
     /**
      * @param downsample training downsample factor
      * @param patchSize  training patch size in pixels at the downsampled level
-     * @param classNames ordered list of class names (index 0, 1, 2, ...)
+     * @param classNames ordered list of class names (index 0, 1, 2, ...), named
+     *                   by {@link qupath.lib.objects.classes.PathClass#getName()}
+     *                   as everywhere else in the training pipeline
      */
     public AnnotationAdjuster(double downsample, int patchSize, List<String> classNames) {
         this.downsample = downsample;
@@ -325,7 +327,7 @@ public class AnnotationAdjuster {
         List<PathObject> mergedAbsorbed = new ArrayList<>();
 
         for (PathObject ann : overlapping) {
-            String annClassName = ann.getPathClass().toString();
+            String annClassName = ann.getPathClass().getName();
             Integer mergeIdx = classNameToIdx.get(annClassName);
 
             if (mergeIdx != null) {
@@ -514,7 +516,7 @@ public class AnnotationAdjuster {
             g2d.setRenderingHint(RenderingHints.KEY_STROKE_CONTROL, RenderingHints.VALUE_STROKE_PURE);
             AffineTransform originalTransform = g2d.getTransform();
             for (PathObject ann : overlapping) {
-                String cls = ann.getPathClass().toString();
+                String cls = ann.getPathClass().getName();
                 int idx = classNames.indexOf(cls);
                 if (idx < 0 || idx >= UNLABELED_INDEX) continue;
 
