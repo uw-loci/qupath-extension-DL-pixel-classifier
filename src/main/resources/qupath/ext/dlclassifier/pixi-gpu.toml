@@ -43,6 +43,16 @@ pytorch-gpu = ">=2.1.0"
 [pypi-dependencies]
 segmentation-models-pytorch = ">=0.3.3"
 albumentations = ">=1.3.0"
+# stringzilla is a transitive dependency (albumentations -> albucore ->
+# stringzilla >=3.10.4), pinned here only to exclude 5.1.2. That release
+# publishes Windows wheels for cp310, cp312, cp313 and cp314 but for cp311
+# only win_arm64 -- and this environment pins Python 3.11. On win-64 the
+# resolver therefore falls back to the sdist, and building it needs MSVC
+# 14+, which no user of a QuPath extension is expected to have:
+#   error: Microsoft Visual C++ 14.0 or greater is required
+# That aborts `pixi install`, i.e. the environment cannot be created at all.
+# Verified against PyPI: 4.6.1 through 5.1.1 all ship cp311 win_amd64.
+stringzilla = ">=3.10.4,!=5.1.2"
 # Optional: kornia enables GPU-side augmentation for faster training.
 # The training path auto-falls back to albumentations (CPU) when kornia is
 # unavailable, so this is safe to leave in but non-fatal if install fails.
