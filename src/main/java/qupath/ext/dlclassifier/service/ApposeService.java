@@ -1162,7 +1162,7 @@ public class ApposeService {
      * </ol>
      */
     /** Extension version. Used for pip URL construction and script generation. */
-    public static final String DL_SERVER_VERSION = "0.8.6-dev";
+    public static final String DL_SERVER_VERSION = "0.8.6";
 
     private static final boolean IS_DEV_BUILD = DL_SERVER_VERSION.contains("-dev");
     private static final String DL_SERVER_PIP_URL;
@@ -1286,7 +1286,11 @@ public class ApposeService {
         }
 
         if (exitCode != 0) {
-            throw new IOException("pip install dlclassifier-server failed (exit code " + exitCode + "):\n" + output);
+            // Typed so the setup wizard can tell this apart from an environment
+            // build failure: the package is the same for both compute variants,
+            // so falling back to the other variant cannot fix it.
+            throw new ServerPackageInstallException(
+                    "pip install dlclassifier-server failed (exit code " + exitCode + "):\n" + output);
         }
         logger.info("dlclassifier-server installed successfully");
     }

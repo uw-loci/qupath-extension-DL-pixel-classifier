@@ -26,6 +26,7 @@ import qupath.ext.dlclassifier.model.ComputeVariant;
 import qupath.ext.dlclassifier.preferences.DLClassifierPreferences;
 import qupath.ext.dlclassifier.service.ApposeService;
 import qupath.ext.dlclassifier.service.GpuProbe;
+import qupath.ext.dlclassifier.service.ServerPackageInstallException;
 
 /**
  * Setup wizard dialog for first-time DL environment installation.
@@ -466,7 +467,11 @@ public class SetupEnvironmentDialog {
                     try {
                         install();
                     } catch (Exception first) {
-                        if (requested != ComputeVariant.GPU) {
+                        if (requested != ComputeVariant.GPU || first instanceof ServerPackageInstallException) {
+                            // A server-package failure is variant-independent --
+                            // same download either way -- so retrying as CPU only
+                            // wastes a rebuild and demotes the user's variant for
+                            // an unrelated reason.
                             logger.error("Environment setup failed", first);
                             Platform.runLater(() -> showErrorView(first.getMessage()));
                             return;
