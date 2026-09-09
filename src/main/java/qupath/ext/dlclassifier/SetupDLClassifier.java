@@ -30,12 +30,14 @@ import org.slf4j.LoggerFactory;
 import qupath.ext.dlclassifier.controller.DLClassifierController;
 import qupath.ext.dlclassifier.model.ChannelConfiguration;
 import qupath.ext.dlclassifier.model.ClassifierMetadata;
+import qupath.ext.dlclassifier.model.ComputeVariant;
 import qupath.ext.dlclassifier.preferences.DLClassifierPreferences;
 import qupath.ext.dlclassifier.service.ApposeClassifierBackend;
 import qupath.ext.dlclassifier.service.ApposeService;
 import qupath.ext.dlclassifier.service.BackendFactory;
 import qupath.ext.dlclassifier.service.ClassifierBackend;
 import qupath.ext.dlclassifier.service.ClassifierClient;
+import qupath.ext.dlclassifier.service.GpuProbe;
 import qupath.ext.dlclassifier.service.ModelManager;
 import qupath.ext.dlclassifier.service.OverlayService;
 import qupath.ext.dlclassifier.service.SessionLogBuffer;
@@ -183,6 +185,13 @@ public class SetupDLClassifier implements QuPathExtension, GitHubProject {
         // Register persistent preferences
         DLClassifierPreferences.installPreferences(qupath);
         warnIfExtensionRecentlyUpdated();
+
+        // Warm the GPU probe off the FX thread. It shells out to nvidia-smi,
+        // which can hang on a broken driver, and both the setup wizard and the
+        // compute-variant menu want the answer without freezing the UI.
+        Thread gpuWarmup = new Thread(GpuProbe::detect, "DLClassifier-GpuProbe-Warmup");
+        gpuWarmup.setDaemon(true);
+        gpuWarmup.start();
 
         // Register interaction-warning watchers so pre-training,
         // pre-inference and preference-toggle checks know what to
@@ -615,6 +624,17 @@ public class SetupDLClassifier implements QuPathExtension, GitHubProject {
                         + "Use this if the environment becomes corrupted or you want a fresh install.");
         rebuildItem.setOnAction(e -> rebuildEnvironment(qupath));
 
+        // Compute environment (CPU/GPU) - always visible. This is the discoverable
+        // route to the GPU switch; the preference alone was not findable, and the
+        // setup wizard is only seen once.
+        MenuItem computeVariantItem = new MenuItem(res.getString("menu.computeVariant"));
+        TooltipHelper.installOnMenuItem(
+                computeVariantItem,
+                "Choose whether the Python environment is the CPU build or the\n"
+                        + "CUDA (NVIDIA GPU) build, and rebuild it. GPU is many times\n"
+                        + "faster; the CPU build installs on any machine.");
+        computeVariantItem.setOnAction(e -> showComputeVariantDialog(qupath));
+
         // System Info - visible when environment ready
         MenuItem systemInfoOption = new MenuItem("System Info...");
         TooltipHelper.installOnMenuItem(
@@ -682,6 +702,7 @@ public class SetupDLClassifier implements QuPathExtension, GitHubProject {
                             cleanUpOption,
                             loadIssuesOption,
                             new SeparatorMenuItem(),
+                            computeVariantItem,
                             rebuildItem);
         } else {
             utilitiesMenu
@@ -697,6 +718,7 @@ public class SetupDLClassifier implements QuPathExtension, GitHubProject {
                             cleanUpOption,
                             loadIssuesOption,
                             new SeparatorMenuItem(),
+                            computeVariantItem,
                             rebuildItem);
         }
 
@@ -1537,12 +1559,110 @@ public class SetupDLClassifier implements QuPathExtension, GitHubProject {
      * Shows the setup environment dialog for first-time installation.
      */
     private void showSetupDialog(QuPathGUI qupath) {
-        SetupEnvironmentDialog dialog = new SetupEnvironmentDialog(qupath.getStage(), () -> {
-            environmentReady.set(true);
-            serverAvailable = true;
-            logger.info("Environment setup completed via dialog");
-        });
+        showSetupDialog(qupath, null);
+    }
+
+    /**
+     * Shows the setup dialog, optionally preselecting a compute variant.
+     *
+     * @param qupath         the GUI instance
+     * @param initialVariant variant to preselect, or null to pick from detected hardware
+     */
+    private void showSetupDialog(QuPathGUI qupath, ComputeVariant initialVariant) {
+        SetupEnvironmentDialog dialog = new SetupEnvironmentDialog(
+                qupath.getStage(),
+                () -> {
+                    environmentReady.set(true);
+                    serverAvailable = true;
+                    logger.info("Environment setup completed via dialog");
+                },
+                target -> switchComputeVariant(qupath, target),
+                initialVariant);
         dialog.show();
+    }
+
+    /**
+     * Switches the compute environment between CPU and GPU, rebuilding it.
+     * <p>
+     * Order matters: the old environment is deleted <em>before</em> the
+     * preference moves, because {@code deleteEnvironment()} resolves the path
+     * from the current variant. Switching first would orphan several gigabytes
+     * under the old environment name and delete nothing.
+     *
+     * @param qupath the GUI instance
+     * @param target the variant to install
+     */
+    private void switchComputeVariant(QuPathGUI qupath, ComputeVariant target) {
+        ComputeVariant current = ComputeVariant.fromId(DLClassifierPreferences.getEnvVariant());
+        if (current == target) {
+            Dialogs.showInfoNotification(
+                    EXTENSION_NAME, "Already using the " + target.displayLabel() + " environment.");
+            return;
+        }
+
+        StringBuilder message = new StringBuilder()
+                .append("Current: ")
+                .append(current.displayLabel())
+                .append("\n")
+                .append(gpuSummaryIfKnown())
+                .append("\n\nSwitch the Python environment to:\n  ")
+                .append(target.displayLabel())
+                .append("\n\nThis deletes the current environment and re-downloads ")
+                .append("all dependencies (~2-4 GB).\n");
+        GpuProbe.Result probe = GpuProbe.cachedResult();
+        if (target == ComputeVariant.GPU && probe != null && !probe.nvidiaPresent()) {
+            // Do not silently let someone spend a 2-4 GB download on an
+            // environment that cannot install. Setup falls back to CPU if it
+            // fails, so this is a warning rather than a block.
+            message.append("\n[!] No NVIDIA GPU was detected on this machine. The GPU ")
+                    .append("environment may fail to install; setup will fall back to CPU if it does.\n");
+        }
+        message.append("\nTrained classifiers and settings are NOT affected. Continue?");
+
+        if (!Dialogs.showConfirmDialog(res.getString("menu.computeVariant"), message.toString())) {
+            return;
+        }
+
+        try {
+            ApposeService.getInstance().shutdown();
+            ApposeService.getInstance().deleteEnvironment();
+        } catch (Exception e) {
+            logger.error("Failed to delete environment before variant switch", e);
+            Dialogs.showErrorNotification(EXTENSION_NAME, "Failed to delete environment: " + e.getMessage());
+            return;
+        }
+
+        DLClassifierPreferences.setEnvVariant(target.name());
+        environmentReady.set(false);
+        serverAvailable = false;
+        logger.info("Compute variant switched to {}; reinstalling", target.name());
+        showSetupDialog(qupath, target);
+    }
+
+    /**
+     * The probe summary, or a neutral line when the probe has not landed yet.
+     * Never blocks: this runs on the JavaFX thread.
+     *
+     * @return a one-line hardware summary
+     */
+    private static String gpuSummaryIfKnown() {
+        GpuProbe.Result probe = GpuProbe.cachedResult();
+        return probe != null ? probe.summary() : "NVIDIA GPU detection has not finished yet.";
+    }
+
+    /**
+     * Entry point for the "Compute Environment (CPU / GPU)" menu item.
+     * <p>
+     * There are exactly two variants, so this offers the one the user is not on
+     * and lets {@link #switchComputeVariant} do the confirming -- one dialog
+     * carrying the current state, the detected hardware, and the download size,
+     * rather than two stacked prompts.
+     *
+     * @param qupath the GUI instance
+     */
+    private void showComputeVariantDialog(QuPathGUI qupath) {
+        ComputeVariant current = ComputeVariant.fromId(DLClassifierPreferences.getEnvVariant());
+        switchComputeVariant(qupath, current == ComputeVariant.GPU ? ComputeVariant.CPU : ComputeVariant.GPU);
     }
 
     /**

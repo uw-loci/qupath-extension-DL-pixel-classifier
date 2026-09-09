@@ -93,9 +93,16 @@ See [docs/INSTALLATION.md](docs/INSTALLATION.md) for detailed instructions and G
 
 ![DL Pixel Classifier menu under Extensions, showing Train, Apply, Manage Classifiers, Select Overlay Model, Toggle Prediction Overlay, and the Utilities submenu](docs/images/menu-dl-pixel-classifier.png)
 
-1. **(Optional) Choose your environment variant** -- go to **Edit > Preferences > Extensions > DL Pixel Classifier > "Python environment: compute variant"**. Choose **CPU** (default, works anywhere) or **GPU** (CUDA, requires an NVIDIA GPU). Most users should leave this as CPU. See [GPU Support](#gpu-support) for details.
+1. **Set up the Python environment** -- go to **Extensions > DL Pixel Classifier > Setup DL Environment...** in the QuPath menu bar. This downloads and configures PyTorch and all dependencies automatically (~2-4 GB, first time only).
 
-2. **Set up the Python environment** -- go to **Extensions > DL Pixel Classifier > Setup DL Environment...** in the QuPath menu bar. This downloads and configures PyTorch and all dependencies automatically (~2-4 GB, first time only). Your choice in step 1 determines which environment is installed.
+   The wizard checks for an NVIDIA GPU and asks which environment to install:
+
+   - **GPU (CUDA)** -- strongly recommended, and preselected when a GPU is found. Training and inference are many times faster.
+   - **CPU** -- installs on any machine, but training is slow enough to be impractical on real data.
+
+   If the GPU environment cannot be installed (no NVIDIA GPU, or a driver too old for CUDA 12), setup **falls back to CPU automatically** rather than leaving you with nothing, and tells you it did. See [GPU Support](#gpu-support).
+
+2. **Changing CPU/GPU later** -- **Extensions > DL Pixel Classifier > Utilities > Compute Environment (CPU / GPU)...** switches variants and rebuilds. The setup wizard also offers a one-click switch on its completion screen whenever you end up on CPU. Switching re-downloads the environment (~2-4 GB); trained classifiers and settings are unaffected.
 
    > **After updating the extension:** If you install a new version of this extension, you **must** rebuild the Python environment to match. The extension enforces version matching and will block training/inference if the environment is out of date. An error notification will appear with instructions. Go to **Extensions > DL Pixel Classifier > Utilities > Rebuild DL Environment...** to update.
 
@@ -150,7 +157,7 @@ success dialog links the issue either way.
 
 ### CUDA / GPU Driver Requirements
 
-**This section applies only if you select the GPU environment variant in preferences.** The CPU environment requires no GPU or drivers.
+**This section applies only if you install the GPU environment variant.** The CPU environment requires no GPU or drivers, and is the automatic fallback when the GPU environment cannot be installed.
 
 If you choose the **GPU variant**, the extension bundles **PyTorch with CUDA 12** support. You do **not** need to install CUDA separately -- PyTorch includes its own CUDA runtime. However, you **do** need NVIDIA drivers new enough to support CUDA 12:
 

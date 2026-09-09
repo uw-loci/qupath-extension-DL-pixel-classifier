@@ -8,6 +8,9 @@ import javafx.scene.Scene;
 import javafx.scene.control.Button;
 import javafx.scene.control.Label;
 import javafx.scene.control.ProgressBar;
+import javafx.scene.control.RadioButton;
+import javafx.scene.control.Toggle;
+import javafx.scene.control.ToggleGroup;
 import javafx.scene.layout.HBox;
 import javafx.scene.layout.Priority;
 import javafx.scene.layout.Region;
@@ -19,7 +22,10 @@ import javafx.stage.Stage;
 import javafx.stage.Window;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import qupath.ext.dlclassifier.model.ComputeVariant;
+import qupath.ext.dlclassifier.preferences.DLClassifierPreferences;
 import qupath.ext.dlclassifier.service.ApposeService;
+import qupath.ext.dlclassifier.service.GpuProbe;
 
 /**
  * Setup wizard dialog for first-time DL environment installation.
@@ -37,8 +43,42 @@ public class SetupEnvironmentDialog {
     private static final Logger logger = LoggerFactory.getLogger(SetupEnvironmentDialog.class);
     private static final ResourceBundle res = ResourceBundle.getBundle("qupath.ext.dlclassifier.ui.strings");
 
+    /** Orange callout styling, shared by the GPU advisory and the fallback notice. */
+    private static final String CALLOUT_STYLE = "-fx-text-fill: #e65100; -fx-font-size: 11px; "
+            + "-fx-border-color: #ffcc80; -fx-border-width: 1; "
+            + "-fx-background-color: #fff3e0; -fx-padding: 8;";
+
     private final Stage stage;
     private final Runnable onComplete;
+
+    /**
+     * Invoked when the user asks to rebuild under a different compute variant.
+     * The variant preference is already written when this runs; the callback
+     * owns tearing down the old environment and reinstalling. Null disables
+     * the switch buttons.
+     */
+    private final java.util.function.Consumer<ComputeVariant> onSwitchVariant;
+
+    /**
+     * Hardware probe result. Null until the background probe finishes -- the
+     * probe shells out to nvidia-smi, which can hang on a broken driver, so it
+     * must never run on the JavaFX thread.
+     */
+    private GpuProbe.Result gpu = GpuProbe.cachedResult();
+
+    /** Labels refreshed when the probe lands, so the dialog can open immediately. */
+    private Label detectedLabel;
+
+    private Label adviceLabel;
+
+    /** Cleared once the user picks a variant, so a late probe cannot override them. */
+    private boolean variantChosenByUser;
+
+    /** Which variant the user chose in the pre-setup view. */
+    private ComputeVariant selectedVariant;
+
+    /** Set when a GPU install failed and CPU was installed in its place. */
+    private boolean fellBackToCpu;
 
     // UI components shared across states
     private VBox contentBox;
@@ -55,7 +95,32 @@ public class SetupEnvironmentDialog {
      * @param onComplete callback invoked on successful setup completion
      */
     public SetupEnvironmentDialog(Window owner, Runnable onComplete) {
+        this(owner, onComplete, null, null);
+    }
+
+    /**
+     * Creates a new setup dialog that can also switch compute variant.
+     *
+     * @param owner           the owner window for modality
+     * @param onComplete      callback invoked on successful setup completion
+     * @param onSwitchVariant callback invoked to rebuild under a different
+     *                        {@link ComputeVariant}; null hides the switch buttons
+     * @param initialVariant  variant to preselect; null picks from detected hardware
+     */
+    public SetupEnvironmentDialog(
+            Window owner,
+            Runnable onComplete,
+            java.util.function.Consumer<ComputeVariant> onSwitchVariant,
+            ComputeVariant initialVariant) {
         this.onComplete = onComplete;
+        this.onSwitchVariant = onSwitchVariant;
+        // An explicit switch preselects what the user asked for; otherwise
+        // default to what the hardware can actually run -- GPU when a card is
+        // present, CPU otherwise. CPU is the fail-safe; see GpuProbe.
+        this.variantChosenByUser = initialVariant != null;
+        this.selectedVariant = initialVariant != null
+                ? initialVariant
+                : (gpu != null && gpu.nvidiaPresent() ? ComputeVariant.GPU : ComputeVariant.CPU);
         this.stage = new Stage();
         stage.setTitle(res.getString("setup.title"));
         stage.initModality(Modality.APPLICATION_MODAL);
@@ -109,6 +174,58 @@ public class SetupEnvironmentDialog {
         envPathLabel.setStyle("-fx-font-family: monospace; -fx-font-size: 11px;");
         envPathLabel.setPadding(new Insets(0, 0, 0, 8));
 
+        // Compute variant. This is the one choice that cannot be undone cheaply
+        // later (a rebuild is another 2-4 GB download), and the one users are
+        // most likely to get wrong by omission, so it is asked here rather than
+        // buried in Preferences.
+        Label computeLabel = new Label(res.getString("setup.computeHeading"));
+        computeLabel.setFont(Font.font(null, FontWeight.BOLD, 12));
+
+        ToggleGroup variantGroup = new ToggleGroup();
+        RadioButton gpuRadio = new RadioButton(ComputeVariant.GPU.displayLabel());
+        gpuRadio.setToggleGroup(variantGroup);
+        gpuRadio.setUserData(ComputeVariant.GPU);
+        RadioButton cpuRadio = new RadioButton(ComputeVariant.CPU.displayLabel());
+        cpuRadio.setToggleGroup(variantGroup);
+        cpuRadio.setUserData(ComputeVariant.CPU);
+        (selectedVariant == ComputeVariant.GPU ? gpuRadio : cpuRadio).setSelected(true);
+        variantGroup.selectedToggleProperty().addListener((obs, was, is) -> {
+            Toggle chosen = is != null ? is : was;
+            if (chosen != null) {
+                selectedVariant = (ComputeVariant) chosen.getUserData();
+                variantChosenByUser = true;
+            }
+        });
+
+        detectedLabel = new Label();
+        detectedLabel.setWrapText(true);
+        detectedLabel.setStyle("-fx-font-size: 11px;");
+
+        // The directive: point at GPU when it is usable, and be explicit about
+        // why it is not offered as the default when it is not.
+        adviceLabel = new Label();
+        adviceLabel.setWrapText(true);
+
+        applyProbeResult(gpuRadio);
+        if (gpu == null) {
+            // Open now, fill in when the probe lands. Blocking here would freeze
+            // QuPath for as long as a wedged nvidia-smi takes to give up.
+            Thread probeThread = new Thread(
+                    () -> {
+                        GpuProbe.Result result = GpuProbe.detect();
+                        Platform.runLater(() -> {
+                            gpu = result;
+                            applyProbeResult(gpuRadio);
+                        });
+                    },
+                    "DLClassifier-GpuProbe");
+            probeThread.setDaemon(true);
+            probeThread.start();
+        }
+
+        VBox variantBox = new VBox(4, computeLabel, detectedLabel, gpuRadio, cpuRadio, adviceLabel);
+        variantBox.setPadding(new Insets(4, 0, 0, 0));
+
         // Buttons
         beginButton = new Button(res.getString("setup.beginSetup"));
         beginButton.setDefaultButton(true);
@@ -126,7 +243,15 @@ public class SetupEnvironmentDialog {
 
         contentBox
                 .getChildren()
-                .addAll(titleLabel, descLabel, downloadLabel, meteredLabel, envLocLabel, envPathLabel, buttonBox);
+                .addAll(
+                        titleLabel,
+                        descLabel,
+                        downloadLabel,
+                        meteredLabel,
+                        variantBox,
+                        envLocLabel,
+                        envPathLabel,
+                        buttonBox);
     }
 
     private void showInProgressView() {
@@ -181,38 +306,90 @@ public class SetupEnvironmentDialog {
         HBox buttonBox = new HBox(8, spacer, closeButton);
         buttonBox.setAlignment(Pos.CENTER_RIGHT);
 
-        // Check GPU status and show platform-appropriate guidance
-        ApposeService appose = ApposeService.getInstance();
-        String gpuType = appose.getGpuType();
+        contentBox.getChildren().addAll(titleLabel, completeLabel, detailLabel);
 
-        if ("cpu".equals(gpuType)) {
-            // No GPU detected -- show warning with platform-appropriate instructions
-            String warningText;
-            boolean isMac = System.getProperty("os.name", "").toLowerCase().contains("mac");
-            if (isMac) {
-                warningText = "[!] No GPU acceleration detected. Training and inference will be slow on CPU.\n\n"
-                        + "Apple MPS (Metal) was not found. If you have Apple Silicon (M1/M2/M3),\n"
-                        + "ensure you are using a compatible PyTorch version.\n\n"
-                        + "Try: Extensions > DL Pixel Classifier > Utilities > Rebuild DL Environment";
-            } else {
-                warningText = "[!] No GPU (CUDA) detected. Training and inference will be very slow on CPU.\n\n"
-                        + "To enable GPU acceleration:\n"
-                        + "  1. Install or update your NVIDIA GPU drivers\n"
-                        + "  2. Use Extensions > DL Pixel Classifier > Utilities >\n"
-                        + "     Rebuild DL Environment to reinstall with GPU support\n\n"
-                        + "If you do not have an NVIDIA GPU, CPU mode will still work\n"
-                        + "but training will take significantly longer.";
-            }
-            Label gpuWarning = new Label(warningText);
-            gpuWarning.setWrapText(true);
-            gpuWarning.setStyle("-fx-text-fill: #e65100; -fx-font-size: 11px; "
-                    + "-fx-border-color: #ffcc80; -fx-border-width: 1; "
-                    + "-fx-background-color: #fff3e0; -fx-padding: 8;");
-
-            contentBox.getChildren().addAll(titleLabel, completeLabel, detailLabel, gpuWarning, buttonBox);
-        } else {
-            contentBox.getChildren().addAll(titleLabel, completeLabel, detailLabel, buttonBox);
+        if (fellBackToCpu) {
+            contentBox.getChildren().add(calloutLabel(res.getString("setup.gpuFallback")));
         }
+
+        // What the user ended up with, and a one-click way to change it. The
+        // old code asked ApposeService.getGpuType() here, but that reports
+        // torch.cuda.is_available() from inside the installed environment: a
+        // CPU environment always answers "cpu", so on the CPU variant it was
+        // telling GPU owners their drivers were missing and pointing them at a
+        // rebuild that would reinstall CPU all over again.
+        ComputeVariant installed = ComputeVariant.fromId(DLClassifierPreferences.getEnvVariant());
+        if (installed == ComputeVariant.CPU) {
+            contentBox.getChildren().add(cpuAdvisory());
+        } else if (!"cuda".equals(ApposeService.getInstance().getGpuType())) {
+            // GPU environment installed but CUDA is not usable -- here the
+            // driver advice is genuinely the right advice.
+            contentBox.getChildren().add(driverAdvisory());
+        }
+
+        contentBox.getChildren().add(buttonBox);
+    }
+
+    /** Panel shown when the CPU environment is installed: says so, offers the switch. */
+    private VBox cpuAdvisory() {
+        Label heading = new Label("[!] " + res.getString("setup.cpuInstalledHeading"));
+        heading.setWrapText(true);
+        heading.setFont(Font.font(null, FontWeight.BOLD, 12));
+
+        // gpu can still be null if the probe has not landed; say less rather
+        // than claiming hardware facts we do not have.
+        String hardware = gpu == null
+                ? "NVIDIA GPU detection has not finished yet."
+                : gpu.summary()
+                        + (gpu.nvidiaPresent()
+                                ? " Switching is a fresh 2-4 GB download, but nothing else is lost."
+                                : " The GPU environment requires an NVIDIA GPU and driver.");
+        Label detected = new Label(hardware);
+        detected.setWrapText(true);
+        detected.setStyle("-fx-font-size: 11px;");
+
+        VBox box = new VBox(6, heading, detected);
+        if (onSwitchVariant != null) {
+            Button switchButton = new Button(res.getString("setup.switchToGpu"));
+            switchButton.setOnAction(e -> requestSwitch(ComputeVariant.GPU));
+            box.getChildren().add(switchButton);
+        }
+        box.setStyle(CALLOUT_STYLE);
+        return box;
+    }
+
+    /** Panel shown when the GPU environment is installed but CUDA is unusable. */
+    private VBox driverAdvisory() {
+        Label heading = new Label("[!] The GPU environment is installed, but CUDA is not available.");
+        heading.setWrapText(true);
+        heading.setFont(Font.font(null, FontWeight.BOLD, 12));
+
+        Label detail = new Label("Install or update your NVIDIA GPU drivers and restart QuPath. "
+                + "If this machine has no NVIDIA GPU, switch to the CPU environment instead.");
+        detail.setWrapText(true);
+        detail.setStyle("-fx-font-size: 11px;");
+
+        VBox box = new VBox(6, heading, detail);
+        if (onSwitchVariant != null) {
+            Button switchButton = new Button(res.getString("setup.switchToCpu"));
+            switchButton.setOnAction(e -> requestSwitch(ComputeVariant.CPU));
+            box.getChildren().add(switchButton);
+        }
+        box.setStyle(CALLOUT_STYLE);
+        return box;
+    }
+
+    private Label calloutLabel(String text) {
+        Label label = new Label(text);
+        label.setWrapText(true);
+        label.setStyle(CALLOUT_STYLE);
+        return label;
+    }
+
+    /** Hands the rebuild to the owner, which owns environment teardown. */
+    private void requestSwitch(ComputeVariant target) {
+        stage.close();
+        onSwitchVariant.accept(target);
     }
 
     private void showErrorView(String errorMessage) {
@@ -248,36 +425,110 @@ public class SetupEnvironmentDialog {
 
     // ==================== Setup Execution ====================
 
+    /**
+     * Renders the current probe state, and -- while the user has not chosen for
+     * themselves -- moves the default onto GPU once a card is confirmed.
+     *
+     * @param gpuRadio the GPU option, selected when hardware is found
+     */
+    private void applyProbeResult(RadioButton gpuRadio) {
+        if (gpu == null) {
+            detectedLabel.setText("Checking for an NVIDIA GPU...");
+            adviceLabel.setText(res.getString("setup.gpuRecommended"));
+            adviceLabel.setStyle("-fx-text-fill: #2e7d32; -fx-font-size: 11px; -fx-font-weight: bold;");
+            return;
+        }
+        detectedLabel.setText(gpu.summary());
+        adviceLabel.setText(
+                gpu.nvidiaPresent() ? res.getString("setup.gpuRecommended") : res.getString("setup.gpuNotDetected"));
+        adviceLabel.setStyle(
+                gpu.nvidiaPresent()
+                        ? "-fx-text-fill: #2e7d32; -fx-font-size: 11px; -fx-font-weight: bold;"
+                        : CALLOUT_STYLE);
+        if (!variantChosenByUser && gpu.nvidiaPresent()) {
+            gpuRadio.setSelected(true);
+            // setSelected fires the toggle listener, which would otherwise read
+            // as a user choice and freeze this default in place.
+            variantChosenByUser = false;
+        }
+    }
+
     private void startSetup() {
+        // Persist the choice before installing: ApposeService reads the
+        // preference to pick the manifest and the environment name.
+        ComputeVariant requested = selectedVariant;
+        DLClassifierPreferences.setEnvVariant(requested.name());
+        fellBackToCpu = false;
         showInProgressView();
 
         Thread setupThread = new Thread(
                 () -> {
                     try {
-                        // ONNX is always included -- required for model export
-                        ApposeService.getInstance()
-                                .initialize(
-                                        status -> Platform.runLater(() -> {
-                                            if (statusLabel != null) {
-                                                statusLabel.setText(status);
-                                            }
-                                        }),
-                                        true);
-
-                        Platform.runLater(() -> {
-                            showCompleteView();
-                            if (onComplete != null) {
-                                onComplete.run();
-                            }
-                        });
-
-                    } catch (Exception e) {
-                        logger.error("Environment setup failed", e);
-                        Platform.runLater(() -> showErrorView(e.getMessage()));
+                        install();
+                    } catch (Exception first) {
+                        if (requested != ComputeVariant.GPU) {
+                            logger.error("Environment setup failed", first);
+                            Platform.runLater(() -> showErrorView(first.getMessage()));
+                            return;
+                        }
+                        // Choosing GPU must never leave the user with nothing.
+                        // pixi refuses to install a CUDA-pinned environment when
+                        // the __cuda virtual package does not validate, which is
+                        // exactly the case a hopeful GPU pick runs into, so fall
+                        // back to the environment that installs anywhere.
+                        logger.warn("GPU environment install failed; falling back to CPU", first);
+                        try {
+                            discardFailedEnvironment();
+                            DLClassifierPreferences.setEnvVariant(ComputeVariant.CPU.name());
+                            fellBackToCpu = true;
+                            Platform.runLater(() -> {
+                                if (statusLabel != null) {
+                                    statusLabel.setText("GPU environment unavailable -- installing CPU instead...");
+                                }
+                            });
+                            install();
+                        } catch (Exception second) {
+                            logger.error("CPU fallback also failed", second);
+                            Platform.runLater(() -> showErrorView(second.getMessage()));
+                            return;
+                        }
                     }
+
+                    Platform.runLater(() -> {
+                        showCompleteView();
+                        if (onComplete != null) {
+                            onComplete.run();
+                        }
+                    });
                 },
                 "DLClassifier-EnvironmentSetup");
         setupThread.setDaemon(true);
         setupThread.start();
+    }
+
+    /** Installs the environment for the current variant preference. */
+    private void install() throws Exception {
+        // ONNX is always included -- required for model export
+        ApposeService.getInstance()
+                .initialize(
+                        status -> Platform.runLater(() -> {
+                            if (statusLabel != null) {
+                                statusLabel.setText(status);
+                            }
+                        }),
+                        true);
+    }
+
+    /** Best-effort teardown of a half-built environment before retrying. */
+    private void discardFailedEnvironment() {
+        try {
+            ApposeService.getInstance().shutdown();
+            ApposeService.getInstance().deleteEnvironment();
+        } catch (Exception e) {
+            // A partial environment that cannot be deleted is not fatal: the
+            // CPU variant installs under a different name, so the retry is
+            // unaffected and the leftovers are reclaimable via Clean Up Storage.
+            logger.warn("Could not remove the failed GPU environment: {}", e.getMessage());
+        }
     }
 }
