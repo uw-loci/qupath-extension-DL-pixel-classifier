@@ -1,5 +1,6 @@
 package qupath.ext.dlclassifier.service;
 
+import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.concurrent.TimeUnit;
@@ -93,7 +94,11 @@ public final class GpuProbe {
             process = new ProcessBuilder("nvidia-smi", "-L")
                     .redirectErrorStream(true)
                     .start();
-            String output = new String(process.getInputStream().readAllBytes());
+            // Decode explicitly. The platform default is cp1252 on the
+            // Windows machines this ships to, which makes the parse
+            // vary by platform for no benefit -- adapter names are
+            // ASCII, so UTF-8 is exact here and stable everywhere.
+            String output = new String(process.getInputStream().readAllBytes(), StandardCharsets.UTF_8);
             if (!process.waitFor(TIMEOUT_SECONDS, TimeUnit.SECONDS)) {
                 process.destroyForcibly();
                 logger.debug("nvidia-smi timed out after {}s; assuming no GPU", TIMEOUT_SECONDS);
