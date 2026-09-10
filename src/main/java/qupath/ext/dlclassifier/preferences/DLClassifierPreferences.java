@@ -5,6 +5,7 @@ import javafx.collections.ObservableList;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import qupath.ext.dlclassifier.service.warnings.InteractionWarningService;
+import qupath.fx.dialogs.Dialogs;
 import qupath.fx.prefs.controlsfx.PropertyItemBuilder;
 import qupath.lib.gui.QuPathGUI;
 import qupath.lib.gui.prefs.PathPrefs;
@@ -409,6 +410,30 @@ public final class DLClassifierPreferences {
 
         logger.info("Installing DL Pixel Classifier preferences");
 
+        // Say something when the environment location changes. The value is
+        // read only while an environment is being BUILT (ApposeService reads it
+        // at builder.base() time), and initialize() short-circuits once the
+        // service is up -- so changing this mid-session moves nothing, reports
+        // nothing, and does not even change the path shown by "Where Are My
+        // Files?" until a rebuild. Silence here reads as a broken setting.
+        envBaseDir.addListener((obs, oldV, newV) -> {
+            String target = newV == null || newV.isBlank() ? "the default location" : newV.strip();
+            boolean everBuilt = !getEnvLastBuiltDir().isBlank();
+            String message = everBuilt
+                    ? "Environment location set to " + target + ".\n"
+                            + "Nothing has moved yet -- use Utilities > Rebuild DL Environment "
+                            + "to build there (a fresh 2-4 GB download). Your existing "
+                            + "environment is left in place."
+                    : "Environment location set to " + target + ".\n"
+                            + "It will be used when you run Setup DL Environment.";
+            try {
+                javafx.application.Platform.runLater(() -> Dialogs.showInfoNotification(CATEGORY, message));
+            } catch (IllegalStateException e) {
+                // No FX toolkit (headless/test); the log line is the fallback.
+                logger.info("Environment location changed: {}", message);
+            }
+        });
+
         // Wire interaction-warning preference-toggle listeners. Fires
         // the relevant PreferenceWarning watchers when the user flips
         // the experimental TRT / INT8 toggles, so they get an
@@ -443,8 +468,11 @@ public final class DLClassifierPreferences {
                         + "for the default (~/.local/share/appose), which is right on most "
                         + "machines. Set it when the home directory is quota-limited -- on "
                         + "HPC and managed desktops an environment this size fails there. "
-                        + "Changing it builds a NEW environment; the old one is left alone "
-                        + "and you are asked about removing it only after the new one works.")
+                        + "TAKES EFFECT ON THE NEXT ENVIRONMENT BUILD: changing this setting "
+                        + "moves nothing by itself. Use Utilities > Rebuild DL Environment to "
+                        + "move an environment you already have (a fresh 2-4 GB download). The "
+                        + "old directory is left alone, and you are asked about removing it "
+                        + "only once the new one works.")
                 .build());
 
         items.add(new PropertyItemBuilder<>(envVariant, String.class)
