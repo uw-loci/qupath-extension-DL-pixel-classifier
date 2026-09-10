@@ -14,7 +14,7 @@ This file tracks the relationship between documentation screenshots and the Java
 
 | Screenshot | Java Source File(s) | Last Verified | Status |
 |------------|--------------------|---------------|--------|
-| `menu-dl-pixel-classifier.png` | `SetupDLClassifier.java` | 2026-07-22 | OK |
+| `menu-dl-pixel-classifier.png` | `SetupDLClassifier.java` | 2026-09-09 | OK |
 | `train-dialog-configure-classifier.png` | `ui/TrainingDialog.java` | 2026-07-22 | OK |
 | `train-dialog-tiles-resolution-preview.png` | `ui/TrainingDialog.java` | 2026-07-22 | OK |
 | `train-dialog-transfer-learning-layers.png` | `ui/TrainingDialog.java`, `ui/LayerFreezePanel.java` | 2026-07-22 | OK |

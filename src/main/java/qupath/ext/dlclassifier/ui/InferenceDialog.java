@@ -106,6 +106,20 @@ public class InferenceDialog {
         private Spinner<Double> maxObjectSizeSpinner;
         private Spinner<Double> holeFillingSpinner;
         private Spinner<Double> smoothingSpinner;
+        /**
+         * Whether the watershed instance-separation controls are shown.
+         * <p>
+         * OFF: the split is implemented and unit-tested
+         * ({@code WatershedSplitTest}) but has never been validated on real
+         * data, so it is not offered yet. The controls are still constructed --
+         * the apply and copy-as-script paths read them -- but are left out of
+         * the layout and forced off, so the config always carries the
+         * connected-components behaviour. Flip this to true once the split has
+         * been checked against touching cells and continuous regions; see
+         * claude-reports/2026-07-31_classification-to-objects-work.md.
+         */
+        private static final boolean WATERSHED_UI_ENABLED = false;
+
         private CheckBox separateTouchingCheck;
         private Spinner<Double> watershedToleranceSpinner;
         private CheckBox shapeMeasurementsCheck;
@@ -423,8 +437,14 @@ public class InferenceDialog {
                             + "Leave OFF for large continuous regions (tissue, tumor area) where\n"
                             + "you want one object per region. Turn ON for packed, countable\n"
                             + "structures (cells, glands, nuclei) that touch each other.");
-            grid.add(separateTouchingCheck, 0, row, 2, 1);
-            row++;
+            if (WATERSHED_UI_ENABLED) {
+                grid.add(separateTouchingCheck, 0, row, 2, 1);
+                row++;
+            } else {
+                // Hidden pending validation on real data -- forced off so a
+                // preference left true during testing cannot silently enable it.
+                separateTouchingCheck.setSelected(false);
+            }
 
             // Watershed tolerance (only meaningful when separation is enabled)
             watershedToleranceSpinner = new Spinner<>(0.0, 20.0, DLClassifierPreferences.getWatershedTolerance(), 0.5);
@@ -441,9 +461,11 @@ public class InferenceDialog {
                             + "0.5 matches ImageJ's classic binary watershed and is a good start.\n"
                             + "Only used when 'Separate touching objects' is on.");
 
-            grid.add(new Label("Split Tolerance:"), 0, row);
-            grid.add(watershedToleranceSpinner, 1, row);
-            row++;
+            if (WATERSHED_UI_ENABLED) {
+                grid.add(new Label("Split Tolerance:"), 0, row);
+                grid.add(watershedToleranceSpinner, 1, row);
+                row++;
+            }
 
             // Shape measurements
             shapeMeasurementsCheck = new CheckBox("Add shape measurements (circularity, solidity)");

@@ -91,7 +91,7 @@ See [docs/INSTALLATION.md](docs/INSTALLATION.md) for detailed instructions and G
 
 ## Getting Started
 
-![DL Pixel Classifier menu under Extensions, showing Train, Apply, Manage Classifiers, Select Overlay Model, Toggle Prediction Overlay, and the Utilities submenu](docs/images/menu-dl-pixel-classifier.png)
+![DL Pixel Classifier menu under Extensions, showing Train, Apply, Select Overlay Model, Toggle Prediction Overlay, Manage Classifiers, Report a Bug, and the expanded Utilities submenu: Python Console, Where Are My Files?, System Info, Free GPU Memory, MAE Pretrain Encoder, Calibrate model to current image, Clean Up Storage, Load Saved Training Area Issues, Compute Environment (CPU / GPU), and Rebuild DL Environment](docs/images/menu-dl-pixel-classifier.png)
 
 1. **Set up the Python environment** -- go to **Extensions > DL Pixel Classifier > Setup DL Environment...** in the QuPath menu bar. This downloads and configures PyTorch and all dependencies automatically (~2-4 GB, first time only).
 
